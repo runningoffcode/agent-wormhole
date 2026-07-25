@@ -7,3 +7,8 @@ dist/
 venv/
 .DS_Store
 .pytest_cache/
+
+# x402-guard (TypeScript, published separately to npm)
+x402-guard/node_modules/
+x402-guard/dist/
+x402-guard/*.tgz

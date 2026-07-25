@@ -1,0 +1,62 @@
+{
+  "name": "x402-guard",
+  "version": "0.1.0",
+  "description": "Refuse a Solana payment that does not match what the agent was quoted. Offline, no RPC.",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": [
+    "x402",
+    "solana",
+    "agent",
+    "ai-agent",
+    "payments",
+    "security",
+    "prompt-injection",
+    "agentic-commerce",
+    "transaction-security",
+    "spl-token"
+  ],
+  "author": "JuicyD3v",
+  "license": "Apache-2.0",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "@solana/web3.js": "^1.98.4",
+    "@solana/spl-token": "^0.4.15"
+  },
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://agentwormhole.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runningoffcode/agent-wormhole.git",
+    "directory": "x402-guard"
+  },
+  "bugs": {
+    "url": "https://github.com/runningoffcode/agent-wormhole/issues"
+  },
+  "peerDependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "@solana/spl-token": "^0.4.0"
+  }
+}

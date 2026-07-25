@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import guard, harden
 from .baseline import record, verify, BASELINE_FILE
 from .rules.injection import scan_text
 from . import scoring
@@ -166,6 +167,29 @@ def main(argv=None):
     ins.add_argument("--json", action="store_true")
     ins.add_argument("--no-color", action="store_true")
 
+    g = sub.add_parser("guard",
+                       help="inspect writes to agent configs before they land")
+    g.add_argument("--hook", action="store_true",
+                   help="run as a PreToolUse hook (reads JSON on stdin)")
+    g.add_argument("--block", action="store_true",
+                   help="refuse writes matching WORM-001/WORM-003 "
+                        "(default: warn only)")
+    g.add_argument("--install", action="store_true",
+                   help="print the settings.json hook block to register this")
+    g.add_argument("--no-color", action="store_true")
+
+    hd = sub.add_parser("harden",
+                        help="make agent configs read-only so a payload cannot "
+                             "write itself into them")
+    hd.add_argument("path", nargs="?", default=".")
+    hd.add_argument("--apply", action="store_true",
+                    help="actually change file modes (default: dry run)")
+    hd.add_argument("--undo", action="store_true",
+                    help="restore owner write permission")
+    hd.add_argument("--no-skills", action="store_true",
+                    help="leave ~/.claude/skills alone")
+    hd.add_argument("--no-color", action="store_true")
+
     b = sub.add_parser("baseline", help="record hashes of agent config files")
     b.add_argument("path", nargs="?", default=".")
     b.add_argument("--no-color", action="store_true")
@@ -203,6 +227,88 @@ def main(argv=None):
             return 0
         threshold = {"critical": 0, "high": 1, "medium": 2, "low": 3}[args.fail_on]
         return 1 if any(f.severity_rank <= threshold for f in findings) else 0
+
+    if args.cmd == "guard":
+        if args.hook:
+            return guard.run_hook(block=args.block)
+
+        if args.install:
+            cmd = "python3 -m wormhole guard --hook"
+            if args.block:
+                cmd += " --block"
+            block = {
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "Write|Edit|MultiEdit",
+                        "hooks": [{"type": "command", "command": cmd}],
+                    }]
+                }
+            }
+            mode = "block" if args.block else "warn"
+            print(f"\n{c['bold']}wormhole guard{c['r']} {c['dim']}— {mode} mode"
+                  f"{c['r']}\n")
+            print("  Merge into ~/.claude/settings.json:\n")
+            for line in json.dumps(block, indent=2).splitlines():
+                print(f"  {line}")
+            print(f"\n  {c['dim']}Inspects Write/Edit/MultiEdit against "
+                  f"agent config files only.{c['r']}")
+            if not args.block:
+                print(f"  {c['dim']}Warn mode allows every write and annotates "
+                      f"suspicious ones. Add --block{c['r']}")
+                print(f"  {c['dim']}to refuse WORM-001/WORM-003 outright once "
+                      f"you trust it.{c['r']}\n")
+            else:
+                print(f"  {c['high']}Block mode refuses writes. A rule defect "
+                      f"here stops legitimate work.{c['r']}\n")
+            return 0
+
+        print(f"\n{c['bold']}wormhole guard{c['r']}\n")
+        print(f"  {c['dim']}--install   print the settings.json hook block"
+              f"{c['r']}")
+        print(f"  {c['dim']}--hook      run as the hook itself (stdin JSON)"
+              f"{c['r']}")
+        print(f"  {c['dim']}--block     refuse WORM-001/003 instead of warning"
+              f"{c['r']}\n")
+        return 0
+
+    if args.cmd == "harden":
+        skills = not args.no_skills
+        if args.undo:
+            targets = harden.hardened(root, include_skills=skills)
+            mode, verb, past = harden.RESTORED, "would restore", "restored"
+        else:
+            targets = harden.plan(root, include_skills=skills)
+            mode, verb, past = harden.READ_ONLY, "would chmod", "chmod"
+
+        print(f"\n{c['bold']}wormhole harden{c['r']} {c['dim']}— {root}{c['r']}\n")
+        if not targets:
+            done = "writable" if args.undo else "read-only"
+            print(f"  {c['ok']}✓ nothing to do — every agent config is already "
+                  f"{done}{c['r']}\n")
+            return 0
+
+        if not args.apply:
+            for p in targets:
+                print(f"  {c['dim']}{verb} {mode:04o}{c['r']}  {p}")
+            print(f"\n  {c['dim']}dry run — pass --apply to act{c['r']}")
+            print(f"  {c['dim']}a read-only config cannot be rewritten by the "
+                  f"agent that reads it{c['r']}\n")
+            return 0
+
+        results = harden.apply(targets, mode)
+        failed = [(p, e) for p, ok, e in results if not ok]
+        for p, ok, err in results:
+            if ok:
+                print(f"  {c['ok']}{past} {mode:04o}{c['r']}  {p}")
+            else:
+                print(f"  {c['high']}failed{c['r']}        {p} {c['dim']}({err}){c['r']}")
+        if args.undo:
+            print(f"\n  {c['dim']}re-harden with: wormhole harden {args.path}"
+                  f" --apply{c['r']}\n")
+        else:
+            print(f"\n  {c['dim']}edit a config by restoring write first: "
+                  f"wormhole harden {args.path} --undo --apply{c['r']}\n")
+        return 1 if failed else 0
 
     if args.cmd == "scan":
         findings, configs = gather(root, include_global=not args.local_only)

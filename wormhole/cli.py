@@ -5,11 +5,11 @@ import json
 import sys
 from pathlib import Path
 
-from . import guard, harden, init
+from . import guard, harden, init, provenance, readguard
 from .baseline import record, verify, BASELINE_FILE
 from .rules.injection import scan_text
 from . import scoring
-from .scanners import autostart, mcp_tools
+from .scanners import autostart, mcp_tools, propagation
 from .scanners.posture import (
     find_agent_configs, check_permissions, check_writable_configs,
     check_mcp_servers, check_skills,
@@ -185,6 +185,36 @@ def main(argv=None):
                      help="leave ~/.claude/skills alone")
     ini.add_argument("--no-color", action="store_true")
 
+    rg = sub.add_parser("readguard",
+                        help="inspect what the agent reads, as it reads it")
+    rg.add_argument("--hook", action="store_true",
+                    help="run as a PostToolUse hook (reads JSON on stdin)")
+    rg.add_argument("--instructions", action="store_true",
+                    help="run as an InstructionsLoaded hook")
+    rg.add_argument("--redact", action="store_true",
+                    help="excise matched lines from the tool result "
+                         "(default: annotate only)")
+    rg.add_argument("--install", action="store_true",
+                    help="print the settings.json hook block")
+    rg.add_argument("--no-color", action="store_true")
+
+    cp = sub.add_parser("corpus",
+                        help="scan documents before they are embedded for "
+                             "retrieval")
+    cp.add_argument("path", nargs="?", default=".")
+    cp.add_argument("--json", action="store_true")
+    cp.add_argument("--no-color", action="store_true")
+    cp.add_argument("--fail-on", default="high",
+                    choices=["critical", "high", "medium", "low", "never"])
+
+    hf = sub.add_parser("handoffs",
+                        help="scan task descriptions sent between agents")
+    hf.add_argument("--limit", type=int, default=30)
+    hf.add_argument("--json", action="store_true")
+    hf.add_argument("--no-color", action="store_true")
+    hf.add_argument("--fail-on", default="high",
+                    choices=["critical", "high", "medium", "low", "never"])
+
     g = sub.add_parser("guard",
                        help="inspect writes to agent configs before they land")
     g.add_argument("--hook", action="store_true",
@@ -324,6 +354,91 @@ def main(argv=None):
         print(f"{c['dim']}Check for drift:  wormhole verify {args.path}"
               f"{c['r']}\n")
         return 0
+
+    if args.cmd == "readguard":
+        if args.instructions:
+            return readguard.run_instructions_hook()
+        if args.hook:
+            return readguard.run_hook(redact_mode=args.redact)
+
+        if args.install:
+            post = "python3 -m wormhole readguard --hook"
+            if args.redact:
+                post += " --redact"
+            block = {"hooks": {
+                "PostToolUse": [{
+                    "matcher": "Read|WebFetch|WebSearch|Bash|Grep|Glob|Task",
+                    "hooks": [{"type": "command", "command": post}]}],
+                "InstructionsLoaded": [{
+                    "hooks": [{"type": "command",
+                               "command": "python3 -m wormhole readguard "
+                                          "--instructions"}]}],
+            }}
+            mode = "redact" if args.redact else "annotate"
+            print(f"\n{c['bold']}wormhole readguard{c['r']} "
+                  f"{c['dim']}— {mode} mode{c['r']}\n")
+            print("  Merge into ~/.claude/settings.json:\n")
+            for line in json.dumps(block, indent=2).splitlines():
+                print(f"  {line}")
+            print(f"\n  {c['dim']}Inspects content the agent did not author: "
+                  f"fetched pages, tool output,{c['r']}")
+            print(f"  {c['dim']}file reads, shell results. Source code is "
+                  f"excluded.{c['r']}")
+            if not args.redact:
+                print(f"  {c['dim']}Annotate mode tells the model the text is "
+                      f"data, not instruction. --redact{c['r']}")
+                print(f"  {c['dim']}also removes the matched lines.{c['r']}\n")
+            else:
+                print(f"  {c['high']}Redact mode alters what the model sees. A "
+                      f"false positive here{c['r']}")
+                print(f"  {c['high']}silently corrupts its view of "
+                      f"reality.{c['r']}\n")
+            return 0
+
+        print(f"\n{c['bold']}wormhole readguard{c['r']}\n")
+        print(f"  {c['dim']}--install        print the settings.json hook "
+              f"block{c['r']}")
+        print(f"  {c['dim']}--hook           run as the PostToolUse hook"
+              f"{c['r']}")
+        print(f"  {c['dim']}--instructions   run as the InstructionsLoaded "
+              f"hook{c['r']}")
+        print(f"  {c['dim']}--redact         excise matched lines, not just "
+              f"annotate{c['r']}\n")
+        return 0
+
+    if args.cmd == "corpus":
+        findings = propagation.scan_corpus(root)
+        if args.json:
+            print(as_json(findings))
+        else:
+            print(f"\n{c['bold']}wormhole{c['r']} {c['dim']}— corpus scan of "
+                  f"{root}{c['r']}")
+            if not findings:
+                print(f"\n{c['ok']}✓ no injection payloads in retrievable "
+                      f"documents{c['r']}\n")
+            else:
+                print(render(findings, [], color, verbose=True))
+        if args.fail_on == "never":
+            return 0
+        threshold = {"critical": 0, "high": 1, "medium": 2, "low": 3}[args.fail_on]
+        return 1 if any(f.severity_rank <= threshold for f in findings) else 0
+
+    if args.cmd == "handoffs":
+        findings = propagation.scan_handoffs(limit=args.limit)
+        if args.json:
+            print(as_json(findings))
+        else:
+            print(f"\n{c['bold']}wormhole{c['r']} {c['dim']}— agent handoff "
+                  f"scan{c['r']}")
+            if not findings:
+                print(f"\n{c['ok']}✓ no payloads in task descriptions sent "
+                      f"between agents{c['r']}\n")
+            else:
+                print(render(findings, [], color, verbose=True))
+        if args.fail_on == "never":
+            return 0
+        threshold = {"critical": 0, "high": 1, "medium": 2, "low": 3}[args.fail_on]
+        return 1 if any(f.severity_rank <= threshold for f in findings) else 0
 
     if args.cmd == "guard":
         if args.hook:
@@ -544,6 +659,27 @@ def main(argv=None):
         configs = find_agent_configs(root)
         findings = verify([str(p) for p in configs] if configs else None)
         findings.extend(mcp_tools.verify(root))
+
+        # Explain the changes rather than only reporting them. "The hash
+        # differs" starts an investigation; "this changed while a session was
+        # open" ends one. Attached to the existing finding rather than added
+        # as a second one -- reporting the same file twice is how a tool
+        # trains its operator to skim.
+        windows = provenance.session_windows()
+        for f in findings:
+            if f.rule_id not in ("BASELINE-001", "BASELINE-003") or not f.path:
+                continue
+            info = provenance.describe(Path(f.path), windows)
+            if not info["session"]:
+                continue
+            f.detail += (
+                f"\n\nLast written {info['modified']}, inside the active "
+                f"window of agent session {info['session'][:12]}. An agent "
+                f"editing the file it also reads as instruction is the loop "
+                f"this tool exists to break.")
+            if info["unstaged"]:
+                f.detail += (" It is also modified-but-unstaged in git, so the "
+                             "change has not passed through review.")
         if args.json:
             print(as_json(findings))
         else:

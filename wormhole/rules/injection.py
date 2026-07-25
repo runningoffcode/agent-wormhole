@@ -71,7 +71,13 @@ PROPAGATION_TARGET = re.compile(
     r"\b(every|each|all)\s+(?:subsequent |future |outgoing |following )?"
     r"(response|reply|message|email|output|file|commit|answer|request)|"
     r"\b(outgoing|future|subsequent)\s+(messages?|emails?|responses?)|"
-    r"\b(AGENTS?\.md|CLAUDE\.md|\.cursorrules|system prompt)\b",
+    r"\b(AGENTS?\.md|CLAUDE\.md|\.cursorrules|system prompt)\b|"
+    # A spawned agent is a new host as surely as a file is. The parent writes
+    # the child's whole context, and the child never sees where it came from,
+    # so no hop in the tree is positioned to notice a payload riding along.
+    r"\b(task description|system prompt|context handoff)\b|"
+    r"\b(every|each|any)\s+(?:new |outgoing |spawned |child |sub-?)?"
+    r"(agent|worker|subagent|task|delegate)s?\b",
     re.IGNORECASE,
 )
 

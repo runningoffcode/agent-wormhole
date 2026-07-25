@@ -56,6 +56,14 @@ CONFIG_GLOBS = (
     (".cursor/rules", "*.mdc"),
     (".github/instructions", "*.instructions.md"),
     (".windsurf/rules", "*.md"),
+    # Persistent agent memory. A better worm host than an agent config file:
+    # auto-loaded at session start, rarely diffed in review, frequently
+    # gitignored so code review never sees it, and periodically trimmed or
+    # regenerated -- which is exactly the pretext a "re-add this if missing"
+    # clause exploits. OWASP added Memory & Context Poisoning as ASI06 for
+    # this reason.
+    (".claude/memory", "*.md"),
+    ("memory", "*.md"),
 )
 
 

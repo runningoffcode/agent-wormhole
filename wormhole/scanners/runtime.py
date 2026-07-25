@@ -101,15 +101,22 @@ def _looks_like_source_code(text: str) -> bool:
     if len(lines) < 3:
         return False
 
-    # Read/Edit tool output is line-numbered ("   123\tcontent").
-    numbered = sum(1 for ln in lines[:40] if _LINE_NUMBERED.match(ln))
-    if numbered >= max(3, len(lines[:40]) // 2):
-        return True
-
     code_markers = sum(sample.count(t) for t in
                        ("();", ");", "{", "}", "=>", "const ", "def ", "import ",
                         "function ", "return ", "</", "/>", "::", "&&"))
-    return code_markers / max(len(lines), 1) > 1.5
+    density = code_markers / max(len(lines), 1)
+
+    # Read/Edit tool output is line-numbered ("   123\tcontent"). That used to
+    # be sufficient on its own, which made it a one-line off switch: prefixing
+    # prose with fake line numbers suppressed every rule in readguard and
+    # outbound at once, and attacker-controlled content (a web page, an issue
+    # body, `cat -n` output) can carry that prefix trivially. Numbering is now
+    # only corroborating evidence -- the body still has to look like code.
+    numbered = sum(1 for ln in lines[:40] if _LINE_NUMBERED.match(ln))
+    if numbered >= max(3, len(lines[:40]) // 2):
+        return density > 0.4
+
+    return density > 1.5
 
 
 # Rules that describe *instructions* and therefore only make sense in prose.

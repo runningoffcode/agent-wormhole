@@ -50,14 +50,26 @@ def is_watched(path: str) -> bool:
 def pending_content(tool: str, tool_input: dict) -> str:
     """Extract the text a tool call is about to commit to disk."""
     if tool == "Write":
-        return tool_input.get("content", "") or ""
+        c = tool_input.get("content", "")
+        return c if isinstance(c, str) else ""
     if tool in ("Edit", "MultiEdit"):
         # Only the incoming text can carry a payload; the string being replaced
         # is already on disk and is `scan`'s problem, not the guard's.
+        #
+        # Every element is type-checked. A hostile caller can put a string
+        # where an object belongs, and an unguarded .get() on it raised
+        # AttributeError -- which exited nonzero with an empty stdout, and an
+        # empty stdout means "no objection", so the write proceeded. A control
+        # whose failure mode is "allow" is worse than no control.
         edits = tool_input.get("edits")
         if isinstance(edits, list):
-            return "\n".join(e.get("new_string", "") or "" for e in edits)
-        return tool_input.get("new_string", "") or ""
+            return "\n".join(
+                e.get("new_string", "") or ""
+                for e in edits
+                if isinstance(e, dict) and isinstance(e.get("new_string"), str)
+            )
+        ns = tool_input.get("new_string", "")
+        return ns if isinstance(ns, str) else ""
     return ""
 
 
@@ -123,7 +135,22 @@ def run_hook(stream=None, out=None, block: bool = False) -> int:
     if not isinstance(tool_input, dict):
         return 0
 
-    verdict = inspect(tool, tool_input, block=block)
+    try:
+        verdict = inspect(tool, tool_input, block=block)
+    except Exception as exc:  # noqa: BLE001 - see note below
+        # Never let an unexpected shape become a silent allow. An empty stdout
+        # reads as "no objection" to the agent, so a crash here would pass the
+        # write through while the operator believed they were covered. Ask
+        # instead: the operator decides, and the reason names the failure.
+        json.dump({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": (
+                f"agent-wormhole could not inspect this call ({type(exc).__name__}). "
+                f"Refusing to pass it silently -- approve only if you know what "
+                f"this write contains."),
+        }}, out)
+        return 0
 
     if verdict["action"] == "block":
         json.dump({

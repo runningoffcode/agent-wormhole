@@ -103,7 +103,18 @@ def run_hook(stream=None, out=None, warn_only: bool = False) -> int:
     tool = payload.get("tool_name") or payload.get("tool") or ""
     tool_input = payload.get("tool_input") or payload.get("input") or {}
 
-    findings = inspect_outbound(tool, tool_input)
+    try:
+        findings = inspect_outbound(tool, tool_input)
+    except Exception as exc:  # noqa: BLE001
+        # Outbound blocks by default, so a crash must not become a send.
+        json.dump({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": (
+                f"agent-wormhole could not inspect this outgoing message "
+                f"({type(exc).__name__}). Refusing to pass it silently."),
+        }}, out)
+        return 0
     if not findings:
         return 0
 

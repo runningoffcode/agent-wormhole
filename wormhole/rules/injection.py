@@ -120,7 +120,13 @@ PLACEHOLDER_DEST = re.compile(
 )
 
 # Text engineered to be invisible to a human reviewing the file.
-HIDDEN_HTML_COMMENT = re.compile(r"<!--(.*?)-->", re.DOTALL)
+# Bounded rather than `<!--(.*?)-->`. A lazy quantifier under DOTALL with no
+# closing delimiter rescans to end-of-string from every start position, which
+# is quadratic: 40KB of bare "<!--" took 1.9s, 156KB took 28s, 256KB took 76s.
+# Since guard and outbound run on every tool call, that is both a denial of
+# service and an uninstall trigger. `[^-]` plus a bounded repeat keeps a real
+# comment matchable while refusing to backtrack across the whole document.
+HIDDEN_HTML_COMMENT = re.compile(r"<!--([^>]{0,8000}?)-->", re.DOTALL)
 ZERO_WIDTH = re.compile(r"[​‌‍⁠﻿]")
 # Unicode tag block — renders as nothing, reads as ASCII to a model.
 UNICODE_TAGS = re.compile(r"[\U000e0000-\U000e007f]")
@@ -200,9 +206,21 @@ def _near(text: str, a: re.Pattern, b: re.Pattern, window: int = 240):
             yield ma
 
 
+# Beyond this, scanning is truncated. Every rule here is a regex over the whole
+# blob, and several can backtrack superlinearly on adversarial input -- a page
+# of bare "<!--" took 76s at 256KB before this cap. Since `guard`, `outbound`
+# and `readguard` run on every tool call, an attacker who controls a fetched
+# page could hang the agent by serving a large enough one. A payload that only
+# appears past 256KB of a config file is not a realistic delivery mechanism;
+# an unbounded scan on every tool call is a realistic denial of service.
+MAX_SCAN_BYTES = 262144
+
+
 def scan_text(text: str, path: str = None) -> list:
     """Run all content rules over a blob of text."""
     findings = []
+    if text and len(text) > MAX_SCAN_BYTES:
+        text = text[:MAX_SCAN_BYTES]
 
     def add(rule_id, severity, title, detail, pos, remediation, refs=None):
         findings.append(Finding(

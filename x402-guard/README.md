@@ -1,4 +1,4 @@
-# x402-guard
+# wormhole-x402
 
 **Your agent is about to sign a payment. Is it the one it was quoted?**
 
@@ -38,11 +38,11 @@ headless agent has neither a website nor a human.
 ## Install
 
 ```bash
-npm install x402-guard
+npm install wormhole-x402
 ```
 
 ```ts
-import { guardSigner } from "x402-guard";
+import { guardSigner } from "wormhole-x402";
 
 // `quote` is the PaymentRequirements from the server's HTTP 402 response.
 const wallet = guardSigner(myWallet, () => currentQuote);
@@ -54,7 +54,7 @@ await wallet.signTransaction(tx);
 Or inspect without wrapping:
 
 ```ts
-import { inspectPayment } from "x402-guard";
+import { inspectPayment } from "wormhole-x402";
 
 const verdict = inspectPayment(serializedTx, {
   payTo: "merchant address from the 402 response",

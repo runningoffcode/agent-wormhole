@@ -290,7 +290,7 @@ Everything above costs you a revert. Change one variable and it stops being
 recoverable: an agent that reads instructions from a file it does not control,
 and can also sign transactions.
 
-[`x402-guard`](x402-guard/) is the same idea applied to a payment. Every
+[`wormhole-x402`](x402-guard/) is the same idea applied to a payment. Every
 transaction-security product answers *what will this transaction do* —
 simulation, asset diffs, address reputation. None of it helps here, because a
 payment to an attacker's address simulates perfectly. Correct balances, no
@@ -298,11 +298,11 @@ revert, clean verdict. The transaction is valid; it is simply not the one that
 was asked for.
 
 ```bash
-npm install x402-guard
+npm install wormhole-x402
 ```
 
 ```ts
-import { guardSigner } from "x402-guard";
+import { guardSigner } from "wormhole-x402";
 const wallet = guardSigner(myWallet, () => currentQuote);
 // Signing throws unless the transaction matches the server's 402 response.
 ```

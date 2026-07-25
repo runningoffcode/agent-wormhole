@@ -1,5 +1,5 @@
 {
-  "name": "x402-guard",
+  "name": "wormhole-x402",
   "version": "0.1.0",
   "description": "Refuse a Solana payment that does not match what the agent was quoted. Offline, no RPC.",
   "main": "./dist/index.js",

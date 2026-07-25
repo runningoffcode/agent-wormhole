@@ -3,15 +3,17 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# `agent-wormhole` on PyPI belongs to an unrelated project. The distribution
-# is `agentwormhole`; the import package and the console script both stay
-# `wormhole`, so nothing the operator types changes.
-name = "agentwormhole"
-version = "0.1.0"
-description = "Detect self-replicating prompt payloads and permission overreach in AI agent configurations"
+# `agent-wormhole` on PyPI belongs to an unrelated project, and PyPI collapses
+# hyphens when comparing names, so `agentwormhole` is rejected as too similar
+# to it. The distribution is `wormhole-guard`; the import package and the
+# console script both stay `wormhole`, so nothing the operator types changes.
+name = "wormhole-guard"
+version = "0.1.1"
+description = "Stop self-replicating prompt payloads from spreading between AI agents"
 readme = "README.md"
 requires-python = ">=3.8"
-license = { file = "LICENSE" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "JuicyD3v" }]
 keywords = [
   "ai-security",
@@ -27,7 +29,6 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Intended Audience :: System Administrators",
-  "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.8",

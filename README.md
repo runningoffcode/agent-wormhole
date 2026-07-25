@@ -1,8 +1,8 @@
 # Agent Wormhole
 
 [![ci](https://github.com/runningoffcode/agent-wormhole/actions/workflows/ci.yml/badge.svg)](https://github.com/runningoffcode/agent-wormhole/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/agentwormhole)](https://pypi.org/project/agentwormhole/)
-[![Python](https://img.shields.io/pypi/pyversions/agentwormhole)](https://pypi.org/project/agentwormhole/)
+[![PyPI](https://img.shields.io/pypi/v/wormhole-guard)](https://pypi.org/project/wormhole-guard/)
+[![Python](https://img.shields.io/pypi/pyversions/wormhole-guard)](https://pypi.org/project/wormhole-guard/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](pyproject.toml)
 [![Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen)](#no-telemetry)
@@ -82,11 +82,11 @@ problem, and this is the tool. See [MISSION.md](MISSION.md).
 ## Install
 
 ```bash
-pipx install agentwormhole
+pipx install wormhole-guard
 wormhole scan ~/your-project --blast-radius
 ```
 
-The distribution is `agentwormhole`; `agent-wormhole` on PyPI is an unrelated
+The distribution is `wormhole-guard`. `agent-wormhole` on PyPI is an unrelated
 project. The command and the import package are both `wormhole`.
 
 Standard library only, so it also runs straight from a checkout with no install

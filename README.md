@@ -92,12 +92,17 @@ python3 -m wormhole scan ~/your-project --blast-radius
 Prevention — these run before a payload lands:
 
 ```bash
-wormhole guard --install                 # print the PreToolUse hook block
-wormhole guard --install --block         # ... refusing WORM-001/003 outright
-wormhole harden ~/project                # preview making configs read-only
-wormhole harden ~/project --apply        # drop the write bit
+wormhole init ~/project                  # harden + baseline + print the hooks
+wormhole guard --install                 # writes: the PreToolUse hook
+wormhole readguard --install             # reads: PostToolUse + InstructionsLoaded
+wormhole harden ~/project --apply        # drop the write bit, block creation
 wormhole harden ~/project --undo --apply # restore write permission
 ```
+
+`guard` covers what the agent writes. `readguard` covers what it reads —
+fetched pages, shell output, file reads, MCP responses — which is how every
+publicly disclosed agent compromise of 2026 actually arrived. Source code is
+excluded, so reading a payment handler is not an incident.
 
 Detection and containment — these run after:
 
@@ -111,7 +116,16 @@ wormhole capture ~/project --apply       # capture, preserving originals
 wormhole captured                        # list what has been contained
 wormhole restore <id>                    # pull one back out, byte-for-byte
 wormhole insights                        # what the capture history reveals
+wormhole handoffs                        # payloads in agent-to-agent tasks
+wormhole corpus ./docs                   # documents before they are embedded
 ```
+
+`handoffs` and `corpus` cover the two vectors this tool sees least well, and
+the limits are worth stating. A task description passed to a child agent has no
+interception point — the parent composes it in memory — so `handoffs` reads
+transcripts after the fact. A vector store has no standard format, so `corpus`
+scans documents *before* ingestion, which is the last point at which the text
+is still text.
 
 `guard` warns by default. Block mode refuses only WORM-001 and WORM-003 — the
 two rules with an unambiguous structural signature and no corpus false

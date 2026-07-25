@@ -3,7 +3,7 @@
 Content rules find a payload that is already present. These checks find the
 conditions that decide what a payload could accomplish if one arrived.
 
-The motivating evidence is AgentWorm (arXiv:2603.15727, NDSS 2026). Across
+The motivating evidence is AgentWorm (arXiv:2603.15727, preprint). Across
 2,250 trials on five models, sandbox isolation was the only built-in control
 that broke the infection loop, driving attack success to 0% across all vectors.
 Execution restriction blocked payload execution but left persistence and
@@ -178,7 +178,7 @@ def check_writable_configs(configs: list) -> list:
                     "Track the file's hash with `wormhole baseline`, then run "
                     "`wormhole verify` to detect modification. Make it "
                     "read-only where the workflow permits: chmod 444"),
-                references=["arXiv:2603.15727 (AgentWorm, NDSS 2026)"]))
+                references=["arXiv:2603.15727 (AgentWorm preprint)"]))
     return findings
 
 

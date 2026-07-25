@@ -109,7 +109,7 @@ every session start.
 
 - Zhang, Wei, Luan, Wu, Zhang, Wu, Wu, Chen, Sun, Sun. *AgentWorm:
   Self-Propagating Attacks Across LLM Agent Ecosystems.*
-  [arXiv:2603.15727](https://arxiv.org/abs/2603.15727), NDSS Symposium 2026.
+  [arXiv:2603.15727](https://arxiv.org/abs/2603.15727), preprint, Mar 2026, rev. Jul 2026.
 - Cohen, Bitton, Nassi. *Here Comes The AI Worm: Unleashing Zero-click Worms
   that Target GenAI-Powered Applications.*
   [arXiv:2403.02817](https://arxiv.org/abs/2403.02817), March 2024. The Morris

@@ -34,11 +34,12 @@ No dependencies beyond Python 3.8+. Nothing leaves your machine.
 
 In March 2026, researchers demonstrated the first self-replicating worm against
 a production-scale agent framework across 2,250 trials
-([arXiv:2603.15727](https://arxiv.org/abs/2603.15727), NDSS 2026). Three of
+([arXiv:2603.15727](https://arxiv.org/abs/2603.15727), preprint, Mar 2026, rev. Jul 2026). Three of
 their numbers explain this project:
 
-- **82%** — attack success via skill supply-chain poisoning, the highest of any
-  vector, "universally vulnerable" across every model tested.
+- **82%** — attack success via skill supply-chain poisoning (their Vector B),
+  the highest of any vector and "universally vulnerable" across every model
+  tested. The aggregate across all three vectors was 63%.
 - **0%** — attack success once sandbox isolation was enabled. It was the only
   built-in control that broke the infection loop.
 - **0%** — the share of 82 real, publicly indexed agent configurations that had
@@ -174,7 +175,7 @@ merely *discuss* prompt injection do not trip them.
 
 ```
 $ ./loop/replay.sh
-detected 7/7   clean 6/6   FN=0 FP=0
+detected 14/14   clean 13/13   FN=0 FP=0
 ```
 
 The benign corpus is deliberately adversarial: a threat-model document, a

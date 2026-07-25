@@ -260,6 +260,9 @@ def main(argv=None):
                     print(f"   {c['dim']}would chmod 0444{c['r']}  {f}")
             else:
                 print(f"   {c['ok']}✓ already read-only{c['r']}")
+            for f, _ in p["to_create"]:
+                print(f"   {c['dim']}would create 0444{c['r']}  {f} "
+                      f"{c['dim']}(absent — blocks creation){c['r']}")
             if p["already_hardened"]:
                 print(f"   {c['dim']}({len(p['already_hardened'])} already "
                       f"protected){c['r']}")
@@ -289,6 +292,10 @@ def main(argv=None):
                           f"{c['dim']}({err}){c['r']}")
         else:
             print(f"   {c['ok']}✓ nothing writable{c['r']}")
+        for p_, ok, err in res.get("created", []):
+            if ok:
+                print(f"   {c['ok']}created 0444{c['r']}  {p_} "
+                      f"{c['dim']}(was absent){c['r']}")
 
         print(f"\n{c['bold']}2. baseline{c['r']}")
         if res["baseline_ok"]:
@@ -371,15 +378,29 @@ def main(argv=None):
                   f"{done}{c['r']}\n")
             return 0
 
+        # A file that does not exist cannot be chmod'ed, and creating one is
+        # how config persistence actually lands. Offer to place inert,
+        # read-only placeholders unless we are undoing.
+        missing = [] if args.undo else harden.plan_precreate(root)
+
         if not args.apply:
             for p in targets:
                 print(f"  {c['dim']}{verb} {mode:04o}{c['r']}  {p}")
+            for p, _ in missing:
+                print(f"  {c['dim']}would create 0444{c['r']}  {p} "
+                      f"{c['dim']}(absent — blocks creation){c['r']}")
             print(f"\n  {c['dim']}dry run — pass --apply to act{c['r']}")
             print(f"  {c['dim']}a read-only config cannot be rewritten by the "
                   f"agent that reads it{c['r']}\n")
             return 0
 
         results = harden.apply(targets, mode)
+        for p, ok, err in harden.precreate(missing):
+            if ok:
+                print(f"  {c['ok']}created 0444{c['r']}  {p}")
+            elif err != "already exists":
+                print(f"  {c['high']}failed{c['r']}        {p} "
+                      f"{c['dim']}({err}){c['r']}")
         failed = [(p, e) for p, ok, e in results if not ok]
         for p, ok, err in results:
             if ok:

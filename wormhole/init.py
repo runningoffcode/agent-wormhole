@@ -36,6 +36,7 @@ def plan(root: Path, include_skills: bool = True) -> dict:
     return {
         "to_harden": harden_mod.plan(root, include_skills=include_skills),
         "already_hardened": harden_mod.hardened(root, include_skills=include_skills),
+        "to_create": harden_mod.plan_precreate(root),
     }
 
 
@@ -47,6 +48,9 @@ def apply(root: Path, include_skills: bool = True) -> dict:
     root = Path(root)
     targets = harden_mod.plan(root, include_skills=include_skills)
     results = harden_mod.apply(targets, harden_mod.READ_ONLY)
+    # Absent configs are the gap that hardening alone leaves open: Miasma
+    # created its persistence files rather than editing existing ones.
+    created = harden_mod.precreate(harden_mod.plan_precreate(root))
 
     # Baseline after hardening so the recorded hashes describe the protected
     # state. Baselining first would enshrine the pre-fix bytes as "known good".
@@ -59,6 +63,7 @@ def apply(root: Path, include_skills: bool = True) -> dict:
 
     return {
         "hardened": [(p, ok, err) for p, ok, err in results],
+        "created": [(p, ok, err) for p, ok, err in created],
         "baseline_ok": baseline_ok,
         "baseline_count": baseline_n,
     }

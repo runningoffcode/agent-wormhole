@@ -87,12 +87,25 @@ def verify(paths=None) -> list:
 
         if entry is None:
             findings.append(Finding(
-                rule_id="BASELINE-003", severity="medium",
+                rule_id="BASELINE-003", severity="high",
                 title="Agent config not in baseline",
-                detail="This file was not present when the baseline was taken.",
+                detail=(
+                    "This file was not present when the baseline was taken. An "
+                    "agent instruction file appearing on its own is how "
+                    "config-based persistence actually lands: Miasma (June "
+                    "2026) established itself in 73 Microsoft repositories by "
+                    "creating .claude/settings.json, .gemini/settings.json, "
+                    ".cursor/rules/setup.mdc and .vscode/tasks.json rather than "
+                    "editing anything that already existed. A file that never "
+                    "existed cannot be caught by a content diff, and cannot be "
+                    "protected by making existing files read-only."),
                 path=path_str,
-                remediation=("Confirm you created it, then re-run "
-                             "`wormhole baseline`.")))
+                remediation=(
+                    "If you did not create this file, treat it as hostile: read "
+                    "it before any agent loads it, and check whether it invokes "
+                    "a script on session start. If you did create it, re-run "
+                    "`wormhole baseline` to adopt it."),
+                references=["Miasma worm, June 2026 (config-file persistence)"]))
             continue
 
         if not p.is_file():

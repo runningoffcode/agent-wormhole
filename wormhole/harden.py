@@ -30,6 +30,28 @@ READ_ONLY = 0o444
 # default for a checked-out source file.
 RESTORED = 0o644
 
+# Config paths an agent loads but which frequently do not exist yet. These are
+# the ones that matter most: you cannot chmod a file that is absent, so an
+# attacker who CREATES one lands a payload that hardening never covered.
+#
+# This is not hypothetical. Miasma (June 2026, 73 Microsoft repositories) did
+# not edit existing configuration -- it created .claude/settings.json,
+# .gemini/settings.json, .cursor/rules/setup.mdc and .vscode/tasks.json, each
+# carrying a hook or task that runs a dropper on session start or folder open.
+# CVE-2026-25725 has the same shape: a Claude Code sandbox escape that worked
+# precisely because settings.json did not exist, so bubblewrap could not
+# read-only-bind it.
+#
+# Creating these empty and read-only closes the hole. An empty JSON object is
+# inert to every agent that reads it, and 0444 means the create fails.
+PRECREATE = (
+    (".claude/settings.json", "{}\n"),
+    (".gemini/settings.json", "{}\n"),
+    (".vscode/tasks.json", '{"version": "2.0.0", "tasks": []}\n'),
+    ("AGENTS.md", ""),
+    ("CLAUDE.md", ""),
+)
+
 
 def _writable(path: Path) -> bool:
     try:
@@ -55,6 +77,45 @@ def plan(root: Path, include_skills: bool = True) -> list:
                            if p.is_file() and _writable(p))
 
     return sorted(set(targets))
+
+
+def plan_precreate(root: Path) -> list:
+    """Config paths that do not exist yet and could be created by an attacker.
+
+    Returns (path, placeholder_content) pairs. Only paths whose parent
+    directory already exists, or is one the agent tooling owns, are offered --
+    creating .gemini/ inside a project that has never used Gemini is noise.
+    """
+    root = Path(root)
+    out = []
+    for rel, placeholder in PRECREATE:
+        p = root / rel
+        if p.exists():
+            continue
+        parent = p.parent
+        # Root-level files are always in scope. Files inside a tool directory
+        # only matter if that tool is actually in use here.
+        if parent == root or parent.is_dir():
+            out.append((p, placeholder))
+    return out
+
+
+def precreate(pairs) -> list:
+    """Create each missing path with inert content, then make it read-only."""
+    results = []
+    for p, placeholder in pairs:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            # Refuse to clobber anything that appeared since planning.
+            if p.exists():
+                results.append((p, False, "already exists"))
+                continue
+            p.write_text(placeholder, encoding="utf-8")
+            os.chmod(p, READ_ONLY)
+            results.append((p, True, None))
+        except OSError as exc:
+            results.append((p, False, str(exc)))
+    return results
 
 
 def hardened(root: Path, include_skills: bool = True) -> list:

@@ -9,7 +9,7 @@ from . import guard, harden, init
 from .baseline import record, verify, BASELINE_FILE
 from .rules.injection import scan_text
 from . import scoring
-from .scanners import autostart
+from .scanners import autostart, mcp_tools
 from .scanners.posture import (
     find_agent_configs, check_permissions, check_writable_configs,
     check_mcp_servers, check_skills,
@@ -527,12 +527,23 @@ def main(argv=None):
         print(f"\n{c['ok']}✓{c['r']} baselined {len(configs)} file(s) "
               f"({len(entries)} total tracked)")
         print(f"{c['dim']}  stored at {BASELINE_FILE}{c['r']}")
+
+        # Tool definitions never touch disk, so hashing files does not cover
+        # them. Record them alongside, in the same store.
+        tools = mcp_tools.record(root)
+        if tools:
+            print(f"{c['ok']}✓{c['r']} fingerprinted {len(tools)} MCP tool "
+                  f"definition(s)")
+            print(f"{c['dim']}  nothing in the MCP protocol signs these; a "
+                  f"server can change one after review{c['r']}")
+
         print(f"{c['dim']}  run `wormhole verify` to detect modification{c['r']}\n")
         return 0
 
     if args.cmd == "verify":
         configs = find_agent_configs(root)
         findings = verify([str(p) for p in configs] if configs else None)
+        findings.extend(mcp_tools.verify(root))
         if args.json:
             print(as_json(findings))
         else:

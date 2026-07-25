@@ -195,6 +195,24 @@ is the shape that actually propagated in the wild:
 `PreToolUse` is deliberately not treated as unattended — it fires because the
 agent is already acting, and it is how `guard` itself ships.
 
+**MCP tool integrity** — the one artifact here that never touches disk. A
+server answers `tools/list` at connect time and the name, description and
+schema it returns are injected into the model's context, where they read as
+instruction. Nothing in the protocol signs that answer and nothing requires a
+client to re-check it, so a server can be benign when you review it and
+different a week later with no file having changed.
+
+| | |
+|---|---|
+| `MCP-001` | A tool definition no longer matches what was recorded |
+| `MCP-002` | A tool that was not present when the baseline was taken |
+| `MCP-003` | A recorded tool is no longer declared |
+| `MCP-WORM-*` | The content rules, applied to a tool description |
+
+`wormhole baseline` fingerprints them alongside your config files; `verify`
+reports drift. Reformatted JSON is not a change — only the name, description
+and schema are hashed.
+
 **Posture** — what a payload could accomplish if it arrived: unrestricted shell
 (`POSTURE-001`), network egress (`-002`), missing deny rules (`-003`), writable
 configs (`-004`), remote MCP servers (`-005`), installed skills (`-006`).

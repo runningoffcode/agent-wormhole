@@ -284,6 +284,36 @@ running `git fetch`, and this project's own guard hook.
 
 Verified additionally against 7 real projects: 0 findings.
 
+## When the agent holds a wallet
+
+Everything above costs you a revert. Change one variable and it stops being
+recoverable: an agent that reads instructions from a file it does not control,
+and can also sign transactions.
+
+[`x402-guard`](x402-guard/) is the same idea applied to a payment. Every
+transaction-security product answers *what will this transaction do* —
+simulation, asset diffs, address reputation. None of it helps here, because a
+payment to an attacker's address simulates perfectly. Correct balances, no
+revert, clean verdict. The transaction is valid; it is simply not the one that
+was asked for.
+
+```bash
+npm install x402-guard
+```
+
+```ts
+import { guardSigner } from "x402-guard";
+const wallet = guardSigner(myWallet, () => currentQuote);
+// Signing throws unless the transaction matches the server's 402 response.
+```
+
+The constraint that makes it work: **intent is never something the agent
+states.** If it were a field the model filled in, a compromised model would
+fill in both sides and validate its own forgery. In x402 the recipient, amount
+and mint arrive as structured JSON in the HTTP 402 response, before the
+transaction exists, on a channel separate from the model's context. The
+comparison is then pure offline arithmetic — ~1ms, no RPC.
+
 ## No warranty
 
 Apache 2.0, and the liability terms are worth reading rather than assuming:

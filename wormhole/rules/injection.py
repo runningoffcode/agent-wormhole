@@ -45,8 +45,16 @@ SELF_REFERENCE = re.compile(
     r"section|file|skill|config(?:uration)?|content)s?\b"
     r"|\bthe (?:above|preceding|following) (?:instructions?|prompt|text)\b"
     r"|\bthese instructions\b"
-    # "re-add this X to Y if missing" — self-restoration, a persistence tell
-    r"|\bre-?(?:add|insert|write|create)\b",
+    # "re-add this section to Y if missing" — self-restoration, a persistence
+    # tell. The restored object must itself be self-referential: ordinary docs
+    # legitimately say "re-add it to the Makefile if a rebase drops it", and
+    # treating the bare verb as self-reference made that a critical finding.
+    r"|\bre-?(?:add|insert|write|create)\s+(?:it\s+)?"
+    r"(?:this|these|the\s+(?:above|preceding|following))\s+"
+    r"(?:entire\s+|whole\s+|full\s+)?"
+    r"(?:[A-Z][\w-]*\s+){0,3}"
+    r"(?:prompt|instruction|message|paragraph|block|text|rule|rules|"
+    r"section|file|skill|config(?:uration)?|content)s?\b",
     re.IGNORECASE,
 )
 

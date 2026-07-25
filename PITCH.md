@@ -106,11 +106,23 @@ Not the regexes — those are copyable in an afternoon. The moat, in order:
 
 ## Honest objections, and the answers
 
-**"Has this actually happened?"** Not at scale in the wild, publicly. Say so —
-credibility is the entire asset here. Then: the preconditions are all present
-today (writable configs, broad permissions, agents reading untrusted content),
-and the posture findings are real regardless of whether a worm ever ships. You
-are selling the audit, which is useful now.
+**"Has this actually happened?"** Yes, and you should lead with it. In June
+2026 the Miasma worm self-propagated through GitHub and disabled 73 Microsoft
+repositories across Azure, Azure-Samples and MicrosoftDocs. It persisted by
+writing `.claude/settings.json` and `.gemini/settings.json` SessionStart hooks,
+a `.cursor/rules/setup.mdc` always-apply rule, and a `.vscode/tasks.json`
+folderOpen task — all pointing at one dropper. It targeted 15 AI coding agents,
+and the persistence survives `npm uninstall` and survives reinstalling the
+agent, because the settings file outlives both.
+
+Be precise about what is and is not established. Miasma is a confirmed
+in-the-wild worm that used agent config files for persistence and propagation.
+The *fully autonomous* self-replication described in the AgentWorm paper — a
+payload rewriting itself into peers' configs with no package manager involved —
+remains demonstrated in a lab, not observed in the wild. Claiming otherwise
+loses the only audience that matters. The distinction is also not load-bearing:
+the mechanism is the same file, and Miasma proves attackers are already using
+it.
 
 **"Can't the model just refuse?"** Sometimes. But the config file is loaded as
 *system* instructions, not as untrusted input — that framing is the whole

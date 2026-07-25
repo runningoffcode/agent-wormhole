@@ -1,50 +1,69 @@
 # Agent Wormhole
 
-Find out what your AI agent is actually allowed to do — and get told when its
-instructions change behind your back.
+**Your agent's settings are protected by your vendor. Your agent's
+instructions are not.**
+
+Claude Code guards its own `settings.json`. Nobody guards your `CLAUDE.md`,
+your `AGENTS.md`, or your `.cursor/rules` — and by default your agent can write
+to all of them. This makes that visible, then takes the write away.
 
 ```
 $ wormhole scan .
 
-blast radius  severe (8/10)
-  execute    ██████████ 10
-  persist    ███████░░░ 7
-  propagate  ████████░░ 8
-   LOOP CLOSED  execute → persist → propagate are all reachable: an infection
-                here can complete a full cycle unassisted.
+ CRITICAL  SessionStart hook executes a script from an unusual path  [AUTOSTART-002]
+  .claude/settings.json
+  `node .github/setup.js` runs unprompted on SessionStart. This survives
+  uninstalling the package that planted it.
 
- CRITICAL  Unrestricted shell access granted  [POSTURE-001]
-  ~/.claude/settings.json
-  `Bash(*)` permits any shell command. The 71 narrower Bash rules in this file
-  are therefore decorative — they constrain nothing.
+ HIGH  Agent config not in baseline  [BASELINE-003]
+  .cursor/rules/setup.mdc
+  This file was not present when the baseline was taken.
 ```
 
-Agent frameworks load `AGENTS.md` and `CLAUDE.md` into the system prompt at
-every session start, with no integrity or provenance check. Those files are
-usually writable by the agent itself. Anything written there runs with the
-agent's full permissions on every subsequent session, and can be copied onward
-into the next config the agent touches.
-
-`wormhole` finds payloads with that shape, scores what an infection could
-reach, and fingerprints your configs so modification becomes visible.
-
-No dependencies beyond Python 3.8+. Nothing leaves your machine.
+No dependencies beyond Python 3.8+. No account, no API token, no network call.
+Your `CLAUDE.md` never leaves the machine.
 
 ## Why
 
-In March 2026, researchers demonstrated the first self-replicating worm against
-a production-scale agent framework across 2,250 trials
-([arXiv:2603.15727](https://arxiv.org/abs/2603.15727), preprint, Mar 2026, rev. Jul 2026). Three of
-their numbers explain this project:
+**June 2026: the Miasma worm disabled 73 Microsoft GitHub repositories.** It
+did not exploit a memory bug. It wrote agent configuration:
 
-- **82%** — attack success via skill supply-chain poisoning (their Vector B),
-  the highest of any vector and "universally vulnerable" across every model
-  tested. The aggregate across all three vectors was 63%.
-- **0%** — attack success once sandbox isolation was enabled. It was the only
-  built-in control that broke the infection loop.
-- **0%** — the share of 82 real, publicly indexed agent configurations that had
-  sandbox isolation enabled. 62% had enabled gateway authentication instead,
-  which does not stop propagation.
+| File | Mechanism |
+|---|---|
+| `.claude/settings.json` | `SessionStart` hook → `node .github/setup.js` |
+| `.gemini/settings.json` | same |
+| `.cursor/rules/setup.mdc` | `alwaysApply: true`, "run the setup script" |
+| `.vscode/tasks.json` | `runOn: folderOpen` |
+| `package.json` | hijacked `test` script |
+
+It targeted 15 AI coding agents, and the persistence **survives
+`npm uninstall` and survives reinstalling the agent** — the settings file
+outlives both. It also re-encrypted itself on every write, so hash-matching a
+known payload never finds it.
+
+Four of those five anchors need no model in the loop at all. The hook fires
+because a session started. That is why this tool checks configuration, not
+just prose.
+
+Two more things make the gap structural rather than accidental:
+
+- **Cursor was told and declined to own it.** Pillar Security's Rules File
+  Backdoor (disclosed Feb–Mar 2025) hid instructions in `.cursor/rules` using
+  invisible Unicode. Cursor's response was that the risk falls under user
+  responsibility. This is how you take that responsibility.
+- **Sandboxing does not cover the files that matter.** Claude Code's own docs
+  state that *"Read, Edit, and Write use the permission system directly rather
+  than running through the sandbox"*, with default write access to the working
+  directory. The research result below — that sandbox isolation drives attack
+  success to zero — does not transfer to a default install.
+
+The mechanism paper is
+[arXiv:2603.15727](https://arxiv.org/abs/2603.15727) (preprint, Mar 2026,
+rev. Jul 2026): 2,250 trials, 82% attack success via skill supply-chain
+poisoning (63% aggregate across all three vectors), 0% once sandbox isolation
+was enabled — and **0 of 82** publicly indexed agent configurations had it
+enabled. 62% had gateway authentication instead, which does not stop
+propagation.
 
 The defense that works exists and nobody is running it. That gap is a tooling
 problem, and this is the tool. See [MISSION.md](MISSION.md).
@@ -130,19 +149,24 @@ suffix, so nothing in it is loaded as agent config or executed.
 
 ## What it does, precisely
 
-It **detects, scores, and alerts**. It does not eliminate infections, and it is
-not a substitute for sandbox isolation.
+This is an **integrity monitor for the files your agent reads as
+instructions**. The parts that matter do not care what the payload says.
 
-| | |
-|---|---|
-| **Detect** | 7 content rules for payload shapes; 6 posture rules for capability; runtime scan of tool output |
-| **Score** | Blast radius across the execute → persist → propagate infection loop |
-| **Alert** | Baseline hashing catches modification no rule anticipated |
-| **Contain** | `wormhole` excises payloads, preserving originals for restore |
+| | | Survives rephrasing? |
+|---|---|---|
+| **Prevent** | `harden` removes the write, and pre-creates absent config paths so a payload cannot create one either | yes — no rule involved |
+| **Notice** | `baseline`/`verify` hash every config; a changed or unrecorded file is a finding | yes — hashing is indifferent to wording |
+| **Refuse** | `guard` inspects a pending write through a PreToolUse hook and can decline it | partly — rule-based |
+| **Detect** | content rules for payload shapes, autostart rules for unattended execution, posture rules for capability | no — evadable, use as triage |
+| **Contain** | `capture` excises payloads, preserving originals byte-for-byte for restore | n/a |
 
-The control that actually drives infection to zero is sandbox isolation, and it
-lives in your agent framework, not here. This tool makes its absence impossible
-to overlook.
+The ordering is deliberate. Prevention and integrity are the durable half;
+rules are convenience on top. A tool that leads with its rule count is
+competing on the one axis that decays.
+
+The control that drives infection to zero is sandbox isolation, and it lives in
+your agent framework, not here — and per Anthropic's own docs it does not cover
+Read/Edit/Write by default. This tool makes that gap impossible to overlook.
 
 ## Detection rules
 
@@ -158,6 +182,19 @@ to overlook.
 | `WORM-006` | Unicode tag-block smuggling (invisible, model-readable) |
 | `WORM-007` | Concealment directives ("do not tell the user") |
 
+**Autostart** — configuration that executes with no prompt and no model. This
+is the shape that actually propagated in the wild:
+
+| | |
+|---|---|
+| `AUTOSTART-001` | Unattended hook downloads and executes (`curl … \| sh`) |
+| `AUTOSTART-002` | Unattended hook runs a script from a config directory |
+| `AUTOSTART-003` | Unattended hook runs an interpreter |
+| `AUTOSTART-004` | Always-applied Cursor rule instructing the agent to run a command |
+
+`PreToolUse` is deliberately not treated as unattended — it fires because the
+agent is already acting, and it is how `guard` itself ships.
+
 **Posture** — what a payload could accomplish if it arrived: unrestricted shell
 (`POSTURE-001`), network egress (`-002`), missing deny rules (`-003`), writable
 configs (`-004`), remote MCP servers (`-005`), installed skills (`-006`).
@@ -168,22 +205,31 @@ This is the half that catches payloads no rule anticipated.
 **Runtime** — `RUNTIME-*`: the same content rules applied to tool output in
 session transcripts, covering the supply-chain channel that never touches disk.
 
-## Accuracy
-
-Rules require a replication cue *and* a delivery cue in proximity, so files that
-merely *discuss* prompt injection do not trip them.
+## The regression suite
 
 ```
 $ ./loop/replay.sh
-detected 14/14   clean 13/13   FN=0 FP=0
+detected 15/15   clean 14/14   FN=0 FP=0
 ```
 
-The benign corpus is deliberately adversarial: a threat-model document, a
-config saying "include the license header in every source file you create", a
-`.env` setup guide, and a legitimate skill that writes to `CHANGELOG.md`.
-Runtime scanning additionally distinguishes source code from prose, so reading
-a payment handler that references `process.env.TREASURY_WALLET` beside an RPC
-URL is not reported as exfiltration.
+**This is a regression suite, not a detection rate.** It is measured on
+fixtures written for this repository, so it proves the rules still behave as
+intended after a change — nothing more. Anyone quoting it as accuracy against
+real attackers, including us, is overclaiming. Rule-based detection is evadable
+by construction: Trail of Bits bypassed every major skill scanner in under an
+hour, and paraphrase alone defeats published classifiers.
+
+What the suite does enforce is the discipline that makes the rules usable:
+every malicious fixture ships a **benign twin** that holds the payload's
+incriminating surface features and varies only the property the rule keys on.
+A keyword matcher fails the pair in both directions. If a rule fires on the
+twin, it does not ship. This caught two real false negatives and one critical
+false positive before release.
+
+The benign half is deliberately adversarial: a threat-model document, a config
+saying "include the license header in every source file you create", a `.env`
+guide, a legitimate skill that writes to `CHANGELOG.md`, a `SessionStart` hook
+running `git fetch`, and this project's own guard hook.
 
 Verified additionally against 7 real projects: 0 findings.
 

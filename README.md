@@ -51,20 +51,35 @@ problem, and this is the tool. See [MISSION.md](MISSION.md).
 ## Install
 
 ```bash
+pipx install agentwormhole
+wormhole scan ~/your-project --blast-radius
+```
+
+The distribution is `agentwormhole`; `agent-wormhole` on PyPI is an unrelated
+project. The command and the import package are both `wormhole`.
+
+Standard library only, so it also runs straight from a checkout with no install
+step at all:
+
+```bash
 git clone https://github.com/runningoffcode/agent-wormhole
 cd agent-wormhole
 python3 -m wormhole scan ~/your-project --blast-radius
 ```
 
-Standard library only — it runs from a checkout with no install step. To put
-`wormhole` on your PATH:
+## Use
+
+Prevention — these run before a payload lands:
 
 ```bash
-pip install -e .
-wormhole scan ~/your-project
+wormhole guard --install                 # print the PreToolUse hook block
+wormhole guard --install --block         # ... refusing WORM-001/003 outright
+wormhole harden ~/project                # preview making configs read-only
+wormhole harden ~/project --apply        # drop the write bit
+wormhole harden ~/project --undo --apply # restore write permission
 ```
 
-## Use
+Detection and containment — these run after:
 
 ```bash
 wormhole scan ~/project --blast-radius   # payloads, posture, blast radius
@@ -77,6 +92,11 @@ wormhole captured                        # list what has been contained
 wormhole restore <id>                    # pull one back out, byte-for-byte
 wormhole insights                        # what the capture history reveals
 ```
+
+`guard` warns by default. Block mode refuses only WORM-001 and WORM-003 — the
+two rules with an unambiguous structural signature and no corpus false
+positives — because a rule defect in a blocking tool stops legitimate work
+rather than printing noise.
 
 `scan` and `watch` exit nonzero at or above `--fail-on` (default `high`), so
 they drop into CI as-is.

@@ -3,27 +3,49 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-wormhole"
+# `agent-wormhole` on PyPI belongs to an unrelated project. The distribution
+# is `agentwormhole`; the import package and the console script both stay
+# `wormhole`, so nothing the operator types changes.
+name = "agentwormhole"
 version = "0.1.0"
 description = "Detect self-replicating prompt payloads and permission overreach in AI agent configurations"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
-keywords = ["ai-security", "prompt-injection", "llm-agents", "agent-security", "supply-chain"]
+authors = [{ name = "JuicyD3v" }]
+keywords = [
+  "ai-security",
+  "prompt-injection",
+  "llm-agents",
+  "agent-security",
+  "supply-chain",
+  "claude-code",
+  "mcp",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Intended Audience :: System Administrators",
   "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Topic :: Security",
+  "Topic :: Software Development :: Quality Assurance",
+  "Typing :: Typed",
 ]
 dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/runningoffcode/agent-wormhole"
+Repository = "https://github.com/runningoffcode/agent-wormhole"
 Issues = "https://github.com/runningoffcode/agent-wormhole/issues"
+Changelog = "https://github.com/runningoffcode/agent-wormhole/releases"
 
 [project.scripts]
 wormhole = "wormhole.cli:main"

@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import guard, harden
+from . import guard, harden, init
 from .baseline import record, verify, BASELINE_FILE
 from .rules.injection import scan_text
 from . import scoring
@@ -167,6 +167,18 @@ def main(argv=None):
     ins.add_argument("--json", action="store_true")
     ins.add_argument("--no-color", action="store_true")
 
+    ini = sub.add_parser("init",
+                         help="harden configs, record a baseline, and print "
+                              "the guard hook — the whole prevention posture")
+    ini.add_argument("path", nargs="?", default=".")
+    ini.add_argument("--apply", action="store_true",
+                     help="actually make the changes (default: dry run)")
+    ini.add_argument("--block", action="store_true",
+                     help="print the guard hook in block mode")
+    ini.add_argument("--no-skills", action="store_true",
+                     help="leave ~/.claude/skills alone")
+    ini.add_argument("--no-color", action="store_true")
+
     g = sub.add_parser("guard",
                        help="inspect writes to agent configs before they land")
     g.add_argument("--hook", action="store_true",
@@ -227,6 +239,78 @@ def main(argv=None):
             return 0
         threshold = {"critical": 0, "high": 1, "medium": 2, "low": 3}[args.fail_on]
         return 1 if any(f.severity_rank <= threshold for f in findings) else 0
+
+    if args.cmd == "init":
+        skills = not args.no_skills
+        hook_cmd = "python3 -m wormhole guard --hook"
+        if args.block:
+            hook_cmd += " --block"
+        hook = {"hooks": {"PreToolUse": [{
+            "matcher": "Write|Edit|MultiEdit",
+            "hooks": [{"type": "command", "command": hook_cmd}]}]}}
+
+        print(f"\n{c['bold']}wormhole init{c['r']} {c['dim']}— {root}{c['r']}")
+
+        if not args.apply:
+            p = init.plan(root, include_skills=skills)
+            print(f"\n{c['bold']}1. harden{c['r']} "
+                  f"{c['dim']}— remove the write a payload needs{c['r']}")
+            if p["to_harden"]:
+                for f in p["to_harden"]:
+                    print(f"   {c['dim']}would chmod 0444{c['r']}  {f}")
+            else:
+                print(f"   {c['ok']}✓ already read-only{c['r']}")
+            if p["already_hardened"]:
+                print(f"   {c['dim']}({len(p['already_hardened'])} already "
+                      f"protected){c['r']}")
+
+            print(f"\n{c['bold']}2. baseline{c['r']} "
+                  f"{c['dim']}— catch payloads no rule anticipated{c['r']}")
+            print(f"   {c['dim']}would hash "
+                  f"{len(find_agent_configs(root))} config file(s){c['r']}")
+
+            print(f"\n{c['bold']}3. guard{c['r']} "
+                  f"{c['dim']}— refuse the write as it happens{c['r']}")
+            print(f"   {c['dim']}would print a hook block for "
+                  f"~/.claude/settings.json{c['r']}")
+
+            print(f"\n  {c['dim']}dry run — pass --apply to act{c['r']}\n")
+            return 0
+
+        res = init.apply(root, include_skills=skills)
+
+        print(f"\n{c['bold']}1. harden{c['r']}")
+        if res["hardened"]:
+            for p_, ok, err in res["hardened"]:
+                if ok:
+                    print(f"   {c['ok']}chmod 0444{c['r']}  {p_}")
+                else:
+                    print(f"   {c['high']}failed{c['r']}      {p_} "
+                          f"{c['dim']}({err}){c['r']}")
+        else:
+            print(f"   {c['ok']}✓ nothing writable{c['r']}")
+
+        print(f"\n{c['bold']}2. baseline{c['r']}")
+        if res["baseline_ok"]:
+            print(f"   {c['ok']}recorded{c['r']} {res['baseline_count']} "
+                  f"file(s) {c['dim']}— stored outside the scanned tree{c['r']}")
+        else:
+            print(f"   {c['high']}failed{c['r']} {c['dim']}"
+                  f"({res['baseline_count']}){c['r']}")
+
+        print(f"\n{c['bold']}3. guard{c['r']} {c['dim']}— add this to "
+              f"~/.claude/settings.json:{c['r']}\n")
+        for line in json.dumps(hook, indent=2).splitlines():
+            print(f"   {line}")
+        print(f"\n   {c['dim']}Not written for you: a security tool that "
+              f"edits the file it audits{c['r']}")
+        print(f"   {c['dim']}has become the thing it warns about.{c['r']}")
+
+        print(f"\n{c['dim']}Undo hardening: wormhole harden {args.path} "
+              f"--undo --apply{c['r']}")
+        print(f"{c['dim']}Check for drift:  wormhole verify {args.path}"
+              f"{c['r']}\n")
+        return 0
 
     if args.cmd == "guard":
         if args.hook:

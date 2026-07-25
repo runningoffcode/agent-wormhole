@@ -1,10 +1,10 @@
-# quarantine
+# Agent Wormhole
 
 Find out what your AI agent is actually allowed to do — and get told when its
 instructions change behind your back.
 
 ```
-$ quarantine scan .
+$ wormhole scan .
 
 blast radius  severe (8/10)
   execute    ██████████ 10
@@ -25,7 +25,7 @@ usually writable by the agent itself. Anything written there runs with the
 agent's full permissions on every subsequent session, and can be copied onward
 into the next config the agent touches.
 
-`quarantine` finds payloads with that shape, scores what an infection could
+`wormhole` finds payloads with that shape, scores what an infection could
 reach, and fingerprints your configs so modification becomes visible.
 
 No dependencies beyond Python 3.8+. Nothing leaves your machine.
@@ -48,15 +48,34 @@ their numbers explain this project:
 The defense that works exists and nobody is running it. That gap is a tooling
 problem, and this is the tool. See [MISSION.md](MISSION.md).
 
+## Install
+
+```bash
+git clone https://github.com/runningoffcode/agent-wormhole
+cd agent-wormhole
+python3 -m wormhole scan ~/your-project --blast-radius
+```
+
+Standard library only — it runs from a checkout with no install step. To put
+`wormhole` on your PATH:
+
+```bash
+pip install -e .
+wormhole scan ~/your-project
+```
+
 ## Use
 
 ```bash
-quarantine scan ~/project --blast-radius   # payloads, posture, blast radius
-quarantine baseline ~/project              # fingerprint configs
-quarantine verify ~/project                # detect modification
-quarantine watch --limit 20                # injection attempts in tool output
-quarantine wormhole ~/project              # preview capture (dry run)
-quarantine wormhole ~/project --apply      # capture, preserving originals
+wormhole scan ~/project --blast-radius   # payloads, posture, blast radius
+wormhole baseline ~/project              # fingerprint configs
+wormhole verify ~/project                # detect modification
+wormhole watch --limit 20                # injection attempts in tool output
+wormhole capture ~/project               # preview capture (dry run)
+wormhole capture ~/project --apply       # capture, preserving originals
+wormhole captured                        # list what has been contained
+wormhole restore <id>                    # pull one back out, byte-for-byte
+wormhole insights                        # what the capture history reveals
 ```
 
 `scan` and `watch` exit nonzero at or above `--fail-on` (default `high`), so
@@ -67,10 +86,10 @@ they drop into CI as-is.
 Captured payloads go into the Wormhole rather than the bin.
 
 ```bash
-quarantine wormhole ~/project --apply   # excise payloads, keep originals
-quarantine wormhole-list                # what has been captured
-quarantine wormhole-restore <id>        # pull one back out (false positive)
-quarantine wormhole-export ./samples    # inert fixtures for rule development
+wormhole capture ~/project --apply   # excise payloads, keep originals
+wormhole captured                # what has been captured
+wormhole restore <id>        # pull one back out (false positive)
+wormhole export ./samples    # inert fixtures for rule development
 ```
 
 Deleting a payload destroys the evidence needed to answer the only questions
@@ -161,7 +180,7 @@ Permission analysis currently understands Claude Code's `settings.json` best.
 loop/install-cron.sh          # every 6h; --remove to uninstall
 ```
 
-Silent when nothing changed; logs to `~/.quarantine/logs/` and raises a
+Silent when nothing changed; logs to `~/.wormhole/logs/` and raises a
 notification when a tracked config is modified or a payload appears.
 [loop/RESEARCH.md](loop/RESEARCH.md) documents how new rules get added without
 eroding the false-positive rate.
@@ -169,7 +188,7 @@ eroding the false-positive rate.
 ## CI
 
 ```yaml
-- uses: runningoffcode/quarantine@v1
+- uses: runningoffcode/agent-wormhole@v1
   with:
     fail-on: high
 ```
@@ -183,10 +202,10 @@ injection target.
 ```json
 {
   "mcpServers": {
-    "quarantine": {
+    "wormhole": {
       "command": "python3",
-      "args": ["-m", "quarantine.mcp_server"],
-      "cwd": "/path/to/quarantine"
+      "args": ["-m", "wormhole.mcp_server"],
+      "cwd": "/path/to/agent-wormhole"
     }
   }
 }

@@ -9,6 +9,7 @@ from . import guard, harden, init
 from .baseline import record, verify, BASELINE_FILE
 from .rules.injection import scan_text
 from . import scoring
+from .scanners import autostart
 from .scanners.posture import (
     find_agent_configs, check_permissions, check_writable_configs,
     check_mcp_servers, check_skills,
@@ -39,6 +40,11 @@ def gather(root: Path, include_global: bool = True) -> list:
         findings.extend(scan_text(text, path=str(cfg)))
 
     findings.extend(check_writable_configs(configs))
+
+    # Persistence that fires on its own, with no prompt and no model. This is
+    # the shape that actually propagated in the wild, and no content rule sees
+    # it -- nothing is being injected, the framework is obeying its config.
+    findings.extend(autostart.scan(root))
 
     if include_global:
         home = Path.home()

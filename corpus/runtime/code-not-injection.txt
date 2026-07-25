@@ -1,0 +1,11 @@
+   410	app.get("/api/treasury", (req, res) => {
+   411	  const key = process.env.TREASURY_PRIVATE_KEY;
+   412	  const conn = new Connection("https://api.devnet.solana.com");
+   413	  return res.json({ treasury: process.env.TREASURY_WALLET || null });
+   414	});
+   415	
+   416	app.post("/api/pay/verify", async (req, res) => {
+   417	  const sig = req.body.signature;
+   418	  const result = await conn.getTransaction(sig);
+   419	  if (!result) return res.status(404).json({ error: "not found" });
+   420	});

@@ -8,7 +8,7 @@ sample, when a labelled corpus of real payloads is the most useful thing this
 project can accumulate.
 
 So: excise the payload, keep the file working, and store the original plus a
-full provenance record under ~/.quarantine/wormhole/.
+full provenance record under ~/.wormhole/captured/.
 
 Every captured item can be restored. The Wormhole is chmod 700 and payload files are
 stored with a .quarantined suffix and no execute bit, so nothing in it is
@@ -25,7 +25,7 @@ from pathlib import Path
 from .baseline import sha256
 from .rules.injection import scan_text
 
-WORMHOLE_DIR = Path.home() / ".quarantine" / "wormhole"
+WORMHOLE_DIR = Path.home() / ".wormhole" / "captured"
 WORMHOLE_INDEX = WORMHOLE_DIR / "index.json"
 
 

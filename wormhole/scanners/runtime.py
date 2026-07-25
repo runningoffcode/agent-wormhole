@@ -186,7 +186,7 @@ def to_findings(hits: list) -> list:
                 "Identify which tool or skill produced this output and review "
                 "its provenance. If it is an MCP server or marketplace skill, "
                 "treat it as compromised until shown otherwise. Then run "
-                "`quarantine verify` to confirm no config was written."),
+                "`wormhole verify` to confirm no config was written."),
             references=["arXiv:2603.15727 (Vector B: 82% ASR)"],
         ))
     return out

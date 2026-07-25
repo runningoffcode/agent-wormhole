@@ -3,7 +3,7 @@
 ## The one-line version
 
 > Your AI agent reads a config file on every start. If something writes to that
-> file, your agent runs it — and writes it to the next one. `quarantine` tells
+> file, your agent runs it — and writes it to the next one. `wormhole` tells
 > you when that file changes.
 
 ## Why this lands (and what to avoid)
@@ -21,7 +21,7 @@ matters — it belongs in paragraph two, not the subject line.
 Run the scanner on the prospect's own machine, live:
 
 ```
-$ quarantine scan .
+$ wormhole scan .
 
  CRITICAL  Unrestricted shell access granted  [POSTURE-001]
   ~/.claude/settings.json
@@ -38,8 +38,8 @@ tool feel like a colleague rather than a vendor.
 Then the second beat:
 
 ```
-$ quarantine baseline .   # take a fingerprint
-$ quarantine verify .
+$ wormhole baseline .   # take a fingerprint
+$ wormhole verify .
 
  HIGH  Agent config modified since baseline  [BASELINE-001]
 ```
@@ -57,7 +57,7 @@ never be asked to. They are how it becomes standard.
 
 **2. Teams running agents in CI — the first real buyers.**
 Pitch: "a poisoned AGENTS.md in a PR is an agent instruction with commit
-access." `quarantine scan --fail-on high` in a pipeline is a two-line diff and
+access." `wormhole scan --fail-on high` in a pipeline is a two-line diff and
 an obvious control. This is where the money starts, because it is a budget line
 that already exists (SAST/secret scanning) and a familiar shape.
 

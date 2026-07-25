@@ -1,6 +1,6 @@
-name: 'quarantine'
+name: 'Agent Wormhole'
 description: 'Detect self-replicating prompt payloads and agent permission overreach in AI agent configs'
-author: 'quarantine'
+author: 'runningoffcode'
 branding:
   icon: 'shield'
   color: 'red'
@@ -31,13 +31,13 @@ runs:
       with:
         python-version: '3.11'
 
-    - name: Run quarantine
+    - name: Run Agent Wormhole
       shell: bash
       run: |
         ARGS="${{ inputs.path }} --fail-on ${{ inputs.fail-on }} --no-color"
         [ "${{ inputs.local-only }}" = "true" ] && ARGS="$ARGS --local-only"
         [ "${{ inputs.blast-radius }}" = "true" ] && ARGS="$ARGS --blast-radius"
-        python3 -m quarantine scan $ARGS | tee "$RUNNER_TEMP/quarantine.txt"
+        python3 -m wormhole scan $ARGS | tee "$RUNNER_TEMP/wormhole.txt"
       working-directory: ${{ github.action_path }}
 
     - name: Summary
@@ -45,8 +45,8 @@ runs:
       shell: bash
       run: |
         {
-          echo "## quarantine"
+          echo "## Agent Wormhole"
           echo '```'
-          cat "$RUNNER_TEMP/quarantine.txt" 2>/dev/null || echo "no output"
+          cat "$RUNNER_TEMP/wormhole.txt" 2>/dev/null || echo "no output"
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"

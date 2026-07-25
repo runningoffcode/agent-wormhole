@@ -7,7 +7,7 @@
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MARK="# quarantine-audit"
+MARK="# agent-wormhole-audit"
 SCHED="${1:-0 */6 * * *}"
 
 if [ "${1:-}" = "--remove" ]; then
@@ -20,8 +20,8 @@ LINE="$SCHED $ROOT/loop/audit.sh >/dev/null 2>&1 $MARK"
 { crontab -l 2>/dev/null | grep -vF "$MARK"; echo "$LINE"; } | crontab -
 
 echo "installed: $SCHED"
-echo "  logs:   ~/.quarantine/logs/"
+echo "  logs:   ~/.wormhole/logs/"
 echo "  remove: ./loop/install-cron.sh --remove"
 echo
 echo "Take a baseline first if you have not:"
-echo "  python3 -m quarantine baseline ~/your-project"
+echo "  python3 -m wormhole baseline ~/your-project"

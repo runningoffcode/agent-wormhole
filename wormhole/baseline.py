@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .rules.injection import Finding
 
-BASELINE_DIR = Path.home() / ".quarantine"
+BASELINE_DIR = Path.home() / ".wormhole"
 BASELINE_FILE = BASELINE_DIR / "baseline.json"
 
 
@@ -77,7 +77,7 @@ def verify(paths=None) -> list:
             title="No baseline recorded",
             detail=("Nothing to verify against. A baseline is what lets you "
                     "detect a payload whose wording no rule anticipates."),
-            remediation="Run: quarantine baseline")]
+            remediation="Run: wormhole baseline")]
 
     targets = {str(Path(p).resolve()) for p in paths} if paths else set(stored)
 
@@ -92,7 +92,7 @@ def verify(paths=None) -> list:
                 detail="This file was not present when the baseline was taken.",
                 path=path_str,
                 remediation=("Confirm you created it, then re-run "
-                             "`quarantine baseline`.")))
+                             "`wormhole baseline`.")))
             continue
 
         if not p.is_file():

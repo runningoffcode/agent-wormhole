@@ -10,8 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from quarantine.wormhole import excise, excise_until_clean
-from quarantine.rules.injection import scan_text
+from wormhole.capture import excise, excise_until_clean
+from wormhole.rules.injection import scan_text
 
 
 class TestExcise(unittest.TestCase):

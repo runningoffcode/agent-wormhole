@@ -43,7 +43,7 @@ try to out-regex an LLM.
 
 1. **Cross-agent propagation.** Current rules scan files at rest. A payload
    that lives only in tool output (MCP response, fetched web page) never
-   touches disk. Worth a `quarantine watch` mode over agent logs?
+   touches disk. Worth a `wormhole watch` mode over agent logs?
 2. **Semantic detection.** A classifier catches paraphrase that regex misses,
    but adds a model dependency and a false-positive surface. Probably a paid
    fleet-tier feature, not core.

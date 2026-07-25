@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Agent Wormhole">
+  <title>Agent Wormhole</title>
+  <defs>
+    <!-- Accretion disc: bright at the throat, falling off outward. -->
+    <radialGradient id="wh-throat" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="currentColor" stop-opacity="1"/>
+      <stop offset="40%"  stop-color="currentColor" stop-opacity=".5"/>
+      <stop offset="100%" stop-color="currentColor" stop-opacity="0"/>
+    </radialGradient>
+    <!-- The worm fades as it is drawn in — it does not come back out. -->
+    <linearGradient id="wh-body" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%"   stop-color="currentColor" stop-opacity=".15"/>
+      <stop offset="50%"  stop-color="currentColor" stop-opacity=".72"/>
+      <stop offset="100%" stop-color="currentColor" stop-opacity="1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Containment boundary. The worm stays inside it, so the mark keeps a
+       circular silhouette and sits correctly in an avatar crop. -->
+  <circle cx="32" cy="32" r="26" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".2"/>
+
+  <!-- Disc seen near-edge-on: two flattened rings read as depth. -->
+  <ellipse cx="32" cy="32" rx="21" ry="8" fill="none" stroke="currentColor" stroke-width="1.6" opacity=".34"/>
+  <ellipse cx="32" cy="32" rx="13.5" ry="5" fill="none" stroke="currentColor" stroke-width="1.6" opacity=".58"/>
+
+  <!-- The worm: enters lower-left, spirals in along the disc plane. -->
+  <path d="M11.5 45 C 17 44, 21.5 40.5, 24.5 37 C 27.5 33.5, 29.5 31, 32 32"
+        fill="none" stroke="url(#wh-body)" stroke-width="3.6" stroke-linecap="round"/>
+  <!-- Segmentation: what makes it read as a worm rather than a comet tail. -->
+  <g stroke="currentColor" stroke-width="1.15" stroke-linecap="round" opacity=".85">
+    <path d="M15.6 44.6 l1.5 2.4"/>
+    <path d="M20.2 42 l1.6 2.3"/>
+    <path d="M24.4 38.2 l1.9 2"/>
+  </g>
+
+  <!-- Throat, drawn last so the worm passes behind the glow. -->
+  <circle cx="32" cy="32" r="9.5" fill="url(#wh-throat)"/>
+  <circle cx="32" cy="32" r="3.6" fill="currentColor"/>
+</svg>

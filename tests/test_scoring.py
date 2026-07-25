@@ -8,8 +8,8 @@ to prevent recurring.
 
 import unittest
 
-from quarantine import scoring
-from quarantine.rules.injection import Finding
+from wormhole import scoring
+from wormhole.rules.injection import Finding
 
 
 def _f(rule_id, severity="medium"):

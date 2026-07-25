@@ -23,7 +23,7 @@ from .cli import gather
 from .scanners.runtime import scan_sessions, to_findings
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "quarantine", "version": "0.1.0"}
+SERVER_INFO = {"name": "wormhole", "version": "0.1.0"}
 
 TOOLS = [
     {
@@ -125,7 +125,7 @@ def _call_tool(name, args):
         return {
             "modified_since_baseline": len(modified),
             "findings": [_finding_dict(f) for f in findings],
-            "note": ("Baselines are recorded with the CLI (`quarantine "
+            "note": ("Baselines are recorded with the CLI (`wormhole "
                      "baseline`). This tool only reads them."),
         }
 

@@ -175,8 +175,8 @@ def check_writable_configs(configs: list) -> list:
                     "the file survives."),
                 path=str(cfg),
                 remediation=(
-                    "Track the file's hash with `quarantine baseline`, then run "
-                    "`quarantine verify` to detect modification. Make it "
+                    "Track the file's hash with `wormhole baseline`, then run "
+                    "`wormhole verify` to detect modification. Make it "
                     "read-only where the workflow permits: chmod 444"),
                 references=["arXiv:2603.15727 (AgentWorm, NDSS 2026)"]))
     return findings
@@ -243,7 +243,7 @@ def check_skills(skills_dir: Path) -> list:
             path=str(skills_dir),
             remediation=(
                 "Review the provenance of any skill you did not write. "
-                "`quarantine baseline` will hash them so later modification is "
+                "`wormhole baseline` will hash them so later modification is "
                 "visible."),
             references=["arXiv:2603.15727 (Vector B: 82% ASR)"]))
     return findings

@@ -52,7 +52,7 @@ The paper names the result: **asymptomatic carriers.** Agents that never run
 the payload and infect their neighbours anyway, because propagation happens
 through the instruction layer, not the execution layer.
 
-This is why `quarantine` checks *config integrity* rather than trying to catch
+This is why `wormhole` checks *config integrity* rather than trying to catch
 malicious commands. An execution allowlist produces an agent that looks clean
 by every runtime measure while functioning as a vector. The file is where the
 truth is.
@@ -92,7 +92,7 @@ negative regardless of intent.
 
 ## Scope, honestly stated
 
-`quarantine` does not stop a worm. It tells you that your agent's instructions
+`wormhole` does not stop a worm. It tells you that your agent's instructions
 changed, and how much damage the agent could do if those instructions turned
 hostile. That is a smaller claim than "worm protection," and it is the one we
 can actually support.

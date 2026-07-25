@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Agent Wormhole">
+  <title>Agent Wormhole</title>
+  <!-- Small-size variant: favicons, 16-24px UI. The full logo's three rings
+       and segmentation collapse into a blob below ~32px, so this drops the
+       detail and keeps only what survives: one disc, one throat, one worm. -->
+  <defs>
+    <radialGradient id="wh-m-throat" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="currentColor" stop-opacity="1"/>
+      <stop offset="45%"  stop-color="currentColor" stop-opacity=".45"/>
+      <stop offset="100%" stop-color="currentColor" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <ellipse cx="32" cy="32" rx="25" ry="10" fill="none" stroke="currentColor" stroke-width="3.4" opacity=".4"/>
+  <path d="M8 48 C 16 45, 23 39, 32 32"
+        fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" opacity=".92"/>
+  <circle cx="32" cy="32" r="13" fill="url(#wh-m-throat)"/>
+  <circle cx="32" cy="32" r="6.5" fill="currentColor"/>
+</svg>

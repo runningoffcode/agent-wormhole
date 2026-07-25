@@ -58,7 +58,7 @@ def gather(root: Path, include_global: bool = True) -> list:
 def render(findings, configs, color=True, verbose=False, blast=None):
     c = _paint(color)
     out = []
-    out.append(f"\n{c['bold']}quarantine{c['r']} {c['dim']}"
+    out.append(f"\n{c['bold']}wormhole{c['r']} {c['dim']}"
                f"— agent worm posture scan{c['r']}\n")
 
     counts = {}
@@ -112,7 +112,7 @@ def as_json(findings):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        prog="quarantine",
+        prog="wormhole",
         description="Detect and contain self-replicating prompt attacks "
                     "against AI agents.")
     sub = ap.add_subparsers(dest="cmd")
@@ -141,25 +141,30 @@ def main(argv=None):
     w.add_argument("--fail-on", default="high",
                    choices=["critical", "high", "medium", "low", "never"])
 
-    j = sub.add_parser("wormhole",
-                       help="send payloads to the Wormhole, preserving originals")
+    j = sub.add_parser("capture",
+                       help="pull payloads into the wormhole, preserving originals")
     j.add_argument("path", nargs="?", default=".")
     j.add_argument("--apply", action="store_true",
                    help="actually modify files (default is a dry run)")
     j.add_argument("--no-color", action="store_true")
 
-    jl = sub.add_parser("wormhole-list", help="list captured payloads")
+    jl = sub.add_parser("captured", help="list captured payloads")
     jl.add_argument("--all", action="store_true", help="include restored entries")
     jl.add_argument("--json", action="store_true")
     jl.add_argument("--no-color", action="store_true")
 
-    jr = sub.add_parser("wormhole-restore", help="pull a file back out of the Wormhole (false positive)")
+    jr = sub.add_parser("restore", help="pull a file back out of the Wormhole (false positive)")
     jr.add_argument("entry_id")
     jr.add_argument("--no-color", action="store_true")
 
-    je = sub.add_parser("wormhole-export", help="export captured payloads as corpus samples")
+    je = sub.add_parser("export", help="export captured payloads as corpus samples")
     je.add_argument("dest")
     je.add_argument("--no-color", action="store_true")
+
+    ins = sub.add_parser("insights",
+                         help="what the local capture history reveals")
+    ins.add_argument("--json", action="store_true")
+    ins.add_argument("--no-color", action="store_true")
 
     b = sub.add_parser("baseline", help="record hashes of agent config files")
     b.add_argument("path", nargs="?", default=".")
@@ -187,7 +192,7 @@ def main(argv=None):
         if args.json:
             print(as_json(findings))
         else:
-            print(f"\n{c['bold']}quarantine{c['r']} {c['dim']}— runtime scan of "
+            print(f"\n{c['bold']}wormhole{c['r']} {c['dim']}— runtime scan of "
                   f"{n} session(s){c['r']}")
             if not findings:
                 print(f"\n{c['ok']}✓ no injection attempts found in tool output"
@@ -216,8 +221,8 @@ def main(argv=None):
         threshold = {"critical": 0, "high": 1, "medium": 2, "low": 3}[args.fail_on]
         return 1 if any(f.severity_rank <= threshold for f in findings) else 0
 
-    if args.cmd == "wormhole":
-        from . import wormhole as wh
+    if args.cmd == "capture":
+        from . import capture as cap
         configs = find_agent_configs(root)
         results = []
         for cfg in configs:
@@ -227,13 +232,13 @@ def main(argv=None):
                 continue
             fs = scan_text(text, path=str(cfg))
             if any(f.rule_id.startswith("WORM") for f in fs):
-                results.append(wh.swallow(cfg, fs,
+                results.append(cap.swallow(cfg, fs,
                                                  dry_run=not args.apply))
         if not results:
             print(f"\n{c['ok']}✓ no payloads to capture{c['r']}\n")
             return 0
         mode = "APPLIED" if args.apply else "DRY RUN — nothing modified"
-        print(f"\n{c['bold']}quarantine wormhole{c['r']} {c['dim']}({mode}){c['r']}\n")
+        print(f"\n{c['bold']}capture{c['r']} {c['dim']}({mode}){c['r']}\n")
         for r in results:
             print(f"{c['high']}{r['path']}{c['r']}")
             print(f"  rules: {', '.join(r.get('rules', []))}")
@@ -252,9 +257,9 @@ def main(argv=None):
                   f"preserved and restorable.{c['r']}\n")
         return 0
 
-    if args.cmd == "wormhole-list":
-        from . import wormhole as wh
-        entries = wh.list_entries(include_restored=args.all)
+    if args.cmd == "captured":
+        from . import capture as cap
+        entries = cap.list_entries(include_restored=args.all)
         if args.json:
             print(json.dumps(entries, indent=2))
             return 0
@@ -271,19 +276,29 @@ def main(argv=None):
             print(f"  {c['dim']}{e['excerpt'][:120]}{c['r']}\n")
         return 0
 
-    if args.cmd == "wormhole-restore":
-        from . import wormhole as wh
-        r = wh.restore(args.entry_id)
+    if args.cmd == "restore":
+        from . import capture as cap
+        r = cap.restore(args.entry_id)
         ok = r["status"] == "restored"
         print(f"\n{c['ok'] if ok else c['high']}{r['status']}{c['r']} "
               f"{r.get('path', args.entry_id)}\n")
         return 0 if ok else 1
 
-    if args.cmd == "wormhole-export":
-        from . import wormhole as wh
-        r = wh.export_corpus(Path(args.dest))
+    if args.cmd == "export":
+        from . import capture as cap
+        r = cap.export_corpus(Path(args.dest))
         print(f"\n{c['ok']}✓{c['r']} exported {r['count']} sample(s) to "
               f"{r['dest']}\n")
+        return 0
+
+    if args.cmd == "insights":
+        from . import insights as ins_mod
+        data = ins_mod.analyze()
+        if args.json:
+            print(json.dumps(data, indent=2))
+        else:
+            pal = dict(c); pal["accent"] = c["ok"]
+            print(ins_mod.render(data, pal))
         return 0
 
     if args.cmd == "baseline":
@@ -295,7 +310,7 @@ def main(argv=None):
         print(f"\n{c['ok']}✓{c['r']} baselined {len(configs)} file(s) "
               f"({len(entries)} total tracked)")
         print(f"{c['dim']}  stored at {BASELINE_FILE}{c['r']}")
-        print(f"{c['dim']}  run `quarantine verify` to detect modification{c['r']}\n")
+        print(f"{c['dim']}  run `wormhole verify` to detect modification{c['r']}\n")
         return 0
 
     if args.cmd == "verify":

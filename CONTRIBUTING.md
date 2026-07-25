@@ -21,7 +21,7 @@ a detection rule.
 1. Write the malicious fixture in `corpus/malicious/`. **Inert only** — no live
    endpoints, no working self-replicating payloads (see SECURITY.md).
 2. Write the benign twin in `corpus/benign/`.
-3. Add the rule to `quarantine/rules/injection.py`. Rules generally require a
+3. Add the rule to `wormhole/rules/injection.py`. Rules generally require a
    replication cue *and* a delivery cue in proximity; see `_near()`.
 4. Add unit tests in `tests/test_rules.py` for the rule internals.
 5. Run the gate:
@@ -35,16 +35,16 @@ Both must pass, and `replay.sh` must report `FN=0 FP=0`.
 
 ## Adding posture checks
 
-Posture checks live in `quarantine/scanners/posture.py` and describe *capability*
+Posture checks live in `wormhole/scanners/posture.py` and describe *capability*
 rather than content. When adding one, also decide which link of the infection
 loop it evidences — `execute`, `persist`, or `propagate` — and register it in
-`quarantine/scoring.py` so blast radius stays accurate.
+`wormhole/scoring.py` so blast radius stays accurate.
 
 ## Supporting a new agent framework
 
 Add its config filenames to `CONFIG_NAMES` (or `CONFIG_GLOBS` for
 directory-scoped formats like Cursor's `.cursor/rules/*.mdc`) in
-`quarantine/scanners/posture.py`. If the framework has a permissions model, add
+`wormhole/scanners/posture.py`. If the framework has a permissions model, add
 a parser alongside `check_permissions()`.
 
 Please include a link to the framework's documentation for the config format in
@@ -64,5 +64,5 @@ your PR — we cite sources for behavior claims.
 ```bash
 python3 -m unittest discover -s tests -v   # unit tests
 ./loop/replay.sh                           # corpus gate
-python3 -m quarantine scan . --local-only  # tool must be clean on itself
+python3 -m wormhole scan . --local-only  # tool must be clean on itself
 ```

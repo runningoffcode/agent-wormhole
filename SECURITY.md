@@ -21,7 +21,7 @@ Publishing a functional worm to demonstrate a worm detector would be a net
 negative regardless of intent, and would forfeit the credibility this project
 depends on. Pull requests containing working payloads will be rejected.
 
-If you have a real captured payload, `quarantine wormhole-export` produces inert
+If you have a real captured payload, `wormhole export` produces inert
 samples with provenance recorded. Neutralize endpoints before contributing one.
 
 ## Design constraints that are security properties
@@ -35,14 +35,14 @@ rule or re-baseline a tampered file would be using the defense as tooling.
 Remediation stays in the CLI, where a human runs it.
 
 **The baseline lives outside the scanned tree.** Hashes are stored in
-`~/.quarantine/`, not in the repository, so an agent writing to its own project
+`~/.wormhole/`, not in the repository, so an agent writing to its own project
 cannot silently rewrite the record of what the files used to be.
 
 **`wormhole` defaults to a dry run.** Modifying files requires `--apply`, and every
 excision preserves the complete original for byte-for-byte restore. Irreversible
 defaults on a security tool cause data loss on false positives.
 
-**Wormhole contents are inert on disk.** `~/.quarantine/wormhole/` is `0700`, payload
+**Wormhole contents are inert on disk.** `~/.wormhole/captured/` is `0700`, payload
 files are `0400` with a `.quarantined` suffix, so nothing there is loaded as
 agent configuration or executed.
 

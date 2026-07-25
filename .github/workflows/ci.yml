@@ -37,5 +37,5 @@ jobs:
           python-version: '3.11'
       - name: Scan self
         run: |
-          python -m quarantine scan . --local-only --no-color \
+          python -m wormhole scan . --local-only --no-color \
             --fail-on high --blast-radius

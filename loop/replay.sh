@@ -18,7 +18,7 @@ hits() {  # count WORM findings for a single file
   mkdir -p "$WORK/case"
   rm -f "$WORK/case/"*
   cp "$1" "$WORK/case/AGENTS.md"
-  python3 -m quarantine scan "$WORK/case" --no-color --local-only \
+  python3 -m wormhole scan "$WORK/case" --no-color --local-only \
     --fail-on never --json 2>/dev/null | python3 -c \
     'import json,sys
 try: d=json.load(sys.stdin)

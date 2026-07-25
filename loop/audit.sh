@@ -11,7 +11,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="${QUARANTINE_LOG_DIR:-$HOME/.quarantine/logs}"
+LOG_DIR="${WORMHOLE_LOG_DIR:-$HOME/.wormhole/logs}"
 mkdir -p "$LOG_DIR"
 STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LOG="$LOG_DIR/audit-$(date -u +%Y%m%d).log"
@@ -33,7 +33,7 @@ for t in "${TARGETS[@]}"; do
   [ -d "$t" ] || continue
 
   # 1. Integrity: did a tracked file change since we last looked?
-  vout="$(cd "$ROOT" && python3 -m quarantine verify "$t" --no-color --json 2>/dev/null)"
+  vout="$(cd "$ROOT" && python3 -m wormhole verify "$t" --no-color --json 2>/dev/null)"
   vhits="$(printf '%s' "$vout" | python3 -c \
     'import json,sys
 try: d=json.load(sys.stdin)
@@ -41,7 +41,7 @@ except Exception: d=[]
 print(sum(1 for f in d if f["severity"] in ("critical","high")))' 2>/dev/null || echo 0)"
 
   # 2. Content + posture: is there a payload or an overreaching grant?
-  sout="$(cd "$ROOT" && python3 -m quarantine scan "$t" --no-color --local-only \
+  sout="$(cd "$ROOT" && python3 -m wormhole scan "$t" --no-color --local-only \
     --fail-on never --json 2>/dev/null)"
   shits="$(printf '%s' "$sout" | python3 -c \
     'import json,sys
@@ -66,7 +66,7 @@ if [ "$alerts" -gt 0 ]; then
   echo "$STAMP ALERT ($alerts target(s))$report" | tee -a "$LOG"
   # Surface it where a human will actually see it.
   if command -v osascript >/dev/null 2>&1; then
-    osascript -e "display notification \"$alerts target(s) flagged\" with title \"quarantine: agent config alert\"" 2>/dev/null
+    osascript -e "display notification \"$alerts target(s) flagged\" with title \"Agent Wormhole: config alert\"" 2>/dev/null
   fi
   exit 1
 fi

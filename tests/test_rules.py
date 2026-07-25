@@ -8,7 +8,7 @@ us before -- each one is a case a previous version got wrong.
 
 import unittest
 
-from quarantine.rules.injection import (
+from wormhole.rules.injection import (
     scan_text, SELF_REFERENCE, INSTRUCTION_OVERRIDE, CONCEALMENT,
 )
 

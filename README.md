@@ -1,11 +1,14 @@
 # Agent Wormhole
 
-**Your agent's settings are protected by your vendor. Your agent's
-instructions are not.**
+**Your agents talk to each other. Make sure they aren't passing something on.**
 
-Claude Code guards its own `settings.json`. Nobody guards your `CLAUDE.md`,
-your `AGENTS.md`, or your `.cursor/rules` — and by default your agent can write
-to all of them. This makes that visible, then takes the write away.
+Agents spawn agents, hand off work, comment on issues, and read each other's
+output. One compromised agent stops being a victim and becomes a carrier — and
+the assistant on the other side is exactly as obedient as yours.
+
+Underneath that is an asymmetry nobody owns: your vendor protects its own
+`settings.json`, but nothing protects your `CLAUDE.md`, `AGENTS.md`, or
+`.cursor/rules`, and by default your agent can write to all of them.
 
 ```
 $ wormhole scan .
@@ -93,16 +96,24 @@ Prevention — these run before a payload lands:
 
 ```bash
 wormhole init ~/project                  # harden + baseline + print the hooks
-wormhole guard --install                 # writes: the PreToolUse hook
+wormhole outbound --install              # sends: refuse to pass a payload on
 wormhole readguard --install             # reads: PostToolUse + InstructionsLoaded
+wormhole guard --install                 # writes: the PreToolUse hook
 wormhole harden ~/project --apply        # drop the write bit, block creation
 wormhole harden ~/project --undo --apply # restore write permission
 ```
 
-`guard` covers what the agent writes. `readguard` covers what it reads —
-fetched pages, shell output, file reads, MCP responses — which is how every
-publicly disclosed agent compromise of 2026 actually arrived. Source code is
-excluded, so reading a payment handler is not an incident.
+Three doors. `readguard` covers what arrives — fetched pages, shell output, MCP
+responses — which is how every publicly disclosed agent compromise of 2026
+actually got in. `outbound` covers what your agent passes to a subagent, a
+peer, or an issue another team's bot will read. `guard` and `harden` cover
+whether anything can persist to the next session.
+
+`outbound` is the only one that blocks by default. Inbound content is untrusted
+by definition and there is a lot of it, so those rules stay conservative.
+Outbound was composed by your own agent, so a payload appearing there is
+already anomalous — and a refused send fails loudly, while one that leaves
+reaches an operator who never agreed to trust you.
 
 Detection and containment — these run after:
 

@@ -1,0 +1,52 @@
+name: 'quarantine'
+description: 'Detect self-replicating prompt payloads and agent permission overreach in AI agent configs'
+author: 'quarantine'
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  path:
+    description: 'Directory to scan'
+    required: false
+    default: '.'
+  fail-on:
+    description: 'Exit nonzero at or above this severity: critical, high, medium, low, never'
+    required: false
+    default: 'high'
+  blast-radius:
+    description: 'Include blast-radius scoring in the report'
+    required: false
+    default: 'true'
+  local-only:
+    description: 'Skip global settings/MCP/skill checks (recommended in CI)'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Run quarantine
+      shell: bash
+      run: |
+        ARGS="${{ inputs.path }} --fail-on ${{ inputs.fail-on }} --no-color"
+        [ "${{ inputs.local-only }}" = "true" ] && ARGS="$ARGS --local-only"
+        [ "${{ inputs.blast-radius }}" = "true" ] && ARGS="$ARGS --blast-radius"
+        python3 -m quarantine scan $ARGS | tee "$RUNNER_TEMP/quarantine.txt"
+      working-directory: ${{ github.action_path }}
+
+    - name: Summary
+      if: always()
+      shell: bash
+      run: |
+        {
+          echo "## quarantine"
+          echo '```'
+          cat "$RUNNER_TEMP/quarantine.txt" 2>/dev/null || echo "no output"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

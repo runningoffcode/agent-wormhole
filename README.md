@@ -1,5 +1,13 @@
 # Agent Wormhole
 
+[![ci](https://github.com/runningoffcode/agent-wormhole/actions/workflows/ci.yml/badge.svg)](https://github.com/runningoffcode/agent-wormhole/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/agentwormhole)](https://pypi.org/project/agentwormhole/)
+[![Python](https://img.shields.io/pypi/pyversions/agentwormhole)](https://pypi.org/project/agentwormhole/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](pyproject.toml)
+[![Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen)](#no-telemetry)
+[![Corpus](https://img.shields.io/badge/corpus-15%2F15%20·%2014%2F14-informational)](corpus/)
+
 **Your agents talk to each other. Make sure they aren't passing something on.**
 
 Agents spawn agents, hand off work, comment on issues, and read each other's
@@ -275,6 +283,32 @@ guide, a legitimate skill that writes to `CHANGELOG.md`, a `SessionStart` hook
 running `git fetch`, and this project's own guard hook.
 
 Verified additionally against 7 real projects: 0 findings.
+
+## No telemetry
+
+This tool reads the most sensitive surface in your setup: prompts, permissions,
+credentials-adjacent configuration, and the contents of files your agent treats
+as instructions. So it sends none of it anywhere.
+
+- No account, no API token, no network call at any point.
+- No dependencies beyond the Python standard library, so nothing is pulled in
+  that could change this later.
+- The baseline and capture stores live in `~/.wormhole`, on your machine.
+- `wormhole insights` analyses your own capture history locally. There is no
+  global feed, deliberately — building one would require exactly the data this
+  promise forbids.
+
+Contributing a fixture upstream is a separate, deliberate act (`wormhole
+export`), and exports are inert by policy: no live endpoints, no working
+payloads.
+
+Verify it rather than believing it. The whole tool is ~4,000 lines of
+dependency-free Python:
+
+```bash
+# No network client is imported anywhere. This prints nothing.
+grep -rnE "^\s*(import|from)\s+(socket|urllib|http|requests|aiohttp)" wormhole/
+```
 
 ## Supported config formats
 

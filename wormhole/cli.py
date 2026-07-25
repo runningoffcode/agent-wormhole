@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import guard, harden, init, provenance, readguard
+from . import guard, harden, init, outbound, provenance, readguard
 from .baseline import record, verify, BASELINE_FILE
 from .rules.injection import scan_text
 from . import scoring
@@ -197,6 +197,16 @@ def main(argv=None):
     rg.add_argument("--install", action="store_true",
                     help="print the settings.json hook block")
     rg.add_argument("--no-color", action="store_true")
+
+    ob = sub.add_parser("outbound",
+                        help="check what this agent sends to other agents")
+    ob.add_argument("--hook", action="store_true",
+                    help="run as a PreToolUse hook (reads JSON on stdin)")
+    ob.add_argument("--warn", action="store_true",
+                    help="allow and annotate instead of refusing")
+    ob.add_argument("--install", action="store_true",
+                    help="print the settings.json hook block")
+    ob.add_argument("--no-color", action="store_true")
 
     cp = sub.add_parser("corpus",
                         help="scan documents before they are embedded for "
@@ -404,6 +414,42 @@ def main(argv=None):
               f"hook{c['r']}")
         print(f"  {c['dim']}--redact         excise matched lines, not just "
               f"annotate{c['r']}\n")
+        return 0
+
+    if args.cmd == "outbound":
+        if args.hook:
+            return outbound.run_hook(warn_only=args.warn)
+
+        if args.install:
+            block = outbound.install_block(warn_only=args.warn)
+            mode = "warn" if args.warn else "block"
+            print(f"\n{c['bold']}wormhole outbound{c['r']} "
+                  f"{c['dim']}— {mode} mode{c['r']}\n")
+            print("  Merge into ~/.claude/settings.json:\n")
+            for line in json.dumps(block, indent=2).splitlines():
+                print(f"  {line}")
+            print(f"\n  {c['dim']}Checks messages this agent sends to other "
+                  f"agents: spawned tasks,{c['r']}")
+            print(f"  {c['dim']}peer messages, issues, comments. Source code "
+                  f"is excluded.{c['r']}")
+            if args.warn:
+                print(f"\n  {c['dim']}Warn mode allows the send and annotates "
+                      f"it. Drop --warn to refuse.{c['r']}\n")
+            else:
+                print(f"\n  {c['dim']}Blocks by default. Outbound is authored "
+                      f"by your own agent, so a{c['r']}")
+                print(f"  {c['dim']}payload appearing there is already "
+                      f"anomalous -- and a refused send{c['r']}")
+                print(f"  {c['dim']}fails loudly, while one that leaves reaches "
+                      f"someone who never{c['r']}")
+                print(f"  {c['dim']}agreed to trust you.{c['r']}\n")
+            return 0
+
+        print(f"\n{c['bold']}wormhole outbound{c['r']}\n")
+        print(f"  {c['dim']}--install   print the settings.json hook block"
+              f"{c['r']}")
+        print(f"  {c['dim']}--hook      run as the PreToolUse hook{c['r']}")
+        print(f"  {c['dim']}--warn      annotate instead of refusing{c['r']}\n")
         return 0
 
     if args.cmd == "corpus":

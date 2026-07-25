@@ -1,5 +1,11 @@
 # wormhole-x402
 
+[![npm](https://img.shields.io/npm/v/wormhole-x402)](https://www.npmjs.com/package/wormhole-x402)
+[![npm downloads](https://img.shields.io/npm/dm/wormhole-x402)](https://www.npmjs.com/package/wormhole-x402)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](../LICENSE)
+[![Offline](https://img.shields.io/badge/network%20calls-none-brightgreen)](#offline)
+[![Tests](https://img.shields.io/badge/tests-15%20passing-informational)](test/)
+
 **Your agent is about to sign a payment. Is it the one it was quoted?**
 
 ```

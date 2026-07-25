@@ -39,3 +39,25 @@ jobs:
         run: |
           python -m wormhole scan . --local-only --no-color \
             --fail-on high --blast-radius
+
+  x402:
+    name: wormhole-x402 (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: x402-guard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install
+        run: npm ci || npm install
+
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Tests
+        run: npm test

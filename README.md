@@ -1,7 +1,8 @@
 # Agent Wormhole
 
 [![ci](https://github.com/runningoffcode/agent-wormhole/actions/workflows/ci.yml/badge.svg)](https://github.com/runningoffcode/agent-wormhole/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/wormhole-guard)](https://pypi.org/project/wormhole-guard/)
+[![PyPI](https://img.shields.io/pypi/v/wormhole-guard?label=pypi%20wormhole-guard)](https://pypi.org/project/wormhole-guard/)
+[![npm](https://img.shields.io/npm/v/wormhole-x402?label=npm%20wormhole-x402)](https://www.npmjs.com/package/wormhole-x402)
 [![Python](https://img.shields.io/pypi/pyversions/wormhole-guard)](https://pypi.org/project/wormhole-guard/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](pyproject.toml)
@@ -283,6 +284,17 @@ guide, a legitimate skill that writes to `CHANGELOG.md`, a `SessionStart` hook
 running `git fetch`, and this project's own guard hook.
 
 Verified additionally against 7 real projects: 0 findings.
+
+## Two packages
+
+| | Protects | Install |
+|---|---|---|
+| **[wormhole-guard](https://pypi.org/project/wormhole-guard/)** | The instruction files your coding agents read | `pipx install wormhole-guard` |
+| **[wormhole-x402](https://www.npmjs.com/package/wormhole-x402)** | The payments your agents sign | `npm install wormhole-x402` |
+
+Same thesis, two places an agent reads instructions it did not write. The
+Python core is dependency-free; the TypeScript package has no network calls at
+all. Neither phones anywhere.
 
 ## When the agent holds a wallet
 

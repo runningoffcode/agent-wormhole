@@ -284,6 +284,32 @@ running `git fetch`, and this project's own guard hook.
 
 Verified additionally against 7 real projects: 0 findings.
 
+## No warranty
+
+Apache 2.0, and the liability terms are worth reading rather than assuming:
+
+> Unless required by applicable law or agreed to in writing, Licensor provides
+> the Work **"AS IS", WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND**, either
+> express or implied. You are solely responsible for determining the
+> appropriateness of using or redistributing the Work and assume any risks
+> associated with Your exercise of permissions under this License.
+>
+> In no event shall any Contributor be liable to You for damages, including any
+> direct, indirect, special, incidental, or consequential damages of any
+> character arising as a result of this License or out of the use or inability
+> to use the Work.
+
+— [LICENSE](LICENSE), §7 and §8
+
+In plain terms: this is a detection and hardening tool, not a guarantee. It can
+miss a payload it has never seen, it can be wrong about one it has, and it does
+not make an agent safe. Read [Limits](#limits) before you rely on it for
+anything, and keep the control that actually works — sandbox isolation — on
+your list regardless.
+
+Apache 2.0 also carries an express patent grant (§3), which is why this project
+stays on it rather than moving to a shorter permissive license.
+
 ## No telemetry
 
 This tool reads the most sensitive surface in your setup: prompts, permissions,

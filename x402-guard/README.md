@@ -41,6 +41,10 @@ proposing these transactions"* — and has no field for the agent's instructions
 at all. The stack is shaped around a human approving a website's request. A
 headless agent has neither a website nor a human.
 
+## How it decides
+
+<img src="../assets/diagram/x402-guard-2x.png" alt="Diagram: the x402 quote arrives on a channel the model never touches and the merchant's token account is derived from it by pure math; the unsigned transaction is authored in the model's context; a single comparison allows the quoted payment and refuses a wrong destination, a wrong amount, or an added delegate." width="820">
+
 ## Install
 
 ```bash

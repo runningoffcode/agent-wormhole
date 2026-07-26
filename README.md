@@ -11,6 +11,8 @@
 
 **Your agents talk to each other. Make sure they aren't passing something on.**
 
+**[agentwormhole.com](https://agentwormhole.com)** · [wormhole-guard on PyPI](https://pypi.org/project/wormhole-guard/) · [wormhole-x402 on npm](https://www.npmjs.com/package/wormhole-x402)
+
 Agents spawn agents, hand off work, comment on issues, and read each other's
 output. One compromised agent stops being a victim and becomes a carrier — and
 the assistant on the other side is exactly as obedient as yours.
@@ -79,6 +81,16 @@ propagation.
 
 The defense that works exists and nobody is running it. That gap is a tooling
 problem, and this is the tool. See [MISSION.md](MISSION.md).
+
+### How a payload travels
+
+One message in, two agents infected, no attacker after the first step — the
+red arrows are your own agents doing their jobs:
+
+<img src="assets/diagram/propagation-2x.png" alt="Sequence diagram: an attacker sends text carrying a payload to your agent, which stores it in memory, retrieves it as context, and hands it to a peer agent, which stores it in turn. The red steps require no attacker." width="820">
+
+`harden` stops the storing, `readguard` checks what comes back from the model,
+and `outbound` refuses the handoff.
 
 ## Install
 
@@ -326,6 +338,11 @@ and mint arrive as structured JSON in the HTTP 402 response, before the
 transaction exists, on a channel separate from the model's context. The
 comparison is then pure offline arithmetic — ~1ms, no RPC.
 
+<img src="assets/diagram/x402-guard-2x.png" alt="Diagram: the x402 quote arrives on a channel the model never touches and the merchant's token account is derived from it by pure math; the unsigned transaction is authored in the model's context; a single comparison allows the quoted payment and refuses a wrong destination, a wrong amount, or an added delegate." width="820">
+
+Full details, including what it deliberately does not do, in
+[x402-guard/](x402-guard/).
+
 ## No warranty
 
 Apache 2.0, and the liability terms are worth reading rather than assuming:
@@ -435,8 +452,10 @@ Stated plainly, because a security tool that overclaims is worse than none:
 - `watch` reads transcripts after the fact. It tells you an injection attempt
   reached your agent; it does not block it.
 - Nothing here removes an infection from a running agent. `wormhole` cleans files.
-- No worm has been publicly confirmed propagating in the wild. The preconditions
-  are present today and the posture findings are real regardless.
+- Miasma is confirmed in the wild, and it spread through package installs while
+  persisting via agent config. **Fully autonomous** self-replication — a payload
+  rewriting itself into peers' configs with no package manager involved — is
+  still demonstrated in a lab, not observed. We will not blur those two.
 
 ## Contributing
 

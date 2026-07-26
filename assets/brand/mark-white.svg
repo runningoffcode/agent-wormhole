@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Agent Wormhole">
+  <title>Agent Wormhole</title>
+  <!-- Lensed Field, white. A ring field pulled off-axis toward a solid
+       throat. Fixed white for placement on dark/photographic surfaces;
+       use mark-lensed.svg (currentColor) inside product UI. -->
+  <g fill="none" stroke="#fff">
+    <circle cx="32" cy="32" r="30" stroke-width="2.5"/>
+    <circle cx="33.59" cy="33.59" r="23.25" stroke-width="1.9"/>
+    <circle cx="35.18" cy="35.18" r="17.5" stroke-width="1.7"/>
+    <circle cx="36.95" cy="36.95" r="12.5" stroke-width="1.5"/>
+    <circle cx="38.72" cy="38.72" r="8" stroke-width="1.3"/>
+    <circle cx="41.02" cy="41.02" r="3.25" fill="#fff" stroke="none"/>
+  </g>
+</svg>

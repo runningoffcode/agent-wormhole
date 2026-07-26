@@ -1,6 +1,6 @@
 {
   "name": "wormhole-x402",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Refuse a Solana payment that does not match what the agent was quoted. Offline, no RPC.",
   "main": "./dist/index.js",
   "scripts": {

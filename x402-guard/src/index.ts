@@ -102,9 +102,40 @@ const ALLOWED_PROGRAMS = new Set([
 const DANGEROUS_TOKEN_IX: Record<number, string> = {
   4: "Approve — delegates spending authority over the account",
   6: "SetAuthority — transfers ownership of the token account",
+  8: "Burn — destroys tokens from the payer's account",
   9: "CloseAccount — closes the account and sweeps its rent",
   13: "ApproveChecked — delegates spending authority over the account",
+  15: "BurnChecked — destroys tokens from the payer's account",
 };
+
+/**
+ * System program instruction tags, u32 LE. The only one a conforming payment
+ * has any use for is AdvanceNonceAccount (durable-nonce transactions). All
+ * lamport movement and every ownership handoff is refused — this is an
+ * allowlist for the same reason the program list is: TransferWithSeed (11)
+ * moves lamports exactly like Transfer (2) through a different opcode, and a
+ * blocklist that names only the opcodes someone has already thought of is a
+ * bypass catalogue.
+ */
+const SYSTEM_ALLOWED_TAGS = new Set([4 /* AdvanceNonceAccount */]);
+const SYSTEM_LAMPORT_MOVERS = new Set([
+  0 /* CreateAccount */, 2 /* Transfer */, 3 /* CreateAccountWithSeed */,
+  5 /* WithdrawNonceAccount */, 11 /* TransferWithSeed */,
+]);
+
+/** Default cap on priority fees: 0.01 SOL. Override via InspectOptions. */
+const DEFAULT_MAX_PRIORITY_FEE_LAMPORTS = 10_000_000n;
+/** Runtime maximum compute units, assumed when a price is set with no limit. */
+const MAX_COMPUTE_UNITS = 1_400_000n;
+
+export interface InspectOptions {
+  /**
+   * Maximum total priority fee (compute unit price × limit) in lamports.
+   * A "correct" payment carrying a 10 SOL priority fee simulates cleanly,
+   * matches the quote, and drains the fee payer anyway.
+   */
+  maxPriorityFeeLamports?: bigint;
+}
 
 // --- helpers ---------------------------------------------------------------
 
@@ -150,6 +181,7 @@ function readU32LE(data: Uint8Array, offset: number): number | null {
 export function inspectPayment(
   raw: Uint8Array | string,
   quote: PaymentQuote,
+  opts: InspectOptions = {},
 ): Verdict {
   const findings: Finding[] = [];
   const { tx, err } = decodeTransaction(raw);
@@ -220,6 +252,8 @@ export function inspectPayment(
   let sawTransferToExpected = false;
   let transferredAmount: bigint | null = null;
   const memos: string[] = [];
+  let cuLimit: bigint | null = null;
+  let cuPrice: bigint | null = null;
 
   for (const ix of msg.compiledInstructions) {
     const programId = keys[ix.programIdIndex];
@@ -311,22 +345,90 @@ export function inspectPayment(
       }
     }
 
-    // The System program is allowed so an ATA can be funded into existence,
-    // but a lamport transfer riding beside the token payment moves value the
-    // quote never mentioned. SystemProgram instruction tags are u32 LE:
-    // 0 = CreateAccount, 2 = Transfer, 3 = CreateAccountWithSeed.
+    // System program: strict allowlist. Only AdvanceNonceAccount has a place
+    // in a payment; anything else either moves lamports the quote never
+    // mentioned or hands over control of an account. An unreadable tag is
+    // refused too — a System instruction we could not classify is not
+    // something to wave through.
     if (programId === SYSTEM) {
       const data = Uint8Array.from(ix.data);
       const tag = data.length >= 4 ? readU32LE(data, 0) : null;
 
-      if (tag === 2 || tag === 0 || tag === 3) {
+      if (tag === null || !SYSTEM_ALLOWED_TAGS.has(tag)) {
+        if (tag !== null && SYSTEM_LAMPORT_MOVERS.has(tag)) {
+          findings.push({
+            code: "X402-007",
+            severity: "critical",
+            message:
+              "transaction moves SOL alongside the payment — the quote covers the token transfer only",
+            actual: `system instruction tag ${tag}`,
+          });
+        } else {
+          findings.push({
+            code: "X402-009",
+            severity: "critical",
+            message:
+              "system instruction out of scope for a payment — assigns ownership, allocates, or could not be classified",
+            actual: tag === null ? "unreadable tag" : `system instruction tag ${tag}`,
+          });
+        }
+      }
+    }
+
+    // ATA program: Create (0 or empty data) and CreateIdempotent (1) fund the
+    // merchant's account into existence and are part of the scheme.
+    // RecoverNested (2) MOVES TOKENS out of a nested account — an in-allowlist
+    // program with an instruction that behaves like a transfer.
+    if (programId === ATA_PROGRAM) {
+      const data = Uint8Array.from(ix.data);
+      const disc = data.length === 0 ? 0 : data[0];
+      if (disc === 2) {
         findings.push({
-          code: "X402-007",
+          code: "X402-006",
           severity: "critical",
           message:
-            "transaction moves SOL alongside the payment — the quote covers the token transfer only",
+            "payment contains a control-transferring instruction: RecoverNested — moves tokens out of a nested account",
+        });
+      } else if (disc !== 0 && disc !== 1) {
+        findings.push({
+          code: "X402-009",
+          severity: "critical",
+          message: "unrecognized associated-token-program instruction in a payment",
+          actual: `discriminant ${disc}`,
         });
       }
+    }
+
+    // Compute budget: collect limit and price; the fee check runs after the
+    // walk so the two instructions can appear in any order.
+    if (programId === COMPUTE_BUDGET) {
+      const data = Uint8Array.from(ix.data);
+      const disc = data[0];
+      if (disc === 2) {
+        const v = readU32LE(data, 1);
+        if (v !== null) cuLimit = BigInt(v >>> 0);
+      } else if (disc === 3) {
+        cuPrice = readU64LE(data, 1);
+      }
+    }
+  }
+
+  // --- 2b. priority-fee cap ------------------------------------------------
+  // A transaction that pays the quoted merchant the quoted amount and sets a
+  // 10 SOL priority fee simulates cleanly and drains the fee payer anyway.
+  if (cuPrice !== null && cuPrice > 0n) {
+    const limit = cuLimit ?? MAX_COMPUTE_UNITS;
+    const feeLamports = (limit * cuPrice) / 1_000_000n;
+    const cap = opts.maxPriorityFeeLamports ?? DEFAULT_MAX_PRIORITY_FEE_LAMPORTS;
+    if (feeLamports > cap) {
+      findings.push({
+        code: "X402-010",
+        severity: "critical",
+        message:
+          "priority fee exceeds the cap — fees are paid regardless of what the quote covers",
+        expected: `<= ${cap.toString()} lamports`,
+        actual: `${feeLamports.toString()} lamports`,
+      });
     }
   }
 
@@ -416,7 +518,21 @@ function looksLikeDirective(text: string): boolean {
 }
 
 /**
- * Wrap a signer so nothing is signed unless it matches the quote.
+ * Every method through which a wallet can produce a signature. Wrapping only
+ * `signTransaction` and leaving `signAllTransactions` bare is not a guard, it
+ * is a door with a doorman standing beside it — an agent told to "batch the
+ * payment" walks straight past the check.
+ */
+const SIGNING_METHODS = new Set([
+  "signTransaction",
+  "signAllTransactions",
+  "signAndSendTransaction",
+  "signAndSendAllTransactions",
+]);
+
+/**
+ * Wrap a signer so nothing is signed unless it matches the quote — through
+ * any signing method the wallet exposes.
  *
  * Fails closed by design: no quote means refuse. Every optional security
  * parameter with a permissive default ends up unset in production, and then
@@ -425,31 +541,138 @@ function looksLikeDirective(text: string): boolean {
 export function guardSigner<T extends { signTransaction: Function }>(
   wallet: T,
   getQuote: () => PaymentQuote | null,
+  opts: InspectOptions = {},
 ): T {
-  const original = wallet.signTransaction.bind(wallet);
+  const check = (tx: VersionedTransaction) => {
+    const quote = getQuote();
+    if (!quote) {
+      throw new Error(
+        "x402-guard: refusing to sign — no payment quote was supplied, " +
+          "so there is nothing to check this transaction against.",
+      );
+    }
+    const verdict = inspectPayment(tx.serialize(), quote, opts);
+    if (verdict.decision !== "allow") {
+      const detail = verdict.findings
+        .map((f) => `${f.code}: ${f.message}`)
+        .join("; ");
+      throw new Error(
+        `x402-guard: refusing to sign (${verdict.decision}). ` +
+          (verdict.reason ?? detail),
+      );
+    }
+  };
+
   return new Proxy(wallet, {
     get(target, prop, receiver) {
-      if (prop !== "signTransaction") return Reflect.get(target, prop, receiver);
-      return async (tx: VersionedTransaction) => {
-        const quote = getQuote();
-        if (!quote) {
-          throw new Error(
-            "x402-guard: refusing to sign — no payment quote was supplied, " +
-              "so there is nothing to check this transaction against.",
-          );
+      const value = Reflect.get(target, prop, receiver);
+      if (
+        typeof prop !== "string" ||
+        !SIGNING_METHODS.has(prop) ||
+        typeof value !== "function"
+      ) {
+        return value;
+      }
+      const original = value.bind(target);
+      return async (first: unknown, ...rest: unknown[]) => {
+        if (Array.isArray(first)) {
+          for (const tx of first) check(tx as VersionedTransaction);
+        } else {
+          check(first as VersionedTransaction);
         }
-        const verdict = inspectPayment(tx.serialize(), quote);
-        if (verdict.decision !== "allow") {
-          const detail = verdict.findings
-            .map((f) => `${f.code}: ${f.message}`)
-            .join("; ");
-          throw new Error(
-            `x402-guard: refusing to sign (${verdict.decision}). ` +
-              (verdict.reason ?? detail),
-          );
-        }
-        return original(tx);
+        return original(first, ...rest);
       };
     },
   }) as T;
+}
+
+// --- facilitator flow -------------------------------------------------------
+
+/**
+ * The relevant fields of an x402 `accepts` entry (PaymentRequirements) from
+ * the server's 402 response. `maxAmountRequired` is the exact amount under
+ * the `exact` scheme.
+ */
+export interface PaymentRequirements {
+  scheme: string;
+  network: string;
+  payTo: string;
+  asset: string;
+  maxAmountRequired: string;
+  [key: string]: unknown;
+}
+
+/** Map a 402 `accepts` entry to the quote the guard checks against. */
+export function quoteFromRequirements(req: PaymentRequirements): PaymentQuote {
+  if (
+    typeof req?.payTo !== "string" ||
+    typeof req?.asset !== "string" ||
+    typeof req?.maxAmountRequired !== "string"
+  ) {
+    throw new Error(
+      "x402-guard: payment requirements are missing payTo, asset, or maxAmountRequired",
+    );
+  }
+  return { payTo: req.payTo, asset: req.asset, amount: req.maxAmountRequired };
+}
+
+/**
+ * Inspect an X-PAYMENT payload — the facilitator flow.
+ *
+ * Most agents never submit a transaction themselves: they build and partially
+ * sign one (the facilitator is the fee payer, which is what makes it feel
+ * gasless), then ship it base64 inside the X-PAYMENT header. The client's key
+ * still touches the bytes exactly once, and these are those bytes. Accepts
+ * the decoded payload object or the base64/JSON header string.
+ *
+ * EVM authorization payloads (EIP-3009) carry no transaction to decode and
+ * are abstained on, never allowed.
+ */
+export function inspectPaymentPayload(
+  paymentHeader: unknown,
+  quote: PaymentQuote,
+  opts: InspectOptions = {},
+): Verdict {
+  let obj: unknown = paymentHeader;
+  if (typeof paymentHeader === "string") {
+    try {
+      obj = JSON.parse(Buffer.from(paymentHeader, "base64").toString("utf8"));
+    } catch {
+      try {
+        obj = JSON.parse(paymentHeader);
+      } catch {
+        return {
+          decision: "abstain",
+          findings: [],
+          reason:
+            "payment payload is neither base64-encoded JSON nor JSON — refusing to report it as safe",
+        };
+      }
+    }
+  }
+  const p = obj as { scheme?: unknown; payload?: { transaction?: unknown } };
+  if (typeof p !== "object" || p === null) {
+    return {
+      decision: "abstain",
+      findings: [],
+      reason: "payment payload is not an object",
+    };
+  }
+  if (p.scheme !== "exact") {
+    return {
+      decision: "abstain",
+      findings: [],
+      reason: `unsupported x402 scheme (${String(p.scheme)}) — only "exact" is checked`,
+    };
+  }
+  const tx = p.payload?.transaction;
+  if (typeof tx !== "string") {
+    return {
+      decision: "abstain",
+      findings: [],
+      reason:
+        "payload carries no transaction to decode (EVM authorization payloads are not yet supported)",
+    };
+  }
+  return inspectPayment(tx, quote, opts);
 }

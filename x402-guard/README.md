@@ -74,6 +74,27 @@ const verdict = inspectPayment(serializedTx, {
 // → { decision: "allow" | "refuse" | "abstain", findings: [...] }
 ```
 
+## The facilitator flow
+
+Most agents never submit a transaction themselves — they build and partially
+sign one (the facilitator pays the fee, which is what makes it feel gasless)
+and ship it base64 inside the `X-PAYMENT` header. The client's key still
+touches the bytes exactly once. These are those bytes:
+
+```ts
+import { inspectPaymentPayload, quoteFromRequirements } from "wormhole-x402";
+
+// `accepts[0]` from the server's 402 response — never model-authored
+const quote = quoteFromRequirements(paymentRequired.accepts[0]);
+
+// the X-PAYMENT payload the client is about to sign/ship
+const verdict = inspectPaymentPayload(xPaymentHeader, quote);
+if (verdict.decision !== "allow") throw new Error(verdict.reason);
+```
+
+EVM authorization payloads (EIP-3009) carry no transaction to decode and are
+abstained on, never allowed.
+
 ## The one design constraint
 
 **Intent must never be something the agent states.**
@@ -98,9 +119,11 @@ deterministically from `(recipient, mint)`. No RPC required.
 | `X402-001` | Destination is not the account derived from the quote |
 | `X402-002` | Amount does not match the quote exactly |
 | `X402-003` | A program outside the x402 `exact` allowlist is invoked |
-| `X402-006` | `Approve` / `SetAuthority` / `CloseAccount` riding along |
-| `X402-007` | A SOL transfer riding beside the token payment |
+| `X402-006` | `Approve` / `SetAuthority` / `CloseAccount` / `Burn` / ATA `RecoverNested` riding along |
+| `X402-007` | SOL moved beside the token payment — any opcode, `TransferWithSeed` included |
 | `X402-008` | Memo contains instruction-shaped text |
+| `X402-009` | A System/ATA instruction with no place in a payment — `Assign`, allocation, or unclassifiable |
+| `X402-010` | Priority fee above the cap (default 0.01 SOL) — fees drain the payer regardless of the quote |
 
 Programs are an **allowlist**, not a blocklist — so it holds against
 instructions nobody has catalogued yet.

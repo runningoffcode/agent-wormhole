@@ -14,6 +14,8 @@ import {
   SystemProgram,
 } from "@solana/web3.js";
 import {
+  createAssociatedTokenAccountInstruction,
+  createBurnCheckedInstruction,
   createTransferCheckedInstruction,
   createApproveInstruction,
   createSetAuthorityInstruction,
@@ -22,7 +24,13 @@ import {
   createTransferInstruction,
   TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
-import { inspectPayment, guardSigner, type PaymentQuote } from "../src/index.js";
+import {
+  inspectPayment,
+  inspectPaymentPayload,
+  quoteFromRequirements,
+  guardSigner,
+  type PaymentQuote,
+} from "../src/index.js";
 
 const USDC = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 const MEMO_PROGRAM = new PublicKey(
@@ -310,6 +318,254 @@ describe("fails closed rather than skipping a check", () => {
  * A Token-2022 mint derives a different ATA. Deriving only the legacy form
  * refused every legitimate Token-2022 payment.
  */
+/**
+ * Bypasses found in the post-launch review: opcodes and signing paths that
+ * route around the checks rather than through them.
+ */
+describe("system-program opcodes that route around X402-007", () => {
+  it("refuses TransferWithSeed — lamport movement through a different opcode", () => {
+    const rider = SystemProgram.transfer({
+      fromPubkey: payer.publicKey,
+      basePubkey: payer.publicKey,
+      toPubkey: attacker.publicKey,
+      lamports: 2_000_000_000,
+      seed: "worm",
+      programId: SystemProgram.programId,
+    });
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n), rider]), quote);
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-007")).toBe(true);
+  });
+
+  it("refuses Assign — hands the account to an arbitrary program", () => {
+    const rider = SystemProgram.assign({
+      accountPubkey: payer.publicKey,
+      programId: attacker.publicKey,
+    });
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n), rider]), quote);
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-009")).toBe(true);
+  });
+
+  it("still allows a durable-nonce advance — the one System instruction a payment needs", () => {
+    const nonce = Keypair.generate();
+    const rider = SystemProgram.nonceAdvance({
+      noncePubkey: nonce.publicKey,
+      authorizedPubkey: payer.publicKey,
+    });
+    const v = inspectPayment(build([rider, payment(merchantAta, 1_000_000n)]), quote);
+    expect(v.decision).toBe("allow");
+  });
+});
+
+describe("value destruction riding along", () => {
+  it("refuses a Burn beside a correct payment", () => {
+    const rider = createBurnCheckedInstruction(
+      payerAta,
+      USDC,
+      payer.publicKey,
+      500_000_000n,
+      6,
+    );
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n), rider]), quote);
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-006")).toBe(true);
+  });
+});
+
+describe("the ATA program is not a blanket pass", () => {
+  it("allows creating the merchant's ATA — the scheme needs it", () => {
+    const create = createAssociatedTokenAccountInstruction(
+      payer.publicKey,
+      merchantAta,
+      merchant.publicKey,
+      USDC,
+    );
+    const v = inspectPayment(build([create, payment(merchantAta, 1_000_000n)]), quote);
+    expect(v.decision).toBe("allow");
+  });
+
+  it("refuses RecoverNested — an in-allowlist instruction that moves tokens", () => {
+    const recover = {
+      keys: [
+        { pubkey: payerAta, isSigner: false, isWritable: true },
+        { pubkey: USDC, isSigner: false, isWritable: false },
+        { pubkey: attackerAta, isSigner: false, isWritable: true },
+        { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+      ],
+      programId: new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"),
+      data: Buffer.from([2]),
+    } as any;
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n), recover]), quote);
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-006")).toBe(true);
+  });
+});
+
+describe("priority-fee drain", () => {
+  it("refuses a correct payment carrying a multi-SOL priority fee", () => {
+    const v = inspectPayment(
+      build([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+        ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: 10_000_000_000,
+        }),
+        payment(merchantAta, 1_000_000n),
+      ]),
+      quote,
+    );
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-010")).toBe(true);
+  });
+
+  it("assumes the runtime maximum when a price is set with no limit", () => {
+    const v = inspectPayment(
+      build([
+        ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: 10_000_000_000,
+        }),
+        payment(merchantAta, 1_000_000n),
+      ]),
+      quote,
+    );
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-010")).toBe(true);
+  });
+
+  it("allows an ordinary priority fee", () => {
+    const v = inspectPayment(
+      build([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+        payment(merchantAta, 1_000_000n),
+      ]),
+      quote,
+    );
+    expect(v.decision).toBe("allow");
+  });
+
+  it("honours a caller-supplied cap", () => {
+    const v = inspectPayment(
+      build([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+        payment(merchantAta, 1_000_000n),
+      ]),
+      quote,
+      { maxPriorityFeeLamports: 1n },
+    );
+    expect(v.decision).toBe("refuse");
+  });
+});
+
+describe("every signing method is guarded", () => {
+  const cleanTx = () =>
+    VersionedTransaction.deserialize(build([payment(merchantAta, 1_000_000n)]));
+  const hostileTx = () =>
+    VersionedTransaction.deserialize(build([payment(attackerAta, 1_000_000n)]));
+
+  it("refuses a hostile transaction hidden in signAllTransactions", async () => {
+    const wallet = {
+      signTransaction: async (t: any) => t,
+      signAllTransactions: async (ts: any[]) => ts,
+    };
+    const guarded = guardSigner(wallet, () => quote);
+    await expect(
+      guarded.signAllTransactions([cleanTx(), hostileTx()]),
+    ).rejects.toThrow(/refusing to sign/);
+  });
+
+  it("refuses through signAndSendTransaction", async () => {
+    const wallet = {
+      signTransaction: async (t: any) => t,
+      signAndSendTransaction: async (t: any) => ({ signature: "sig" }),
+    };
+    const guarded = guardSigner(wallet, () => quote);
+    await expect(guarded.signAndSendTransaction(hostileTx())).rejects.toThrow(
+      /refusing to sign/,
+    );
+  });
+
+  it("signs a clean batch", async () => {
+    let count = 0;
+    const wallet = {
+      signTransaction: async (t: any) => t,
+      signAllTransactions: async (ts: any[]) => {
+        count = ts.length;
+        return ts;
+      },
+    };
+    const guarded = guardSigner(wallet, () => quote);
+    await guarded.signAllTransactions([cleanTx(), cleanTx()]);
+    expect(count).toBe(2);
+  });
+});
+
+/**
+ * The facilitator flow: the agent partially signs a transaction and ships it
+ * base64 inside the X-PAYMENT payload. Same bytes, same guard.
+ */
+describe("facilitator payloads", () => {
+  const requirements = {
+    scheme: "exact",
+    network: "solana",
+    payTo: merchant.publicKey.toBase58(),
+    asset: USDC.toBase58(),
+    maxAmountRequired: "1000000",
+  };
+
+  const wrap = (bytes: Uint8Array) => ({
+    x402Version: 1,
+    scheme: "exact",
+    network: "solana",
+    payload: { transaction: Buffer.from(bytes).toString("base64") },
+  });
+
+  it("maps a 402 accepts entry to a quote", () => {
+    expect(quoteFromRequirements(requirements)).toEqual(quote);
+  });
+
+  it("allows a conforming payload object", () => {
+    const v = inspectPaymentPayload(
+      wrap(build([payment(merchantAta, 1_000_000n)])),
+      quoteFromRequirements(requirements),
+    );
+    expect(v.decision).toBe("allow");
+  });
+
+  it("refuses a substituted destination inside the payload", () => {
+    const v = inspectPaymentPayload(
+      wrap(build([payment(attackerAta, 1_000_000n)])),
+      quoteFromRequirements(requirements),
+    );
+    expect(v.decision).toBe("refuse");
+  });
+
+  it("accepts the base64 header form", () => {
+    const header = Buffer.from(
+      JSON.stringify(wrap(build([payment(merchantAta, 1_000_000n)]))),
+    ).toString("base64");
+    const v = inspectPaymentPayload(header, quote);
+    expect(v.decision).toBe("allow");
+  });
+
+  it("abstains on a scheme it does not understand", () => {
+    const v = inspectPaymentPayload(
+      { scheme: "exact-evm", payload: { authorization: {} } },
+      quote,
+    );
+    expect(v.decision).toBe("abstain");
+  });
+
+  it("abstains on a payload with no transaction rather than allowing it", () => {
+    const v = inspectPaymentPayload(
+      { scheme: "exact", payload: {} },
+      quote,
+    );
+    expect(v.decision).toBe("abstain");
+  });
+});
+
 describe("Token-2022", () => {
   it("accepts a payment to the Token-2022 ATA of the quoted merchant", () => {
     const ata2022 = getAssociatedTokenAddressSync(

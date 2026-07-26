@@ -106,7 +106,7 @@ problem in one picture.
 ## What I found in the research
 
 I went through
-[AgentWorm](https://arxiv.org/abs/2603.15727) (preprint, March 2026, revised
+[AgentWorm](https://arxiv.org/html/2603.15727v3) (NDSS 2026; earlier versions revised
 July) properly rather than reading the abstract. 2,250 trials across five
 models. Three numbers stuck:
 

@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](pyproject.toml)
 [![Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen)](#no-telemetry)
-[![Corpus](https://img.shields.io/badge/corpus-15%2F15%20·%2014%2F14-informational)](corpus/)
+[![Corpus](https://img.shields.io/badge/corpus-16%2F16%20·%2015%2F15-informational)](corpus/)
 
 **Your agents talk to each other. Make sure they aren't passing something on.**
 
@@ -50,7 +50,9 @@ did not exploit a memory bug. It wrote agent configuration:
 | `.vscode/tasks.json` | `runOn: folderOpen` |
 | `package.json` | hijacked `test` script |
 
-It targeted 15 AI coding agents, and the persistence **survives
+It targeted 15 AI coding agents ([Dataminr](https://www.dataminr.com/resources/intel-briefs/miasma-worm-open-sourced/)
+analysis of the open-sourced toolkit; the June writeups counted the five files
+above), and the persistence **survives
 `npm uninstall` and survives reinstalling the agent** — the settings file
 outlives both. It also re-encrypted itself on every write, so hash-matching a
 known payload never finds it.
@@ -72,8 +74,8 @@ Two more things make the gap structural rather than accidental:
   success to zero — does not transfer to a default install.
 
 The mechanism paper is
-[arXiv:2603.15727](https://arxiv.org/abs/2603.15727) (preprint, Mar 2026,
-rev. Jul 2026): 2,250 trials, 82% attack success via skill supply-chain
+[arXiv:2603.15727](https://arxiv.org/html/2603.15727v3) (*AgentWorm*, NDSS 2026;
+v1–v2 were titled *ClawWorm*): 2,250 trials, 82% attack success via skill supply-chain
 poisoning (63% aggregate across all three vectors), 0% once sandbox isolation
 was enabled — and **0 of 82** publicly indexed agent configurations had it
 enabled. 62% had gateway authentication instead, which does not stop
@@ -81,6 +83,24 @@ propagation.
 
 The defense that works exists and nobody is running it. That gap is a tooling
 problem, and this is the tool. See [MISSION.md](MISSION.md).
+
+### Prior art
+
+Scanning agent files for injected text is not a new idea and this is not the
+only tool that does it. [NVIDIA SkillSpector](https://github.com/nvidia/skillspector)
+(68 patterns, Apache 2.0) scans *skills*; [Snyk agent-scan](https://github.com/snyk/agent-scan)
+covers MCP servers and skills; [agentconfig](https://github.com/kriskimmerle/agentconfig)
+scans `.cursorrules`, `CLAUDE.md` and MCP configuration for injection and
+credential theft. If you only want a scanner, any of those is a reasonable
+choice, and SkillSpector has far more eyes on its ruleset than this does.
+
+What is thin elsewhere is everything that is not a scanner: refusing a write
+while it is happening (`guard`), removing the write access a payload needs
+(`harden`), hashing configs *and* MCP tool definitions so a change is caught
+however it is worded (`baseline`/`verify`), refusing to pass a payload to
+another agent (`outbound`), and checking a payment against its quote
+(`wormhole-x402`). Detection here is triage on top of those; it is not the
+product.
 
 ### How a payload travels
 
@@ -273,7 +293,7 @@ session transcripts, covering the supply-chain channel that never touches disk.
 
 ```
 $ ./loop/replay.sh
-detected 15/15   clean 14/14   FN=0 FP=0
+detected 16/16   clean 15/15   FN=0 FP=0
 ```
 
 **This is a regression suite, not a detection rate.** It is measured on

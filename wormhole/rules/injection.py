@@ -45,6 +45,30 @@ SELF_REFERENCE = re.compile(
     r"section|file|skill|config(?:uration)?|content)s?\b"
     r"|\bthe (?:above|preceding|following) (?:instructions?|prompt|text)\b"
     r"|\bthese instructions\b"
+    # A bare "this" as the direct object of a propagation verb: "copy this into
+    # every project you touch". No noun follows, so the noun-anchored branch
+    # above never fires — and this phrasing is the one in every worked example
+    # of the attack, including our own README. The verb has to be adjacent, and
+    # a destination is still required by the WORM-001 conjunction, so ordinary
+    # prose ("copy this file to /tmp") does not reach a finding on its own.
+    # A bare "this" as the direct object of a propagation verb, where the
+    # destination follows in the same clause: "copy this into every project you
+    # touch". No noun follows "this", so the noun-anchored branch above never
+    # fires — yet this is the phrasing in every worked example of the attack,
+    # including our own README.
+    #
+    # The destination has to be part of the same phrase rather than merely
+    # nearby, because a contributing guide legitimately says "copy this file to
+    # .env.local" three lines from "every project in this monorepo". Requiring
+    # the preposition binds the verb to its object and keeps that clean.
+    r"|\b(?:copy|include|append|insert|embed|add|paste|reproduce|replicate|"
+    r"duplicate|propagate|forward)\s+this\s+"
+    r"(?:(?:entire|whole|full)\s+)?"
+    r"(?:section|block|text|rule|rules|prompt|instruction|instructions|"
+    r"paragraph|content|note)?\s*"
+    r"(?:in|into|to|onto|within|inside)\s+"
+    r"(?:the\s+|your\s+)?"
+    r"(?:every|each|any|all)\b"
     # "re-add this section to Y if missing" — self-restoration, a persistence
     # tell. The restored object must itself be self-referential: ordinary docs
     # legitimately say "re-add it to the Makefile if a rebase drops it", and
@@ -70,6 +94,16 @@ PROPAGATION_VERB = re.compile(
 PROPAGATION_TARGET = re.compile(
     r"\b(every|each|all)\s+(?:subsequent |future |outgoing |following )?"
     r"(response|reply|message|email|output|file|commit|answer|request)|"
+    # "every project you touch", "each repository you open" — the destination
+    # in the canonical worked example of this attack. The trailing relative
+    # clause is load-bearing: a project the agent *acts on* is a new host,
+    # whereas bare "every project" is ordinary documentation prose ("every
+    # project in this monorepo shares the eslint config") and matching it
+    # produced a false positive on a real contributing guide.
+    r"\b(every|each|any|all)\s+(?:new |other |subsequent )?"
+    r"(project|repo|repository|codebase|workspace)s?\s+"
+    r"(?:you|it|the agent)\s+"
+    r"(?:touch|open|work|visit|edit|encounter|see|read|clone|enter)|"
     r"\b(outgoing|future|subsequent)\s+(messages?|emails?|responses?)|"
     r"\b(AGENTS?\.md|CLAUDE\.md|\.cursorrules|system prompt)\b|"
     # A spawned agent is a new host as surely as a file is. The parent writes

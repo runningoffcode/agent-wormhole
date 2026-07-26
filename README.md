@@ -362,21 +362,31 @@ revert, clean verdict. The transaction is valid; it is simply not the one that
 was asked for.
 
 ```bash
-npm install wormhole-x402
+npm install wormhole-x402          # Solana
+npm install wormhole-x402 viem     # add EVM (viem is an optional peer dep)
 ```
 
 ```ts
-import { guardSigner } from "wormhole-x402";
+import { guardSigner } from "wormhole-x402";          // Solana
 const wallet = guardSigner(myWallet, () => currentQuote);
 // Signing throws unless the transaction matches the server's 402 response.
+
+import { inspectAuthorization } from "wormhole-x402/evm";  // EVM (EIP-3009)
+const verdict = await inspectAuthorization(quote, signedPayload);  // offline, no RPC
 ```
 
 The constraint that makes it work: **intent is never something the agent
 states.** If it were a field the model filled in, a compromised model would
 fill in both sides and validate its own forgery. In x402 the recipient, amount
-and mint arrive as structured JSON in the HTTP 402 response, before the
-transaction exists, on a channel separate from the model's context. The
-comparison is then pure offline arithmetic — ~1ms, no RPC.
+and asset arrive as structured JSON in the HTTP 402 response, before the
+transaction exists, on a channel separate from the model's context. On Solana
+the comparison is pure arithmetic (the merchant's token account derives from
+the quote); on EVM the agent signs an **EIP-712 authorization** and the guard
+recovers the signer and compares recipient, amount, token and chain against the
+quote. Both run offline — ~1ms, no RPC. The EIP-712 domain is built from a
+curated on-chain-verified table, never from the attacker-influenceable quote
+`extra`; an unknown chain or token abstains. Verified today: EIP-3009
+`transferWithAuthorization` (Base first); Permit2 positive-verify is deferred.
 
 <img src="assets/diagram/x402-guard-2x.png" alt="Diagram: the x402 quote arrives on a channel the model never touches and the merchant's token account is derived from it by pure math; the unsigned transaction is authored in the model's context; a single comparison allows the quoted payment and refuses a wrong destination, a wrong amount, or an added delegate." width="820">
 

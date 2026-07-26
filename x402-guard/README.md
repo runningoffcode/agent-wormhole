@@ -43,7 +43,7 @@ headless agent has neither a website nor a human.
 
 ## How it decides
 
-<img src="../assets/diagram/x402-guard-2x.png" alt="Diagram: the x402 quote arrives on a channel the model never touches and the merchant's token account is derived from it by pure math; the unsigned transaction is authored in the model's context; a single comparison allows the quoted payment and refuses a wrong destination, a wrong amount, or an added delegate." width="820">
+<img src="https://raw.githubusercontent.com/runningoffcode/agent-wormhole/main/assets/diagram/x402-guard-2x.png" alt="Diagram: the x402 quote arrives on a channel the model never touches and the merchant's token account is derived from it by pure math; the unsigned transaction is authored in the model's context; a single comparison allows the quoted payment and refuses a wrong destination, a wrong amount, or an added delegate." width="820">
 
 ## Install
 

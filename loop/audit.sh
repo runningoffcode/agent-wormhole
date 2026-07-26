@@ -6,7 +6,7 @@
 # ignore the tool.
 #
 # Install:  ./loop/install-cron.sh
-# Manual:   ./loop/audit.sh ~/traccion ~/agentbazaar
+# Manual:   ./loop/audit.sh ~/project-a ~/project-b
 
 set -uo pipefail
 

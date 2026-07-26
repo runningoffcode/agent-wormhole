@@ -4,7 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/wormhole-x402)](https://www.npmjs.com/package/wormhole-x402)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](../LICENSE)
 [![Offline](https://img.shields.io/badge/network%20calls-none-brightgreen)](#offline)
-[![Tests](https://img.shields.io/badge/tests-15%20passing-informational)](test/)
+[![Tests](https://img.shields.io/badge/tests-21%20passing-informational)](test/)
 
 **Your agent is about to sign a payment. Is it the one it was quoted?**
 
@@ -99,6 +99,7 @@ deterministically from `(recipient, mint)`. No RPC required.
 | `X402-002` | Amount does not match the quote exactly |
 | `X402-003` | A program outside the x402 `exact` allowlist is invoked |
 | `X402-006` | `Approve` / `SetAuthority` / `CloseAccount` riding along |
+| `X402-007` | A SOL transfer riding beside the token payment |
 | `X402-008` | Memo contains instruction-shaped text |
 
 Programs are an **allowlist**, not a blocklist — so it holds against

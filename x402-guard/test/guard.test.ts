@@ -11,6 +11,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
   ComputeBudgetProgram,
+  SystemProgram,
 } from "@solana/web3.js";
 import {
   createTransferCheckedInstruction,
@@ -18,6 +19,8 @@ import {
   createSetAuthorityInstruction,
   AuthorityType,
   getAssociatedTokenAddressSync,
+  createTransferInstruction,
+  TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
 import { inspectPayment, guardSigner, type PaymentQuote } from "../src/index.js";
 
@@ -239,5 +242,93 @@ describe("the signer wrapper fails closed", () => {
     );
     await guarded.signTransaction(tx);
     expect(signed).toBe(true);
+  });
+});
+
+/**
+ * Rider instructions. Found by auditing the instruction walk before launch:
+ * only TransferChecked was inspected, so a second transfer in the unchecked
+ * form — or a lamport transfer through the System program — rode along beside
+ * a correct payment and the verdict still came back allow.
+ */
+describe("riders alongside a correct payment", () => {
+  it("refuses a plain (unchecked) Transfer to an attacker", () => {
+    const rider = createTransferInstruction(
+      payerAta,
+      attackerAta,
+      payer.publicKey,
+      999_000_000n,
+    );
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n), rider]), quote);
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-001")).toBe(true);
+  });
+
+  it("refuses a second transfer to the merchant the quote never described", () => {
+    const rider = createTransferInstruction(
+      payerAta,
+      merchantAta,
+      payer.publicKey,
+      500_000_000n,
+    );
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n), rider]), quote);
+    expect(v.decision).toBe("refuse");
+  });
+
+  it("refuses a SOL transfer riding beside the token payment", () => {
+    const rider = SystemProgram.transfer({
+      fromPubkey: payer.publicKey,
+      toPubkey: attacker.publicKey,
+      lamports: 2_000_000_000,
+    });
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n), rider]), quote);
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-007")).toBe(true);
+  });
+
+  it("still allows the clean payment with no riders", () => {
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n)]), quote);
+    expect(v.decision).toBe("allow");
+  });
+});
+
+/**
+ * A check that could not be performed must never read as a check that passed.
+ */
+describe("fails closed rather than skipping a check", () => {
+  it("abstains when the quoted amount is not an integer", () => {
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n)]), {
+      ...quote,
+      amount: "1.5",
+    });
+    expect(v.decision).toBe("abstain");
+    expect(v.reason).toMatch(/not an integer/);
+  });
+});
+
+/**
+ * A Token-2022 mint derives a different ATA. Deriving only the legacy form
+ * refused every legitimate Token-2022 payment.
+ */
+describe("Token-2022", () => {
+  it("accepts a payment to the Token-2022 ATA of the quoted merchant", () => {
+    const ata2022 = getAssociatedTokenAddressSync(
+      USDC,
+      merchant.publicKey,
+      true,
+      TOKEN_2022_PROGRAM_ID,
+    );
+    const ix = createTransferCheckedInstruction(
+      payerAta,
+      USDC,
+      ata2022,
+      payer.publicKey,
+      1_000_000n,
+      6,
+      [],
+      TOKEN_2022_PROGRAM_ID,
+    );
+    const v = inspectPayment(build([ix]), quote);
+    expect(v.decision).toBe("allow");
   });
 });

@@ -35,7 +35,11 @@
  */
 
 import { PublicKey, VersionedTransaction, Transaction } from "@solana/web3.js";
-import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import {
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+} from "@solana/spl-token";
 
 /** The quote, parsed from the server's 402 response. Never agent-authored. */
 export interface PaymentQuote {
@@ -131,6 +135,16 @@ function readU64LE(data: Uint8Array, offset: number): bigint | null {
   return v;
 }
 
+function readU32LE(data: Uint8Array, offset: number): number | null {
+  if (data.length < offset + 4) return null;
+  return (
+    data[offset] |
+    (data[offset + 1] << 8) |
+    (data[offset + 2] << 16) |
+    (data[offset + 3] << 24)
+  );
+}
+
 // --- the guard -------------------------------------------------------------
 
 export function inspectPayment(
@@ -170,11 +184,28 @@ export function inspectPayment(
   }
 
   // --- 1. destination must be the ATA derived from the quote ---------------
+  // The ATA is derived from (owner, mint, token program). A Token-2022 mint
+  // derives a different address than a legacy one, so deriving only the legacy
+  // form would refuse every legitimate Token-2022 payment. Which program owns
+  // the mint is on-chain state we deliberately do not fetch, so both are
+  // derived and either is accepted as the destination.
   let expectedAta: string | null = null;
+  let expectedAta2022: string | null = null;
   try {
     const payTo = new PublicKey(quote.payTo);
     const mint = new PublicKey(quote.asset);
-    expectedAta = getAssociatedTokenAddressSync(mint, payTo, true).toBase58();
+    expectedAta = getAssociatedTokenAddressSync(
+      mint,
+      payTo,
+      true,
+      TOKEN_PROGRAM_ID,
+    ).toBase58();
+    expectedAta2022 = getAssociatedTokenAddressSync(
+      mint,
+      payTo,
+      true,
+      TOKEN_2022_PROGRAM_ID,
+    ).toBase58();
   } catch (e) {
     return {
       decision: "abstain",
@@ -227,24 +258,74 @@ export function inspectPayment(
         continue;
       }
 
-      // TransferChecked = 12. Accounts: [source, mint, destination, authority]
-      if (disc === 12 && ix.accountKeyIndexes.length >= 3) {
-        const dest = keys[ix.accountKeyIndexes[2]];
-        const amt = readU64LE(data, 1);
+      // Both transfer forms move tokens and both must be accounted for.
+      // TransferChecked = 12, accounts [source, mint, destination, authority];
+      // Transfer = 3, accounts [source, destination, authority]. Ignoring the
+      // unchecked form would let a second, undeclared transfer ride along
+      // beside the quoted one and still be reported as matching the quote.
+      const isChecked = disc === 12;
+      const isPlain = disc === 3;
 
-        if (dest === expectedAta) {
-          sawTransferToExpected = true;
-          transferredAmount = amt;
+      if (isChecked || isPlain) {
+        const destIndex = isChecked ? 2 : 1;
+        const minAccounts = isChecked ? 3 : 2;
+
+        if (ix.accountKeyIndexes.length >= minAccounts) {
+          const dest = keys[ix.accountKeyIndexes[destIndex]];
+          const amt = readU64LE(data, 1);
+
+          if (dest === expectedAta || dest === expectedAta2022) {
+            if (sawTransferToExpected) {
+              // A second transfer to the merchant is still money leaving the
+              // payer that the quote never described.
+              findings.push({
+                code: "X402-002",
+                severity: "critical",
+                message:
+                  "transaction contains more than one transfer to the quoted destination",
+              });
+            } else {
+              sawTransferToExpected = true;
+              transferredAmount = amt;
+            }
+          } else {
+            findings.push({
+              code: "X402-001",
+              severity: "critical",
+              message:
+                "payment destination is not the account derived from the quote",
+              expected: expectedAta,
+              actual: dest,
+            });
+          }
         } else {
+          // A transfer we cannot read the destination of is not something to
+          // report as matching the quote.
           findings.push({
             code: "X402-001",
             severity: "critical",
             message:
-              "payment destination is not the account derived from the quote",
-            expected: expectedAta,
-            actual: dest,
+              "transaction contains a transfer whose destination could not be read",
           });
         }
+      }
+    }
+
+    // The System program is allowed so an ATA can be funded into existence,
+    // but a lamport transfer riding beside the token payment moves value the
+    // quote never mentioned. SystemProgram instruction tags are u32 LE:
+    // 0 = CreateAccount, 2 = Transfer, 3 = CreateAccountWithSeed.
+    if (programId === SYSTEM) {
+      const data = Uint8Array.from(ix.data);
+      const tag = data.length >= 4 ? readU32LE(data, 0) : null;
+
+      if (tag === 2 || tag === 0 || tag === 3) {
+        findings.push({
+          code: "X402-007",
+          severity: "critical",
+          message:
+            "transaction moves SOL alongside the payment — the quote covers the token transfer only",
+        });
       }
     }
   }
@@ -261,14 +342,38 @@ export function inspectPayment(
   }
 
   // --- 4. the amount must match exactly -----------------------------------
-  if (sawTransferToExpected && transferredAmount !== null) {
+  // Every path here that cannot complete the comparison abstains. Skipping a
+  // check we could not perform and then allowing is the one failure mode this
+  // package exists to avoid: it reports "checked" on a transaction nobody
+  // checked, at the moment funds move irreversibly.
+  if (sawTransferToExpected) {
     let quoted: bigint | null = null;
     try {
       quoted = BigInt(quote.amount);
     } catch {
       quoted = null;
     }
-    if (quoted !== null && transferredAmount !== quoted) {
+
+    if (quoted === null) {
+      return {
+        decision: "abstain",
+        findings,
+        reason: `quote amount is not an integer (${String(
+          quote.amount,
+        )}) — refusing to report the payment as checked`,
+      };
+    }
+
+    if (transferredAmount === null) {
+      return {
+        decision: "abstain",
+        findings,
+        reason:
+          "transfer amount could not be read from the instruction data — refusing to report the payment as checked",
+      };
+    }
+
+    if (transferredAmount !== quoted) {
       findings.push({
         code: "X402-002",
         severity: "critical",

@@ -131,10 +131,22 @@ def hardened(root: Path, include_skills: bool = True) -> list:
 
 
 def apply(paths, mode: int = READ_ONLY) -> list:
-    """Set `mode` on each path. Returns (path, ok, error) triples."""
+    """Set `mode` on each path. Returns (path, ok, error) triples.
+
+    Symlinks are refused rather than followed. `os.chmod` dereferences by
+    default, and the threat model here is an agent that can write into the
+    project: it could leave `CLAUDE.md` pointing at a private file elsewhere,
+    and `--undo` would then widen that file's permissions to 0644. A config
+    file is never legitimately a symlink, so declining costs nothing.
+    """
     results = []
     for p in paths:
         try:
+            if Path(p).is_symlink():
+                results.append(
+                    (p, False, "refusing to change mode through a symlink")
+                )
+                continue
             os.chmod(p, mode)
             results.append((p, True, None))
         except OSError as exc:

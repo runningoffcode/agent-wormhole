@@ -1,6 +1,6 @@
 {
   "name": "wormhole-x402",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Refuse an agent payment (Solana or EVM x402) that does not match what the agent was quoted. Offline, no RPC.",
   "main": "./dist/index.js",
   "scripts": {

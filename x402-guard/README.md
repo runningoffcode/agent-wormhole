@@ -48,7 +48,8 @@ headless agent has neither a website nor a human.
 ## Install
 
 ```bash
-npm install wormhole-x402
+npm install wormhole-x402          # Solana
+npm install wormhole-x402 viem     # add EVM (viem is an optional peer dep)
 ```
 
 ```ts
@@ -92,8 +93,36 @@ const verdict = inspectPaymentPayload(xPaymentHeader, quote);
 if (verdict.decision !== "allow") throw new Error(verdict.reason);
 ```
 
-EVM authorization payloads (EIP-3009) carry no transaction to decode and are
-abstained on, never allowed.
+## EVM (EIP-3009)
+
+On EVM the agent does not sign a transaction — it signs an **EIP-712 typed
+message** authorizing the transfer, which a facilitator later submits. The same
+question applies to those bytes: does the authorization about to be signed match
+the quote? The EVM verifier lives at a separate entry point so a Solana-only
+install never pulls an EVM crypto library.
+
+```ts
+import { inspectAuthorization } from "wormhole-x402/evm";
+
+// quote: { network: "eip155:8453", asset, payTo, amount } from the 402 response
+// payload: { signature, authorization: { from, to, value, validAfter, validBefore, nonce } }
+const verdict = await inspectAuthorization(quote, payload); // offline, no RPC
+if (verdict.decision !== "allow") throw new Error(verdict.reason);
+```
+
+`inspectAuthorization` recovers the signer from the signature and confirms it is
+the stated payer, then compares recipient, amount, token, and chain against the
+quote. The EIP-712 **domain is built from a curated `(chainId, contract)` table
+of on-chain-verified values — never from the quote's `extra`**, which is
+attacker-influenceable. An unknown chain or token abstains rather than guesses.
+
+It refuses **standing-authority** primitives — an `Approve`, an EIP-2612
+`Permit`, a Permit2 allowance — that grant a spender ongoing access rather than
+making a one-shot payment. This matters on EVM specifically: USDC on Base
+implements EIP-2612, so a malicious unbounded `Permit` validates against the
+*same* domain as a legitimate transfer; the only offline discriminator is the
+EIP-712 type. `viem` is an **optional** peer dependency (`npm install
+wormhole-x402 viem`).
 
 ## The one design constraint
 
@@ -127,6 +156,25 @@ deterministically from `(recipient, mint)`. No RPC required.
 
 Programs are an **allowlist**, not a blocklist — so it holds against
 instructions nobody has catalogued yet.
+
+**EVM (EIP-3009), `wormhole-x402/evm`:**
+
+| Code | Check |
+|---|---|
+| `X402-101` | `authorization.to` is not the quoted `payTo` |
+| `X402-102` | `authorization.value` is not the quoted amount exactly |
+| `X402-103` | EIP-712 domain does not match the quote — wrong token, wrong chain, or a payload declaring a different scheme than the server |
+| `X402-104` | Signature does not recover to `authorization.from` |
+| `X402-105` | Validity window is too wide, inverted, or empty |
+| `X402-106` | Signs a standing allowance (`Approve` / EIP-2612 `Permit` / Permit2) — spend authority, not a one-shot transfer |
+| `X402-107` | Nonce is malformed, or reused within the session |
+| `X402-110` | `erc7710` delegation — opaque `permissionContext`, no offline destination or amount → abstain |
+
+Verified today: EIP-3009 `transferWithAuthorization`, on the chains in the
+trusted domain table (Base first, on-chain verified). Permit2 *positive*
+verification is deferred — a Permit2 payload abstains or refuses rather than
+being green-lit, until its witness type is checked against a real facilitator
+signature.
 
 ## What it does not do
 
@@ -162,15 +210,18 @@ notices. This one has no permissive default.
 
 No RPC. No network calls. No telemetry. Nothing leaves the process.
 
-This package declares **no dependencies of its own** — `@solana/web3.js` and
-`@solana/spl-token` are peer dependencies you almost certainly already have.
-`npm audit` will report advisories after installing: they come from
-`web3.js`'s own transitive dependencies (`bigint-buffer`, `uuid`), which the
-whole Solana ecosystem carries, and none of them are reachable from this
-package's code.
+This package declares **no dependencies of its own** — the chain libraries are
+peer dependencies you already have. The Solana lane uses `@solana/web3.js` +
+`@solana/spl-token`; the EVM lane uses `viem`, imported only from
+`wormhole-x402/evm`, so a Solana-only install never pulls it. `npm audit` will
+report advisories from `web3.js`'s own transitive dependencies
+(`bigint-buffer`, `uuid`), which the whole Solana ecosystem carries and none of
+which are reachable from this package's code.
 
-Everything above is computed from the serialized transaction bytes you already
-hold, plus the quote you already received. Measured at **~1ms per transaction**.
+Everything above is computed from the bytes you already hold — the serialized
+transaction (Solana) or the EIP-712 authorization (EVM) — plus the quote you
+already received. On EVM the one cryptographic operation is an offline signature
+recovery; there is no chain call on either lane.
 
 ---
 

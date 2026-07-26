@@ -139,6 +139,13 @@ notices. This one has no permissive default.
 
 No RPC. No network calls. No telemetry. Nothing leaves the process.
 
+This package declares **no dependencies of its own** — `@solana/web3.js` and
+`@solana/spl-token` are peer dependencies you almost certainly already have.
+`npm audit` will report advisories after installing: they come from
+`web3.js`'s own transitive dependencies (`bigint-buffer`, `uuid`), which the
+whole Solana ecosystem carries, and none of them are reachable from this
+package's code.
+
 Everything above is computed from the serialized transaction bytes you already
 hold, plus the quote you already received. Measured at **~1ms per transaction**.
 

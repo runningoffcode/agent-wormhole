@@ -1,6 +1,33 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## wormhole-x402 0.1.2 — 2026-07-25
+
+A pre-launch audit of the instruction walk found the guard inspected only
+`TransferChecked`. Three fixes, five of the six new tests fail against the
+previous source.
+
+- **Rider transfers are refused.** A plain `Transfer` (discriminant 3) or a
+  System-program lamport transfer could ride beside a correct payment and the
+  verdict was still `allow` — the exact promise the package makes, defeated by
+  adding one instruction. Both are now refused, as is a second transfer to the
+  quoted destination (`X402-007` covers the SOL case).
+- **Unreadable amounts abstain rather than allow.** A `quote.amount` that would
+  not parse as an integer silently skipped the comparison. A check that could
+  not run must never read as a check that passed.
+- **Token-2022 destinations are derived correctly.** Only the legacy ATA was
+  derived, so every legitimate Token-2022 payment was refused. Both forms are
+  derived now, since which program owns the mint is on-chain state this package
+  deliberately does not fetch.
+
+## wormhole-guard 0.1.1 — 2026-07-25
+
+- `harden` no longer changes a file's mode through a symlink. `os.chmod`
+  dereferences, so an agent able to write into the project could point
+  `CLAUDE.md` at a private file and have `--undo` widen it to `0644`.
+- Packaging metadata: `license = "Apache-2.0"` with explicit `license-files`,
+  so PyPI shows the identifier rather than the full license text.
+
+## 0.1.0 — 2026-07-25
 
 First release. Detection, prevention and containment for self-replicating
 prompt payloads in AI agent configuration.

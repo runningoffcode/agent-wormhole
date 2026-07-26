@@ -41,6 +41,15 @@ INBOUND_TOOLS = {
     "NotebookRead", "Task",
 }
 
+# An agent with a wallet reads its own transaction history through an MCP tool,
+# and the memo field in that response is attacker-writable. `mcp__*` names are
+# server-specific, so the match is by prefix rather than exact name.
+INBOUND_TOOL_PREFIXES = ("mcp__",)
+
+
+def _is_inbound(tool: str) -> bool:
+    return tool in INBOUND_TOOLS or tool.startswith(INBOUND_TOOL_PREFIXES)
+
 # Rules worth acting on when they appear in inbound content. Instruction
 # override and concealment are the two that only make sense as an attack --
 # ordinary documentation does not tell the reader to ignore its instructions.
@@ -77,6 +86,45 @@ def _result_text(payload: dict) -> str:
     return str(out)
 
 
+def _memo_findings(body: str, source: str) -> list:
+    """Findings for memo text inside a transaction-history tool result.
+
+    Split out from the general path because the source-code exclusion below
+    would otherwise swallow it: an RPC response is JSON, JSON reads as source
+    code to the heuristic, and the memo payload rides inside it. A history
+    response is also the one place where a *short* string of attacker text
+    matters, so the memo scanner runs on the extracted memo rather than the
+    surrounding envelope.
+    """
+    if "Memo" not in body and "memo" not in body:
+        return []
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return []
+
+    from .scanners.memos import scan_memos
+
+    if isinstance(data, dict):
+        for key in ("result", "transactions", "data", "items"):
+            v = data.get(key)
+            if isinstance(v, list):
+                data = v
+                break
+            if isinstance(v, dict):
+                data = [v]
+                break
+        else:
+            data = [data]
+    if not isinstance(data, list):
+        return []
+
+    findings = scan_memos(data)
+    for f in findings:
+        f.path = source or f.path
+    return findings
+
+
 def inspect_inbound(tool: str, text: str, source: str = "") -> list:
     """Findings for content arriving from a tool. Source code is excluded.
 
@@ -87,15 +135,20 @@ def inspect_inbound(tool: str, text: str, source: str = "") -> list:
     """
     if not text or not text.strip():
         return []
-    if tool not in INBOUND_TOOLS:
+    if not _is_inbound(tool):
         return []
 
     body = text[:MAX_INSPECT]
-    if _looks_like_source_code(body):
-        return []
 
-    return [f for f in scan_text(body, path=source or f"tool:{tool}")
-            if f.rule_id in ACTIONABLE]
+    # On-chain memos arrive as JSON from an RPC call or an MCP wallet tool, so
+    # they must be extracted before the source-code exclusion runs.
+    memo_hits = _memo_findings(body, source)
+
+    if _looks_like_source_code(body):
+        return memo_hits
+
+    return memo_hits + [f for f in scan_text(body, path=source or f"tool:{tool}")
+                        if f.rule_id in ACTIONABLE]
 
 
 def redact(text: str, findings: list) -> str:

@@ -62,17 +62,23 @@ def gather(root: Path, include_global: bool = True) -> list:
     return findings, configs
 
 
-def render(findings, configs, color=True, verbose=False, blast=None):
+def render(findings, configs, color=True, verbose=False, blast=None,
+           header=True):
+    """Render findings. `header=False` for the scanners that print their own
+    banner -- a memo scan announcing "scanned 0 agent config file(s)" reads
+    like the tool looked in the wrong place."""
     c = _paint(color)
     out = []
-    out.append(f"\n{c['bold']}wormhole{c['r']} {c['dim']}"
-               f"— agent worm posture scan{c['r']}\n")
+    if header:
+        out.append(f"\n{c['bold']}wormhole{c['r']} {c['dim']}"
+                   f"— agent worm posture scan{c['r']}\n")
 
     counts = {}
     for f in findings:
         counts[f.severity] = counts.get(f.severity, 0) + 1
 
-    out.append(f"{c['dim']}scanned {len(configs)} agent config file(s){c['r']}\n")
+    if header:
+        out.append(f"{c['dim']}scanned {len(configs)} agent config file(s){c['r']}\n")
 
     if blast is not None:
         out.append(scoring.render(blast, c))
@@ -215,6 +221,16 @@ def main(argv=None):
     cp.add_argument("--json", action="store_true")
     cp.add_argument("--no-color", action="store_true")
     cp.add_argument("--fail-on", default="high",
+                    choices=["critical", "high", "medium", "low", "never"])
+
+    mm = sub.add_parser("memos",
+                        help="scan on-chain memos from a transaction history "
+                             "dump (offline; never fetches)")
+    mm.add_argument("path", nargs="?", default="-",
+                    help="JSON/JSONL file of transactions, or - for stdin")
+    mm.add_argument("--json", action="store_true")
+    mm.add_argument("--no-color", action="store_true")
+    mm.add_argument("--fail-on", default="high",
                     choices=["critical", "high", "medium", "low", "never"])
 
     hf = sub.add_parser("handoffs",
@@ -464,6 +480,30 @@ def main(argv=None):
                       f"documents{c['r']}\n")
             else:
                 print(render(findings, [], color, verbose=True))
+        if args.fail_on == "never":
+            return 0
+        threshold = {"critical": 0, "high": 1, "medium": 2, "low": 3}[args.fail_on]
+        return 1 if any(f.severity_rank <= threshold for f in findings) else 0
+
+    if args.cmd == "memos":
+        from .scanners import memos as memos_scanner
+        try:
+            txs = memos_scanner.load_transactions(args.path)
+        except OSError as e:
+            print(f"{c['bad']}could not read {args.path}: {e}{c['r']}")
+            return 2
+        findings = memos_scanner.scan_memos(txs)
+        memo_count = sum(len(memos_scanner.extract_memos(t)) for t in txs)
+        if args.json:
+            print(as_json(findings))
+        else:
+            print(f"\n{c['bold']}wormhole{c['r']} {c['dim']}— on-chain memo scan "
+                  f"({memo_count} memo{'s' if memo_count != 1 else ''} in "
+                  f"{len(txs)} transaction{'s' if len(txs) != 1 else ''}){c['r']}")
+            if not findings:
+                print(f"\n{c['ok']}✓ no injection payloads in memo text{c['r']}\n")
+            else:
+                print(render(findings, [], color, verbose=True, header=False))
         if args.fail_on == "never":
             return 0
         threshold = {"critical": 0, "high": 1, "medium": 2, "low": 3}[args.fail_on]

@@ -853,6 +853,28 @@ export interface EvmPaymentRequirements {
 }
 
 /**
+ * Quote-text scanning, re-exported so the EVM entrypoint reaches it too.
+ *
+ * Safe for this file's dependency rule: ./quotetext has zero imports, so this
+ * adds nothing to the viem-only footprint that `wormhole-x402/evm` promises.
+ *
+ * Worth pairing with the note at the `extra` handling below. Downstream, the
+ * server quote's `extra.assetTransferMethod` is treated as authoritative
+ * because it "arrives on the trusted 402 channel the model never touches" —
+ * and that reasoning is sound for the field's SEMANTICS, which conformance
+ * checks. It does not extend to free text sitting in the same object. The
+ * channel is trusted to state what the merchant wants paid; it is not trusted
+ * to be free of instructions aimed at the buyer's model.
+ */
+export {
+  inspectQuoteText,
+  assertQuoteTextClean,
+  type QuoteTextFinding,
+  type QuoteTextVerdict,
+  type InspectQuoteTextOptions,
+} from "./quotetext.js";
+
+/**
  * Map a 402 EVM `accepts` entry to the quote `inspectAuthorization` checks
  * against. Throws if the mandatory fields are missing — a quote we cannot read
  * is not one to silently default.

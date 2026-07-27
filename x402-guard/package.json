@@ -18,7 +18,9 @@
     "prompt-injection",
     "agentic-commerce",
     "transaction-security",
-    "spl-token"
+    "spl-token",
+    "quote-scanning",
+    "mcp"
   ],
   "author": "JuicyD3v",
   "license": "Apache-2.0",
@@ -41,6 +43,10 @@
     "./evm": {
       "types": "./dist/evm.d.ts",
       "import": "./dist/evm.js"
+    },
+    "./quotetext": {
+      "types": "./dist/quotetext.d.ts",
+      "import": "./dist/quotetext.js"
     }
   },
   "files": [

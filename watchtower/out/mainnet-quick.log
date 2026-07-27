@@ -1,0 +1,12 @@
+[watchtower] source=rpc
+  RPC health: ok
+  program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr: seeking 250 memo-bearing signatures
+    page 1: scanned 1000 sigs, kept 65/250
+    page 2: scanned 1000 sigs, kept 119/250
+    page 3: scanned 1000 sigs, kept 183/250
+  program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr: 250 candidate signatures
+    fetched 25 transactions
+    fetched 50 transactions
+    fetched 75 transactions
+    fetched 100 transactions
+    fetched 125 transactions

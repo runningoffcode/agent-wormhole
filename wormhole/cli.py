@@ -8,7 +8,7 @@ from pathlib import Path
 from . import __version__
 from . import guard, harden, init, outbound, provenance, readguard
 from .baseline import record, verify, BASELINE_FILE
-from .rules.injection import scan_text
+from .rules.injection import scan_text, FindingList
 from . import scoring
 from .scanners import autostart, mcp_tools, propagation
 from .scanners.posture import (
@@ -28,9 +28,16 @@ def _paint(enabled: bool):
     return C if enabled else {k: "" for k in C}
 
 
-def gather(root: Path, include_global: bool = True) -> list:
-    """Run every check and return findings."""
-    findings = []
+def gather(root: Path, include_global: bool = True, *,
+           allow_suppression: bool = True):
+    """Run every check and return findings.
+
+    The returned list carries a `.suppressed` attribute listing exemptions
+    that inline directives applied, as (rule_id, path, line). A suppression
+    that disappears from the output is unauditable, which is the whole
+    objection to shipping the feature at all.
+    """
+    findings = FindingList()
     configs = find_agent_configs(root)
 
     for cfg in configs:
@@ -38,7 +45,14 @@ def gather(root: Path, include_global: bool = True) -> list:
             text = cfg.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        findings.extend(scan_text(text, path=str(cfg)))
+        # The audit path, over files the operator already has: the one place
+        # an inline `wormhole:ignore` is safe to honour. Everywhere else the
+        # text is a pending write or remote content, where a directive would
+        # be the attacker's own exemption.
+        fs = scan_text(text, path=str(cfg),
+                       allow_suppression=allow_suppression)
+        findings.extend(fs)
+        findings.suppressed.extend((rid, str(cfg), ln) for rid, ln in fs.suppressed)
 
     findings.extend(check_writable_configs(configs))
 
@@ -112,6 +126,17 @@ def render(findings, configs, color=True, verbose=False, blast=None,
              for s in ("critical", "high", "medium", "low", "info")
              if s in counts]
     out.append(("  ".join(parts) if parts else f"{c['ok']}clean{c['r']}") + "\n")
+
+    # An exemption that disappears from the output is unauditable, which is
+    # the entire objection to shipping inline suppression. Print it.
+    suppressed = getattr(findings, "suppressed", None)
+    if suppressed:
+        out.append(f"{c['dim']}{len(suppressed)} finding(s) suppressed by "
+                   f"inline directives:{c['r']}")
+        for rule_id, spath, line in sorted(suppressed):
+            loc = f"{spath}:{line}" if line else spath
+            out.append(f"  {c['dim']}{rule_id}  {loc}{c['r']}")
+        out.append("")
     return "\n".join(out)
 
 
@@ -193,6 +218,44 @@ def as_sarif(findings, root="."):
             }]
         results.append(result)
 
+    # Suppressed findings belong here rather than being dropped: that is what
+    # the SARIF suppressions array is for, and GitHub code scanning renders
+    # them as dismissed rather than absent. Dropping them silently would make
+    # an exemption invisible in exactly the place a reviewer would look.
+    for rule_id, spath, line in getattr(findings, "suppressed", []):
+        if rule_id not in seen:
+            # A suppressed rule never produced a finding, so it is absent from
+            # the rules array. SARIF requires ruleId to resolve, so declare a
+            # minimal descriptor for it.
+            seen[rule_id] = True
+            rules.append({
+                "id": rule_id,
+                "name": rule_id,
+                "shortDescription": {"text": f"{rule_id} (suppressed)"},
+                "defaultConfiguration": {"level": "note"},
+                "properties": {"tags": ["security", "prompt-injection",
+                                        "ai-agent"]},
+            })
+        entry = {
+            "ruleId": rule_id,
+            "level": "note",
+            "message": {"text": "Suppressed by an inline wormhole:ignore "
+                                "directive in the scanned file."},
+            "suppressions": [{
+                "kind": "inSource",
+                "justification": f"wormhole:ignore {rule_id}",
+            }],
+        }
+        rel = relative(spath)
+        if rel:
+            entry["locations"] = [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": rel},
+                    "region": {"startLine": max(1, line or 1)},
+                }
+            }]
+        results.append(entry)
+
     return json.dumps({
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
@@ -221,6 +284,11 @@ def main(argv=None):
     s.add_argument("--sarif", action="store_true",
                    help="emit SARIF 2.1.0 for GitHub code scanning "
                         "(inline PR annotations). Excerpts are omitted.")
+    s.add_argument("--no-suppress", action="store_true",
+                   help="ignore inline wormhole:ignore directives. Only the "
+                        "scan command honours them at all; this turns that "
+                        "off too, for auditing what a file would report "
+                        "without its own exemptions.")
     s.add_argument("--no-color", action="store_true")
     s.add_argument("-v", "--verbose", action="store_true", help="include info findings")
     s.add_argument("--local-only", action="store_true",
@@ -711,7 +779,8 @@ def main(argv=None):
         return 1 if failed else 0
 
     if args.cmd == "scan":
-        findings, configs = gather(root, include_global=not args.local_only)
+        findings, configs = gather(root, include_global=not args.local_only,
+                                   allow_suppression=not args.no_suppress)
         blast = None
         if args.blast_radius:
             blast = scoring.compute(findings)
@@ -738,7 +807,7 @@ def main(argv=None):
                 text = cfg.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            fs = scan_text(text, path=str(cfg))
+            fs = scan_text(text, path=str(cfg), allow_suppression=True)
             if any(f.rule_id.startswith("WORM") for f in fs):
                 results.append(cap.swallow(cfg, fs,
                                                  dry_run=not args.apply))

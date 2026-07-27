@@ -411,11 +411,34 @@ MAX_SCAN_BYTES = 262144
 # explicit rule IDs keeps the exemption auditable and grep-able in review:
 # a bare "ignore everything" directive is deliberately not supported.
 #
-# The tradeoff is real and worth naming: an attacker who can already write to
-# an instruction file can also write a suppression comment. That is not a new
-# capability -- the same write deletes the payload's own tell -- and the
-# directive is far more conspicuous in a diff than a rephrased payload. It is
-# reported by `wormhole insights` for exactly that reason.
+# Suppression is OFF unless a caller opts in, and only two do: the `scan`
+# command, which audits files the operator already has.
+#
+# The original reasoning here -- "an attacker who can write to an instruction
+# file can also write a suppression comment, so this grants no new capability"
+# -- holds only for `scan`, which runs after the fact on a file that already
+# exists. It is wrong everywhere else, and shipping it module-wide was a real
+# vulnerability:
+#
+#   guard is a blocking control judging a write that has NOT landed yet. At
+#   that instant the attacker has no file-write capability, so honouring a
+#   directive inside the pending content grants exactly the power the hook
+#   exists to withhold -- and silently, since the finding never materialises.
+#
+#   readguard and outbound scan remote pages, tool output and handoff text.
+#   That content is authored by whoever served it, with no file-write
+#   capability behind it at all. A hostile page could disable detection of
+#   itself by including one comment.
+#
+#   capture re-scans cleaned text to confirm the payload is gone; a directive
+#   there would let a payload survive quarantine and still report clean.
+#
+# Default-off is the load-bearing part: a call site added later inherits the
+# safe behaviour without anyone remembering this.
+#
+# Applied suppressions are returned on the finding list as `.suppressed` and
+# surfaced in scan output and SARIF, so an exemption stays visible rather than
+# vanishing.
 SUPPRESSION = re.compile(
     r"wormhole:\s*ignore\s+([A-Z][A-Z0-9]*-\d{3}(?:\s*,\s*[A-Z][A-Z0-9]*-\d{3})*)",
     re.IGNORECASE,
@@ -435,15 +458,57 @@ def _suppressed_rules(text: str, line_no: int) -> set:
     return out
 
 
-def scan_text(text: str, path: str = None) -> list:
-    """Run all content rules over a blob of text."""
-    findings = []
-    if text and len(text) > MAX_SCAN_BYTES:
-        text = text[:MAX_SCAN_BYTES]
+class FindingList(list):
+    """A list of findings that also carries what was suppressed.
+
+    A plain list would drop that record on the floor, which is how the
+    previous implementation ended up claiming an auditability property it did
+    not have. Subclassing keeps every existing caller working unchanged while
+    giving `scan` and SARIF somewhere to read the exemptions from.
+    """
+
+    __slots__ = ("suppressed",)
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.suppressed = []  # (rule_id, line_no)
+
+
+def scan_text(text: str, path: str = None, *,
+              allow_suppression: bool = False,
+              max_bytes: int = MAX_SCAN_BYTES) -> FindingList:
+    """Run all content rules over a blob of text.
+
+    allow_suppression is opt-in per call site: honouring an inline directive
+    is only safe where the text is material the operator already has, never
+    where it is a pending write or remote content. See the SUPPRESSION note.
+
+    max_bytes is a parameter because the right cap differs by path. The guard
+    hook runs on every tool call and wants a tight bound; the read path faces
+    an attacker who can prepend a few hundred KB of filler for free, and after
+    the comment scan became linear a larger cap there costs milliseconds.
+    """
+    findings = FindingList()
+    if text and len(text) > max_bytes:
+        # Truncation must be visible. A truncated scan and a clean scan were
+        # indistinguishable to the caller, which is the same silent-pass shape
+        # as a corrupt baseline reading as "no baseline recorded".
+        findings.append(Finding(
+            rule_id="SCAN-001", severity="medium",
+            title="Input truncated before scanning",
+            detail=(f"{len(text)} bytes exceeded the {max_bytes}-byte scan "
+                    f"limit; content past the limit was not inspected. "
+                    f"Padding a page beyond the limit is a cheap way to hide "
+                    f"a payload behind it."),
+            path=path,
+            remediation=("Review the source manually, or re-scan with a "
+                         "raised limit.")))
+        text = text[:max_bytes]
 
     def add(rule_id, severity, title, detail, pos, remediation, refs=None):
         line_no = _line_of(text, pos)
-        if rule_id.upper() in _suppressed_rules(text, line_no):
+        if allow_suppression and rule_id.upper() in _suppressed_rules(text, line_no):
+            findings.suppressed.append((rule_id, line_no))
             return
         findings.append(Finding(
             rule_id=rule_id, severity=severity, title=title, detail=detail,

@@ -291,6 +291,6 @@ def export_corpus(dest: Path) -> dict:
         out.chmod(0o400)
         exported.append({"id": e["id"], "rules": e["rule_ids"],
                          "file": str(out), "captured_at": e["captured_at"]})
-    (dest / "manifest.json").write_text(json.dumps(
-        {"exported": _now(), "samples": exported}, indent=2))
+    _write_atomic(dest / "manifest.json", json.dumps(
+        {"exported": _now(), "samples": exported}, indent=2), mode=0o644)
     return {"count": len(exported), "dest": str(dest)}

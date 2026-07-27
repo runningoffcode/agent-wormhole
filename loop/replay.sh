@@ -18,8 +18,11 @@ hits() {  # count WORM findings for a single file
   mkdir -p "$WORK/case"
   rm -f "$WORK/case/"*
   cp "$1" "$WORK/case/AGENTS.md"
+  # --no-suppress: the corpus includes a fixture that carries its own
+  # `wormhole:ignore` directive. Honouring it here would let the payload
+  # exempt itself from the regression suite that exists to catch it.
   python3 -m wormhole scan "$WORK/case" --no-color --local-only \
-    --fail-on never --json 2>/dev/null | python3 -c \
+    --no-suppress --fail-on never --json 2>/dev/null | python3 -c \
     'import json,sys
 try: d=json.load(sys.stdin)
 except Exception: d=[]

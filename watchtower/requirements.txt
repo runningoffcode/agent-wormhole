@@ -1,0 +1,7 @@
+# Chain Watchtower dependencies.
+#
+# These belong to the watchtower ONLY. The free local `wormhole` package keeps
+# its zero-runtime-dependency, fully-offline promise and must never import
+# anything from this directory.
+requests>=2.31.0
+certifi>=2024.2.2

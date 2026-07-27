@@ -602,6 +602,31 @@ export interface PaymentRequirements {
   [key: string]: unknown;
 }
 
+/**
+ * Quote-text scanning, re-exported for convenience.
+ *
+ * The module itself has zero imports and is also published at
+ * `wormhole-x402/quotetext`, so an EVM-only or bundle-conscious consumer can
+ * take it without pulling in the Solana runtime. Re-exporting here is purely
+ * so that `quoteFromRequirements` and `inspectQuoteText` — the two things you
+ * do with a freshly-arrived 402 response — are reachable from one import.
+ *
+ * The pairing is the point. `quoteFromRequirements` extracts the three fields
+ * that move money and DISCARDS everything else in the entry: description,
+ * resource, mimeType, outputSchema, extra. That discarded remainder is exactly
+ * the text the model goes on to read, and until now nothing in this package
+ * looked at it.
+ */
+export {
+  inspectQuoteText,
+  assertQuoteTextClean,
+  normalizeQuoteText,
+  decodeUnicodeTags,
+  type QuoteTextFinding,
+  type QuoteTextVerdict,
+  type InspectQuoteTextOptions,
+} from "./quotetext.js";
+
 /** Map a 402 `accepts` entry to the quote the guard checks against. */
 export function quoteFromRequirements(req: PaymentRequirements): PaymentQuote {
   if (

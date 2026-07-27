@@ -53,12 +53,21 @@ def _is_inbound(tool: str) -> bool:
 # Rules worth acting on when they appear in inbound content. Instruction
 # override and concealment are the two that only make sense as an attack --
 # ordinary documentation does not tell the reader to ignore its instructions.
-ACTIONABLE = ("WORM-001", "WORM-002", "WORM-003", "WORM-004", "WORM-006", "WORM-007")
+ACTIONABLE = ("WORM-001", "WORM-002", "WORM-003", "WORM-004", "WORM-006",
+              "WORM-007", "SCAN-001")
 
-# How much of a large tool result to inspect. A payload that only appears
-# 200KB into a file is still a payload, but scanning unbounded output on every
-# tool call makes the agent unusable.
-MAX_INSPECT = 262144
+# How much of a large tool result to inspect.
+#
+# Raised from 256KB. The old cap was set when the comment scan cost 33 us/byte,
+# so a large page was a denial of service; it now costs 0.09 us/byte, and 8MB
+# is well under a second. That matters here more than anywhere else: this path
+# scans fetched pages and tool output, where an attacker prepends a few hundred
+# KB of filler for free and looks like an ordinary bloated page. A cap the
+# attacker can simply step over is not a cap.
+#
+# Truncation past this point is reported as SCAN-001 rather than passing
+# quietly, which is why SCAN-001 is in ACTIONABLE above.
+MAX_INSPECT = 8 * 1024 * 1024
 
 
 def _result_text(payload: dict) -> str:
@@ -138,17 +147,22 @@ def inspect_inbound(tool: str, text: str, source: str = "") -> list:
     if not _is_inbound(tool):
         return []
 
-    body = text[:MAX_INSPECT]
+    # Not pre-truncated: scan_text applies the cap itself and reports SCAN-001
+    # when it bites. Slicing here first would hide the original length from it
+    # and make a truncated scan look identical to a clean one.
+    body = text
 
     # On-chain memos arrive as JSON from an RPC call or an MCP wallet tool, so
     # they must be extracted before the source-code exclusion runs.
-    memo_hits = _memo_findings(body, source)
+    memo_hits = _memo_findings(body[:MAX_INSPECT], source)
 
-    if _looks_like_source_code(body):
+    if _looks_like_source_code(body[:MAX_INSPECT]):
         return memo_hits
 
-    return memo_hits + [f for f in scan_text(body, path=source or f"tool:{tool}")
-                        if f.rule_id in ACTIONABLE]
+    return memo_hits + [
+        f for f in scan_text(body, path=source or f"tool:{tool}",
+                             max_bytes=MAX_INSPECT)
+        if f.rule_id in ACTIONABLE]
 
 
 def redact(text: str, findings: list) -> str:
@@ -234,7 +248,8 @@ def run_instructions_hook(stream=None, out=None) -> int:
         except OSError:
             return 0
 
-    findings = [f for f in scan_text(text, path=str(path))
+    findings = [f for f in scan_text(text, path=str(path),
+                                     max_bytes=MAX_INSPECT)
                 if f.rule_id in ACTIONABLE]
     if not findings:
         return 0

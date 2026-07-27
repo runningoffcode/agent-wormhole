@@ -55,6 +55,12 @@ BODY_FIELDS = (
 BLOCKING = ("WORM-001", "WORM-002", "WORM-003", "WORM-004",
             "WORM-005", "WORM-006", "WORM-007")
 
+# Handoff text is composed by an agent that may already be carrying a payload,
+# so the same padding evasion applies here as on the read path: prepend filler,
+# push the payload past the cap, hand it to the next agent clean. Matches
+# readguard's limit; truncation surfaces as SCAN-001 rather than silence.
+MAX_INSPECT = 8 * 1024 * 1024
+
 
 def message_body(tool_input) -> str:
     """The text this call would put in front of another reader."""
@@ -87,8 +93,9 @@ def inspect_outbound(tool: str, tool_input) -> list:
     if _looks_like_source_code(body):
         return []
 
-    return [f for f in scan_text(body, path=f"outbound:{tool}")
-            if f.rule_id in BLOCKING]
+    return [f for f in scan_text(body, path=f"outbound:{tool}",
+                                 max_bytes=MAX_INSPECT)
+            if f.rule_id in BLOCKING or f.rule_id == "SCAN-001"]
 
 
 def run_hook(stream=None, out=None, warn_only: bool = False) -> int:

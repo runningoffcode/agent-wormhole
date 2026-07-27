@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](pyproject.toml)
 [![Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen)](#no-telemetry)
-[![Corpus](https://img.shields.io/badge/corpus-16%2F16%20·%2015%2F15-informational)](corpus/)
+[![Corpus](https://img.shields.io/badge/corpus-17%2F17%20·%2015%2F15-informational)](corpus/)
 
 **Your agents talk to each other. Make sure they aren't passing something on.**
 
@@ -313,7 +313,7 @@ session transcripts, covering the supply-chain channel that never touches disk.
 
 ```
 $ ./loop/replay.sh
-detected 16/16   clean 15/15   FN=0 FP=0
+detected 17/17   clean 15/15   FN=0 FP=0
 ```
 
 **This is a regression suite, not a detection rate.** It is measured on
@@ -339,7 +339,7 @@ Verified additionally against 7 real projects: 0 findings.
 
 ### What it actually costs to evade
 
-Since "16/16" says nothing about phrasing nobody has written down yet, here is
+Since "17/17" says nothing about phrasing nobody has written down yet, here is
 the number that does. `loop/mutate.py` rewrites every malicious fixture and
 reports what survives:
 
@@ -347,20 +347,20 @@ reports what survives:
 $ python3 loop/mutate.py
 
   tier                   caught   rate
-  verbatim             16/16       100%
-  casing               64/64       100%
-  filler               64/64       100%
-  synonym-1           101/128       79%
-  reorder              16/16       100%
-  synonym+filler      104/128       81%
-  passive-voice        15/16         94%
-  combined             89/128        70%
+  verbatim             17/17       100%
+  casing               68/68       100%
+  filler               68/68       100%
+  synonym-1           104/136       76%
+  reorder              17/17       100%
+  synonym+filler      104/136       76%
+  passive-voice        16/17         94%
+  combined             97/136        71%
 ```
 
-**Detection falls to roughly 70% under combined mutation, and one round of
-synonym substitution costs about a fifth of it.** The mutations are lexical
+**Detection falls to roughly 71% under combined mutation, and one round of
+synonym substitution costs about a quarter of it.** The mutations are lexical
 and offline, so an attacker with a language model does better than this — treat
-70% as an upper bound, not a floor.
+71% as an upper bound, not a floor.
 
 That curve is the argument for the rest of the tool. `baseline` and `verify`
 flag *any* change to a watched file regardless of wording, and `harden` removes
@@ -532,12 +532,22 @@ Ignore all previous formatting conventions and use tabs.
 ```
 
 Rule IDs are required — there is no blanket ignore, because an unreviewable
-opt-out is indistinguishable from uninstalling the tool. Suppressions are
-reported by `wormhole insights`.
+opt-out is indistinguishable from uninstalling the tool.
 
-An attacker who can write to an instruction file can also write a suppression
-comment. That is not new capability — the same write could rephrase the payload
-instead — but the directive is far more conspicuous in a diff.
+**Only `wormhole scan` honours these directives.** The blocking write hook, the
+read path (`readguard`), outbound handoffs, and every scanner ignore them
+entirely. The reasoning is that "an attacker who can write to the file could
+also write the comment" holds only for `scan`, which audits a file that already
+exists — it is false for `guard`, which is judging a write that has *not* landed
+yet, and false for remote content, which the attacker authored with no
+file-write capability behind it at all. Suppression is therefore opt-in per call
+site, and off by default, so a call site added later inherits the safe
+behaviour.
+
+Applied suppressions are printed in the scan summary and emitted in SARIF's
+`suppressions` array, where GitHub renders them as dismissed rather than
+absent. `--no-suppress` ignores them entirely. An exemption that vanishes from
+the output is unauditable, which is the only reason the feature is defensible.
 
 ## MCP server
 

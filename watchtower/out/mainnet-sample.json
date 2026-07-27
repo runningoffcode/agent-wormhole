@@ -1,0 +1,51 @@
+{
+  "generated_utc": "2026-07-27T18:45:35.941727+00:00",
+  "provenance": {
+    "mode": "solana-mainnet-rpc",
+    "endpoint": "https://api.mainnet-beta.solana.com",
+    "programs": [
+      "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+      "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo",
+      "Memo4c2pN8afCj432Lb7RMVKi9PbQnnW7ewFFaV3oAH"
+    ],
+    "per_program": {
+      "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr": {
+        "signatures": 300,
+        "transactions": 300
+      }
+    },
+    "rpc_calls": 339,
+    "rpc_by_method": {
+      "getHealth": 1,
+      "getSignaturesForAddress": 4,
+      "getTransaction": 334
+    },
+    "rpc_errors": 0,
+    "rpc_retries": 34,
+    "rpc_rate_limited": 34,
+    "sampling": "Backward walk of each Memo program's signature index from the chain tip, prefiltered on the RPC-populated `memo` field. Public node address indexes are pruned, so this is a sample of recent memo traffic near the tip, NOT a chain-wide census."
+  },
+  "volume": {
+    "transactions_sampled": 300,
+    "transactions_with_memo": 299,
+    "memos_extracted": 320,
+    "memos_passing_textness_gate": 223,
+    "memos_rejected_by_gate": {
+      "printable_run<24": 97
+    },
+    "unique_memo_texts": 259
+  },
+  "findings": {
+    "memos_with_any_finding": 0,
+    "base_rate_percent": 0.0,
+    "by_rule_id": {},
+    "by_rule_id_raw_variant_only": {},
+    "note": "scan_text emits at most one finding per rule per call, so these are counts of MEMOS THAT MATCHED, not occurrence counts."
+  },
+  "signals": {
+    "memos_with_zero_width": 0,
+    "memos_with_tag_chars": 0,
+    "memos_with_suppression_directive": 0
+  },
+  "triage_queue": []
+}

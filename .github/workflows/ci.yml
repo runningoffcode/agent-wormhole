@@ -26,19 +26,47 @@ jobs:
       - name: Corpus replay (false-positive gate)
         run: ./loop/replay.sh
 
+      # Reports the decay curve under paraphrase. Informational on purpose:
+      # the number is expected to fall, and the honest number is the point.
+      # Quoting "16/16" as a detection rate would be the overclaim this
+      # project keeps refusing to make.
+      - name: Mutation decay
+        if: matrix.python-version == '3.12'
+        run: python3 loop/mutate.py
+
   self-scan:
     # The tool must come up clean against its own repository. If our detection
     # rules fire on our own documentation, the rules are too greedy.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # upload SARIF to code scanning
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Scan self
         run: |
           python -m wormhole scan . --local-only --no-color \
             --fail-on high --blast-radius
+
+      # Findings land as inline annotations on the pull request that
+      # introduced them. An exit code says something broke; an annotation
+      # says which line and why, in review, where the fix is cheapest.
+      - name: SARIF
+        if: always()
+        run: |
+          python -m wormhole scan . --local-only --no-color \
+            --sarif --fail-on never > wormhole.sarif
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: wormhole.sarif
+          category: agent-wormhole
 
   x402:
     name: wormhole-x402 (TypeScript)

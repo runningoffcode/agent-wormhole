@@ -69,6 +69,13 @@ class TestHardenBlocksCreation(unittest.TestCase):
         self.assertTrue(target.is_file())
         self.assertFalse(bool(target.stat().st_mode & stat.S_IWUSR))
 
+    @unittest.skipIf(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        "root bypasses the 0444 mode bit entirely (CAP_DAC_OVERRIDE), so the "
+        "write succeeds and the assertion is meaningless. This is a property "
+        "of the OS, not of harden -- and it is worth stating plainly: "
+        "hardening does not contain an agent running as root. Common in CI "
+        "and in default Docker images.")
     def test_miasma_cannot_plant_its_session_hook(self):
         """The whole point: the write must fail at the OS, not be reported."""
         harden.precreate(harden.plan_precreate(self.root))

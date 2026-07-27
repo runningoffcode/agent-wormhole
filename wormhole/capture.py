@@ -22,7 +22,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .baseline import sha256
+from .baseline import sha256, _write_atomic
 from .rules.injection import scan_text
 
 WORMHOLE_DIR = Path.home() / ".wormhole" / "captured"
@@ -60,9 +60,8 @@ def _load_index() -> list:
 def _save_index(entries: list):
     WORMHOLE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     WORMHOLE_DIR.chmod(0o700)
-    WORMHOLE_INDEX.write_text(json.dumps(
+    _write_atomic(WORMHOLE_INDEX, json.dumps(
         {"version": 1, "updated": _now(), "entries": entries}, indent=2))
-    WORMHOLE_INDEX.chmod(0o600)
 
 
 def _entry_id(path: Path, digest: str) -> str:
@@ -214,10 +213,14 @@ def swallow(path: Path, findings: list, dry_run: bool = False) -> dict:
 
     # Preserve the complete original, not just the excised fragment: the
     # surrounding context is what tells you how the payload was delivered.
-    payload_file.write_text(original, encoding="utf-8")
-    payload_file.chmod(0o400)
+    # Preserved copy first, atomically, and verified readable before the
+    # source is touched: a truncated quarantine file plus an excised original
+    # loses the payload permanently, and the payload is the evidence.
+    _write_atomic(payload_file, original, mode=0o400)
 
-    path.write_text(cleaned, encoding="utf-8")
+    # The source rewrite is the one write in the codebase that destroys
+    # operator data if it is interrupted. os.replace makes it all-or-nothing.
+    _write_atomic(path, cleaned, mode=path.stat().st_mode & 0o777)
 
     entry = WormholeEntry(
         id=entry_id,

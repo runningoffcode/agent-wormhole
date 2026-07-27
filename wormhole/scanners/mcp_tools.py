@@ -33,7 +33,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from ..baseline import BASELINE_DIR, _now
+from ..baseline import BASELINE_DIR, _now, _write_atomic
 from ..rules.injection import Finding, scan_text
 
 # Where a client keeps its MCP server definitions. Tool definitions themselves
@@ -133,11 +133,7 @@ def load_tools() -> dict:
 
 def save_tools(entries: dict) -> None:
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
-    TOOLS_FILE.write_text(json.dumps({"tools": entries}, indent=2))
-    try:
-        TOOLS_FILE.chmod(0o600)
-    except OSError:
-        pass
+    _write_atomic(TOOLS_FILE, json.dumps({"tools": entries}, indent=2))
 
 
 def record(root: Path) -> dict:

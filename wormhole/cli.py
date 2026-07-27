@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import __version__
 from . import guard, harden, init, outbound, provenance, readguard
 from .baseline import record, verify, BASELINE_FILE
 from .rules.injection import scan_text
@@ -123,6 +124,90 @@ def as_json(findings):
     } for f in findings], indent=2)
 
 
+# GitHub code scanning reads SARIF and renders findings as inline annotations
+# on the pull request that introduced them. An exit code tells you something
+# broke; an annotation tells the author which line and why, in review, where
+# the fix is cheapest. A poisoned instruction file arriving in a PR is an agent
+# instruction with commit access -- that is precisely where it should surface.
+_SARIF_LEVEL = {
+    "critical": "error", "high": "error", "medium": "warning",
+    "low": "note", "info": "note",
+}
+
+
+def as_sarif(findings, root="."):
+    """Render findings as SARIF 2.1.0 for GitHub code scanning."""
+    root_path = Path(root).resolve()
+
+    def relative(p):
+        if not p:
+            return None
+        try:
+            return str(Path(p).resolve().relative_to(root_path))
+        except (ValueError, OSError):
+            # Outside the scanned tree (~/.wormhole, an absolute config path).
+            # SARIF wants a URI-ish string; an absolute path is still valid.
+            return str(p)
+
+    rules, seen = [], {}
+    for f in findings:
+        if f.rule_id in seen:
+            continue
+        seen[f.rule_id] = True
+        rule = {
+            "id": f.rule_id,
+            "name": f.title,
+            "shortDescription": {"text": f.title},
+            "fullDescription": {"text": f.detail},
+            "defaultConfiguration": {
+                "level": _SARIF_LEVEL.get(f.severity, "note")},
+            "properties": {
+                "problem.severity": f.severity,
+                "tags": ["security", "prompt-injection", "ai-agent"],
+            },
+        }
+        if f.remediation:
+            rule["help"] = {"text": f.remediation}
+        if f.references:
+            rule["properties"]["references"] = list(f.references)
+        rules.append(rule)
+
+    results = []
+    for f in findings:
+        result = {
+            "ruleId": f.rule_id,
+            "level": _SARIF_LEVEL.get(f.severity, "note"),
+            "message": {"text": f.detail or f.title},
+        }
+        rel = relative(f.path)
+        if rel:
+            region = {"startLine": max(1, f.line or 1)}
+            # The excerpt is the payload itself. It is already local-only
+            # output, but a snippet in a SARIF file lands in code-scanning
+            # storage, so it is deliberately omitted rather than uploaded.
+            result["locations"] = [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": rel},
+                    "region": region,
+                }
+            }]
+        results.append(result)
+
+    return json.dumps({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "Agent Wormhole",
+                "informationUri": "https://agentwormhole.com",
+                "version": __version__,
+                "rules": rules,
+            }},
+            "results": results,
+        }],
+    }, indent=2)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="wormhole",
@@ -133,6 +218,9 @@ def main(argv=None):
     s = sub.add_parser("scan", help="scan for injection payloads and posture issues")
     s.add_argument("path", nargs="?", default=".")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--sarif", action="store_true",
+                   help="emit SARIF 2.1.0 for GitHub code scanning "
+                        "(inline PR annotations). Excerpts are omitted.")
     s.add_argument("--no-color", action="store_true")
     s.add_argument("-v", "--verbose", action="store_true", help="include info findings")
     s.add_argument("--local-only", action="store_true",
@@ -630,7 +718,9 @@ def main(argv=None):
             for f in findings:
                 if f.rule_id.startswith("WORM"):
                     f.severity = scoring.weight_severity(f.severity, blast)
-        if args.json:
+        if args.sarif:
+            print(as_sarif(findings, root))
+        elif args.json:
             print(as_json(findings))
         else:
             print(render(findings, configs, color, args.verbose, blast))

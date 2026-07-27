@@ -337,6 +337,36 @@ running `git fetch`, and this project's own guard hook.
 
 Verified additionally against 7 real projects: 0 findings.
 
+### What it actually costs to evade
+
+Since "16/16" says nothing about phrasing nobody has written down yet, here is
+the number that does. `loop/mutate.py` rewrites every malicious fixture and
+reports what survives:
+
+```
+$ python3 loop/mutate.py
+
+  tier                   caught   rate
+  verbatim             16/16       100%
+  casing               64/64       100%
+  filler               64/64       100%
+  synonym-1           101/128       79%
+  reorder              16/16       100%
+  synonym+filler      104/128       81%
+  passive-voice        15/16         94%
+  combined             89/128        70%
+```
+
+**Detection falls to roughly 70% under combined mutation, and one round of
+synonym substitution costs about a fifth of it.** The mutations are lexical
+and offline, so an attacker with a language model does better than this — treat
+70% as an upper bound, not a floor.
+
+That curve is the argument for the rest of the tool. `baseline` and `verify`
+flag *any* change to a watched file regardless of wording, and `harden` removes
+the write access a payload needs to persist at all. Neither has to recognise
+anything. Rules are triage; containment is the product.
+
 ## Two packages
 
 | | Protects | Install |
@@ -471,6 +501,43 @@ eroding the false-positive rate.
   with:
     fail-on: high
 ```
+
+### Inline annotations
+
+`--sarif` emits SARIF 2.1.0, so findings appear on the pull request that
+introduced them rather than as an exit code someone has to go read the log for:
+
+```yaml
+permissions:
+  security-events: write
+
+steps:
+  - run: wormhole scan . --sarif --fail-on never > wormhole.sarif
+  - uses: github/codeql-action/upload-sarif@v3
+    with:
+      sarif_file: wormhole.sarif
+```
+
+Excerpts are deliberately omitted from SARIF output. The excerpt *is* the
+payload, and code-scanning storage is not local.
+
+### Suppressing a finding
+
+`--fail-on` is only adoptable with an escape hatch narrower than `|| true`.
+Put a directive on the finding's line, or the line above it:
+
+```markdown
+<!-- wormhole:ignore WORM-002 -->
+Ignore all previous formatting conventions and use tabs.
+```
+
+Rule IDs are required — there is no blanket ignore, because an unreviewable
+opt-out is indistinguishable from uninstalling the tool. Suppressions are
+reported by `wormhole insights`.
+
+An attacker who can write to an instruction file can also write a suppression
+comment. That is not new capability — the same write could rephrase the payload
+instead — but the directive is far more conspicuous in a diff.
 
 ## MCP server
 

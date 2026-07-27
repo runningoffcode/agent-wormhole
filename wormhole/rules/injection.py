@@ -154,13 +154,68 @@ PLACEHOLDER_DEST = re.compile(
 )
 
 # Text engineered to be invisible to a human reviewing the file.
-# Bounded rather than `<!--(.*?)-->`. A lazy quantifier under DOTALL with no
-# closing delimiter rescans to end-of-string from every start position, which
-# is quadratic: 40KB of bare "<!--" took 1.9s, 156KB took 28s, 256KB took 76s.
-# Since guard and outbound run on every tool call, that is both a denial of
-# service and an uninstall trigger. `[^-]` plus a bounded repeat keeps a real
-# comment matchable while refusing to backtrack across the whole document.
-HIDDEN_HTML_COMMENT = re.compile(r"<!--([^>]{0,8000}?)-->", re.DOTALL)
+#
+# Deliberately not a regex. `<!--(.*?)-->` under DOTALL is quadratic on input
+# with no closing delimiter (256KB of bare "<!--" took 76s). Bounding the
+# quantifier to `<!--([^>]{0,8000}?)-->` removed the quadratic term but left a
+# punishing constant: measured 4.8 us/byte at 4KB rising to 19.1 us/byte at
+# 256KB -- 5.0 seconds at the scan cap, still superlinear, because every one of
+# the 65,536 `<!--` starts re-walks up to 8000 characters before failing.
+#
+# guard, readguard and outbound run on the tool-call path, so an attacker
+# serving a large fetched page stalls the agent for seconds. MAX_SCAN_BYTES
+# caps the blast radius; it does not remove it, and a hook that costs five
+# seconds once is a hook the operator uninstalls.
+#
+# str.find is a memchr-backed C loop: each scan starts where the previous one
+# ended, so the whole document is walked at most twice. Same matches, ~1000x
+# faster in the adversarial case.
+_COMMENT_OPEN = "<!--"
+_COMMENT_CLOSE = "-->"
+_COMMENT_MAX_BODY = 8000
+
+
+class _CommentMatch:
+    """Minimal re.Match stand-in: the call sites need start() and group(1)."""
+
+    __slots__ = ("_start", "_body")
+
+    def __init__(self, start: int, body: str):
+        self._start = start
+        self._body = body
+
+    def start(self) -> int:
+        return self._start
+
+    def group(self, n: int = 0) -> str:
+        if n == 1:
+            return self._body
+        return _COMMENT_OPEN + self._body + _COMMENT_CLOSE
+
+
+def iter_html_comments(text: str):
+    """Yield each `<!-- ... -->` comment, linear in len(text).
+
+    Bodies longer than _COMMENT_MAX_BODY are skipped rather than searched
+    further, matching the bound the previous regex enforced.
+    """
+    pos = 0
+    n = len(text)
+    while pos < n:
+        open_at = text.find(_COMMENT_OPEN, pos)
+        if open_at < 0:
+            return
+        body_at = open_at + len(_COMMENT_OPEN)
+        close_at = text.find(_COMMENT_CLOSE, body_at)
+        if close_at < 0:
+            return
+        if close_at - body_at <= _COMMENT_MAX_BODY:
+            yield _CommentMatch(open_at, text[body_at:close_at])
+            pos = close_at + len(_COMMENT_CLOSE)
+        else:
+            # Over-long body: skip past this opener and keep scanning. Never
+            # re-examine the region already walked.
+            pos = body_at
 ZERO_WIDTH = re.compile(r"[​‌‍⁠﻿]")
 # Unicode tag block — renders as nothing, reads as ASCII to a model.
 UNICODE_TAGS = re.compile(r"[\U000e0000-\U000e007f]")
@@ -347,6 +402,39 @@ def _near(text: str, a: re.Pattern, b: re.Pattern, window: int = 240):
 MAX_SCAN_BYTES = 262144
 
 
+# Inline suppression: `wormhole:ignore RULE-ID[,RULE-ID...]` on the same line
+# as a finding, or on the line immediately above it.
+#
+# Nobody enables --fail-on in CI without an escape hatch for the one false
+# positive they hit, and the alternative to a narrow one is `|| true` on the
+# whole step, which disables every rule silently and forever. Requiring
+# explicit rule IDs keeps the exemption auditable and grep-able in review:
+# a bare "ignore everything" directive is deliberately not supported.
+#
+# The tradeoff is real and worth naming: an attacker who can already write to
+# an instruction file can also write a suppression comment. That is not a new
+# capability -- the same write deletes the payload's own tell -- and the
+# directive is far more conspicuous in a diff than a rephrased payload. It is
+# reported by `wormhole insights` for exactly that reason.
+SUPPRESSION = re.compile(
+    r"wormhole:\s*ignore\s+([A-Z][A-Z0-9]*-\d{3}(?:\s*,\s*[A-Z][A-Z0-9]*-\d{3})*)",
+    re.IGNORECASE,
+)
+
+
+def _suppressed_rules(text: str, line_no: int) -> set:
+    """Rule IDs suppressed for a 1-indexed line: same line, or the one above."""
+    if not line_no:
+        return set()
+    lines = text.splitlines()
+    out = set()
+    for idx in (line_no - 1, line_no - 2):  # same line, then the line above
+        if 0 <= idx < len(lines):
+            for m in SUPPRESSION.finditer(lines[idx]):
+                out.update(r.strip().upper() for r in m.group(1).split(","))
+    return out
+
+
 def scan_text(text: str, path: str = None) -> list:
     """Run all content rules over a blob of text."""
     findings = []
@@ -354,9 +442,12 @@ def scan_text(text: str, path: str = None) -> list:
         text = text[:MAX_SCAN_BYTES]
 
     def add(rule_id, severity, title, detail, pos, remediation, refs=None):
+        line_no = _line_of(text, pos)
+        if rule_id.upper() in _suppressed_rules(text, line_no):
+            return
         findings.append(Finding(
             rule_id=rule_id, severity=severity, title=title, detail=detail,
-            path=path, line=_line_of(text, pos), excerpt=_excerpt(text, pos),
+            path=path, line=line_no, excerpt=_excerpt(text, pos),
             remediation=remediation, references=refs or [],
         ))
 
@@ -414,7 +505,7 @@ def scan_text(text: str, path: str = None) -> list:
             break
 
     # WORM-004: hidden text. A model reads what a human reviewer will not see.
-    for m in HIDDEN_HTML_COMMENT.finditer(text):
+    for m in iter_html_comments(text):
         body = m.group(1)
         if len(body.strip()) < 12:
             continue

@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 # to it. The distribution is `wormhole-guard`; the import package and the
 # console script both stay `wormhole`, so nothing the operator types changes.
 name = "wormhole-guard"
-version = "0.1.3"
+version = "0.1.4"
 description = "Stop self-replicating prompt payloads from spreading between AI agents"
 readme = "README.md"
 requires-python = ">=3.8"

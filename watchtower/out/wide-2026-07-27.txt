@@ -1,0 +1,24 @@
+==========================================================================
+CHAIN WATCHTOWER -- WIDE BASE-RATE SAMPLE (signature index)
+==========================================================================
+generated  : 2026-07-27T19:41:10.493870+00:00
+endpoint   : https://api.mainnet-beta.solana.com
+
+signatures scanned      : 40000
+memos extracted         : 1064 (2.66% of signatures)
+unique memo texts       : 1000
+passed text-ness gate   : 1062
+
+FINDINGS BY RULE ID
+  (none -- zero memos matched any WORM-001..007 rule)
+
+memos with >=1 finding : 0
+base rate              : 0.0%  (0/1064)
+
+zero-width chars       : 0
+Unicode tag chars      : 0
+suppression directives : 0
+
+TRIAGE QUEUE -- full text of everything that fired
+  (empty)
+==========================================================================

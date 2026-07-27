@@ -1,0 +1,11 @@
+  RPC health: ok
+    MemoSq4g page 5: 5000 sigs, 169 memos
+    MemoSq4g page 10: 10000 sigs, 279 memos
+    MemoSq4g page 15: 15000 sigs, 434 memos
+    MemoSq4g page 20: 20000 sigs, 574 memos
+    MemoSq4g page 25: 25000 sigs, 703 memos
+    MemoSq4g page 30: 30000 sigs, 838 memos
+    MemoSq4g page 35: 35000 sigs, 946 memos
+    MemoSq4g page 40: 40000 sigs, 1064 memos
+  MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr: 40000 sigs -> 1064 memos
+[watchtower] wrote watchtower/out/wide-2026-07-27.json

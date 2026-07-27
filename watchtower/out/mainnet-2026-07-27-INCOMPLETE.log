@@ -1,0 +1,39 @@
+[watchtower] source=rpc
+  RPC health: ok
+  program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr: seeking 1000 memo-bearing signatures
+    page 1: scanned 1000 sigs, kept 48/1000
+    page 2: scanned 1000 sigs, kept 104/1000
+    page 3: scanned 1000 sigs, kept 148/1000
+    page 4: scanned 1000 sigs, kept 206/1000
+    page 5: scanned 1000 sigs, kept 253/1000
+    page 6: scanned 1000 sigs, kept 293/1000
+    page 7: scanned 1000 sigs, kept 334/1000
+    page 8: scanned 1000 sigs, kept 378/1000
+    page 9: scanned 1000 sigs, kept 458/1000
+    page 10: scanned 1000 sigs, kept 504/1000
+    page 11: scanned 1000 sigs, kept 577/1000
+    page 12: scanned 1000 sigs, kept 634/1000
+    page 13: scanned 1000 sigs, kept 680/1000
+    page 14: scanned 1000 sigs, kept 732/1000
+    page 15: scanned 1000 sigs, kept 785/1000
+    page 16: scanned 1000 sigs, kept 823/1000
+    page 17: scanned 1000 sigs, kept 876/1000
+    page 18: scanned 1000 sigs, kept 911/1000
+    page 19: scanned 1000 sigs, kept 962/1000
+  program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr: 1000 candidate signatures
+    fetched 25 transactions
+    fetched 50 transactions
+    fetched 75 transactions
+    fetched 100 transactions
+    fetched 125 transactions
+    fetched 150 transactions
+    fetched 175 transactions
+    fetched 200 transactions
+    fetched 225 transactions
+    fetched 250 transactions
+    fetched 275 transactions
+    fetched 300 transactions
+    fetched 325 transactions
+    fetched 350 transactions
+    fetched 375 transactions
+    fetched 400 transactions

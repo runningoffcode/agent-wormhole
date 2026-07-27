@@ -14,6 +14,8 @@ from typing import Callable, Iterable, Iterator
 
 import requests
 
+from .base import RpcError  # shared base class: one `except RpcError` catches both chains
+
 PUBLIC_MAINNET = "https://api.mainnet-beta.solana.com"
 
 # Memo program IDs. v1 and v2 match wormhole.scanners.memos.MEMO_PROGRAM_IDS.
@@ -29,10 +31,6 @@ MEMO_PROGRAMS = (MEMO_V2, MEMO_V1, MEMO_V4)
 # Public endpoint documented limits: 100 req/10s/IP overall, 40 req/10s/IP for
 # a single method. 40/10s == 4 rps; we stay under it deliberately.
 DEFAULT_RPS = 3.0
-
-
-class RpcError(RuntimeError):
-    pass
 
 
 @dataclass

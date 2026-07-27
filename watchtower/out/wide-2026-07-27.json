@@ -1,0 +1,40 @@
+{
+  "generated_utc": "2026-07-27T19:41:10.493870+00:00",
+  "provenance": {
+    "mode": "solana-mainnet-rpc-signature-index",
+    "endpoint": "https://api.mainnet-beta.solana.com",
+    "per_program": {
+      "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr": {
+        "signatures_scanned": 40000,
+        "memos": 1064
+      }
+    },
+    "rpc_calls": 44,
+    "rpc_by_method": {
+      "getHealth": 1,
+      "getSignaturesForAddress": 43
+    },
+    "rpc_rate_limited": 3,
+    "instrument": "getSignaturesForAddress `memo` field only; no getTransaction. The field is the node's rendering of the memo, prefixed with [<len>]. Wide denominator, lower fidelity than a jsonParsed fetch. Public node address indexes are pruned, so this walks recent memo traffic near the chain tip, NOT a chain-wide census."
+  },
+  "volume": {
+    "signatures_scanned": 40000,
+    "memos_extracted": 1064,
+    "memo_bearing_rate_percent": 2.66,
+    "unique_memo_texts": 1000,
+    "memos_passing_textness_gate": 1062
+  },
+  "findings": {
+    "memos_with_any_finding": 0,
+    "base_rate_percent": 0.0,
+    "by_rule_id": {},
+    "by_rule_id_raw_variant_only": {},
+    "note": "scan_text emits at most one finding per rule per call, so these are counts of MEMOS THAT MATCHED, not occurrence counts."
+  },
+  "signals": {
+    "memos_with_zero_width": 0,
+    "memos_with_tag_chars": 0,
+    "memos_with_suppression_directive": 0
+  },
+  "triage_queue": []
+}

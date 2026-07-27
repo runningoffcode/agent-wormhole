@@ -8,6 +8,13 @@ venv/
 .DS_Store
 .pytest_cache/
 
+# Canary registry. Publishing planted canary addresses would hand a worm author
+# a free avoidance list, so the registry must never reach the repo.
+watchtower/canaries.json
+
+# Resume cursors are per-operator run state, never shared artifacts.
+watchtower/out/cursor.json
+
 # x402-guard (TypeScript, published separately to npm)
 x402-guard/node_modules/
 x402-guard/dist/

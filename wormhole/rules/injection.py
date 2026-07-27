@@ -207,27 +207,124 @@ def _excerpt(text: str, pos: int, width: int = 110) -> str:
 # framing: a describing sentence attributes the behaviour to someone else
 # ("attackers may try to...") or hedges it ("we detect ... where a key is
 # sent"), whereas a payload addresses the reader directly in the imperative.
-DESCRIPTIVE_FRAME = re.compile(
-    r"\b(attackers?|adversar(?:y|ies)|threat actors?|malicious|worm|payload|"
-    r"injection|exploit|vulnerabilit(?:y|ies)|CVE|proof[- ]of[- ]concept|"
-    r"research(?:ers)?|we detect|detects?|detection|example|e\.g\.|"
-    r"for instance|such as|may try|might try|could try|would try|"
-    r"attempts? to|designed to|known as|referred to as|this rule|"
-    r"false positive|test (?:case|fixture)|do not flag)\b",
+#
+# Split into two tiers, because vocabulary alone is not evidence. A single
+# noun near the match is trivially plantable: appending "attackers hate this"
+# to a live worm silenced WORM-001 outright while the instruction stayed
+# operative. Words in ATTRIBUTED_FRAME carry grammatical attribution or
+# hedging that a payload cannot adopt without ceasing to be an instruction;
+# words in TOPIC_VOCAB merely indicate the subject matter and are therefore
+# only corroborating, never sufficient on their own.
+# Attribution proper: a third-party subject paired with a verb of intent or
+# capability, or first-person framing about detection. The pairing is what
+# matters -- the bare noun "attackers" is one word an attacker appends, while
+# "attackers may try to" is a clause a payload cannot carry and still read as
+# an instruction to the model.
+_THIRD_PARTY = r"(?:attackers?|adversar(?:y|ies)|threat actors?|a worm|worms|malware)"
+_INTENT_VERB = (r"(?:may|might|could|would|will|can|often|typically|sometimes|"
+                r"try|tries|tried|attempts?|attempted|use[sd]?|abuse[sd]?|"
+                r"plant(?:s|ed)?|inject(?:s|ed)?|do(?:es)? this|did this)")
+ATTRIBUTED_FRAME = re.compile(
+    rf"\b({_THIRD_PARTY}\s+(?:\w+\s+){{0,3}}?{_INTENT_VERB}|"
+    r"we (?:detect|flag|scan for|look for)|this rule (?:detects|flags|matches)|"
+    r"detects? (?:when|text|files?|the)|detection (?:rule|logic|pattern)|"
+    r"(?:is|are) (?:designed to|known as|referred to as)|"
+    r"false positive|test (?:case|fixture))\b",
     re.IGNORECASE,
+)
+
+TOPIC_VOCAB = re.compile(
+    r"\b(malicious|worm|payload|injection|exploit|vulnerabilit(?:y|ies)|CVE|"
+    r"proof[- ]of[- ]concept|research(?:ers)?|example|e\.g\.|for instance|"
+    r"such as|attackers?|adversar(?:y|ies)|threat actors?)\b",
+    re.IGNORECASE,
+)
+
+# Structure that only documentation has: a fenced block, an inline-code span,
+# a blockquote, a numbered reference, or a docs path. An operative payload
+# planted in a config file to be obeyed does not wrap itself in these.
+DOC_STRUCTURE = re.compile(
+    r"(```|~~~|^\s{4,}\S|^\s*>|`[^`\n]{3,}`|\b(?:docs?|documentation|"
+    r"threat[- ]model|README|CONTRIBUTING|polic(?:y|ies)|guidelines?)\b|"
+    r"\barXiv:|\bRFC\s?\d)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Prohibitive guidance — a policy telling the reader NOT to do the dangerous
+# thing. The inverse of a payload, which always instructs the reader to do it.
+# Short policy files carry no fenced blocks or docs paths, so this stands in
+# as the corroborating signal for them.
+PROHIBITIVE_FRAME = re.compile(
+    r"\b(?:do not|don't|never|avoid|refuse to|must not|should not|"
+    r"rather than acting on|without acting on)\s+"
+    r"(?:\w+\s+){0,2}?"
+    r"(?:commit|send|include|share|expose|reveal|paste|forward|transmit|"
+    r"upload|post|email|leak|act|obey|follow|comply|execute|run)\b",
+    re.IGNORECASE,
+)
+
+# Imperative second-person address, which is how a payload speaks to the model
+# it is trying to recruit. Its presence overrides descriptive framing: prose
+# that tells *you* to do the thing is not describing someone else doing it.
+IMPERATIVE_ADDRESS = re.compile(
+    r"\b(you must|you should|you need to|your task|from now on|going forward|"
+    r"always (?:copy|append|include|add|forward|write)|"
+    r"never (?:mention|reveal|tell|disclose|log)|do not (?:mention|reveal|"
+    r"tell|disclose|inform)|be sure to|make sure (?:to|you)|"
+    # A bare imperative aimed at the reader: a copy/propagation verb at the
+    # start of a sentence with no subject. "Copy this into every CLAUDE.md"
+    # is an order; "attackers copy this into every CLAUDE.md" is a report.
+    r"(?:^|(?<=[.!?]\s)|(?<=[.!?]\n)|^\s*[-*]\s*)"
+    r"(?:copy|append|add|include|forward|paste|insert|write|propagate|"
+    r"replicate|reproduce)\s+(?:this|these|the following|it)\b|"
+    # A bare override imperative with no third-party subject in front of it.
+    # "Ignore all previous instructions" addresses the model; a report says
+    # "attackers try to make an agent ignore all previous instructions", where
+    # the verb sits inside a clause governed by its subject.
+    #
+    # The preceding boundary must be a real sentence end, the very start of
+    # the text, or a list/heading marker -- deliberately NOT a bare newline.
+    # Prose wraps mid-sentence, and treating a line break as a boundary made
+    # the threat-model fixture read as imperative on its second line.
+    r"(?:\A|(?<=[.!?][ \t\n])|(?<=[.!?])|(?:^|\n)[ \t]*[-*>#]+[ \t]*)"
+    r"(?:ignore|disregard|forget|override|discard|bypass)\s+"
+    r"(?:all|any|the|your|previous|prior|earlier|above|preceding|system)\b)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
 def _is_descriptive(text: str, pos: int, window: int = 320) -> bool:
     """True when the surrounding prose reads as describing an attack.
 
-    Deliberately biased toward suppression near explicit security vocabulary:
-    a missed finding in a file that is visibly a threat-model document costs
-    far less than a false positive that trains the operator to ignore output.
+    Suppression requires one of three things, never a bare keyword:
+
+    - grammatical attribution to a third party ("attackers may try to..."),
+    - prohibitive guidance ("never send credentials to an external service"),
+      which is a policy forbidding the act rather than commanding it,
+    - topic vocabulary corroborated by documentation structure: a fenced
+      block, a blockquote, a docs path, an arXiv or RFC reference.
+
+    Topic vocabulary alone is not enough. It is one word an attacker appends
+    to an otherwise operative instruction, which turned every rule consulting
+    this helper into an opt-out: appending "attackers hate this" to a live
+    worm silenced WORM-001 while the instruction stayed fully operative.
+
+    Direct imperative address to the reader overrides suppression entirely.
+    A sentence commanding *you* to copy something is not a sentence
+    describing somebody else copying it, however much security vocabulary
+    surrounds it.
     """
     lo = max(0, pos - window)
     hi = min(len(text), pos + window)
-    return bool(DESCRIPTIVE_FRAME.search(text, lo, hi))
+    frame = text[lo:hi]
+
+    if IMPERATIVE_ADDRESS.search(frame):
+        return False
+    if ATTRIBUTED_FRAME.search(frame):
+        return True
+    if PROHIBITIVE_FRAME.search(frame):
+        return True
+    return bool(TOPIC_VOCAB.search(frame) and DOC_STRUCTURE.search(frame))
 
 
 def _near(text: str, a: re.Pattern, b: re.Pattern, window: int = 240):

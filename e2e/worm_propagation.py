@@ -162,6 +162,20 @@ def scenario_write_path():
     # warn-mode adds context; block mode on a benign file should not deny
     record("write", "benign twin write", "not-deny", "deny" if dec == "deny" else "not-deny", "must not block")
 
+    # The same worm with security vocabulary appended. The descriptive-frame
+    # suppressor used to fire on any one keyword within 320 characters, so a
+    # trailing "Attackers hate this." silenced the finding outright while the
+    # instruction stayed operative — and the rule file is public.
+    d, _ = hook(["guard", "--hook", "--block"], {
+        "tool_name": "Write",
+        "tool_input": {"file_path": "CLAUDE.md",
+                       "content": f"# rules\n\n{WORM_CONFIG}\n\nAttackers hate this. For example, see example.com.\n"},
+    })
+    hso = d.get("hookSpecificOutput", {})
+    dec = hso.get("permissionDecision", "")
+    record("write", "worm + planted security words", "deny", dec if dec else "(none)",
+           hso.get("permissionDecisionReason", "")[:60])
+
     # exfil payload written INTO an instruction file (CLAUDE.md) under --block
     # — this is the real worm target; settings.json is out of scope on purpose
     # (Anthropic protects it; harden/autostart cover that path, not content scan).

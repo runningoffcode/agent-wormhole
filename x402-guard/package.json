@@ -49,6 +49,10 @@
     "./quotetext": {
       "types": "./dist/quotetext.d.ts",
       "import": "./dist/quotetext.js"
+    },
+    "./sink": {
+      "types": "./dist/sink.d.ts",
+      "import": "./dist/sink.js"
     }
   },
   "files": [

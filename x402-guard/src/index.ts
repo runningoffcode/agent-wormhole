@@ -627,6 +627,31 @@ export {
   type InspectQuoteTextOptions,
 } from "./quotetext.js";
 
+/**
+ * Opt-in local event sink (see sink.ts).
+ *
+ * OFF unless `configureEventSink` is called with a path. It writes six fields
+ * per finding to a JSONL file on the operator's own disk and makes no network
+ * call of any kind — the package's no-network guarantee is unchanged, and the
+ * CI gate that enforces it still passes.
+ */
+export {
+  configureEventSink,
+  resetEventSink,
+  recordVerdict,
+  eventSinkStats,
+  toEvents,
+  amountBucket,
+  resolveChainId,
+  assertNoPlaintext,
+  KNOWN_CODES,
+  AMOUNT_BUCKETS,
+  type PaymentEvent,
+  type EventSinkOptions,
+  type SinkContext,
+  type SinkVerdictLike,
+} from "./sink.js";
+
 /** Map a 402 `accepts` entry to the quote the guard checks against. */
 export function quoteFromRequirements(req: PaymentRequirements): PaymentQuote {
   if (

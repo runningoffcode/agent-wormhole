@@ -571,3 +571,68 @@ describe("fail closed on undecodable input", () => {
     expect(v.findings.some((f) => f.code === "X402-103")).toBe(true);
   });
 });
+
+describe("unreadable classification fields must not fall through to allow", () => {
+  // A prior audit found every gate written `typeof x === "string" ? x : null`,
+  // which conflates ABSENT with UNREADABLE. Control flow is "classify ->
+  // refuse/abstain, else allow", so an unclassifiable value selected the most
+  // permissive branch: primaryType ["Permit"] returned allow with zero findings
+  // where "Permit" refused X402-106. Reachable from a plain JSON body -- no
+  // boxed primitives, no Proxy.
+  const NON_STRINGS: [string, unknown][] = [
+    ["array", ["Permit"]],
+    ["array naming a permit2 type", ["PermitBatchTransferFrom"]],
+    ["number", 123],
+    ["boolean", true],
+    ["object", {}],
+  ];
+
+  for (const [label, value] of NON_STRINGS) {
+    it(`does not allow when primaryType is a ${label}`, async () => {
+      const wire = JSON.parse(
+        JSON.stringify({ ...(await signAuth()), primaryType: value }),
+      );
+      const v = await inspectAuthorization(quote, wire, {
+        nowSeconds: FIXED_NOW,
+      });
+      expect(v.decision).not.toBe("allow");
+    });
+  }
+
+  it("does not allow when a permit value cannot be parsed", async () => {
+    const MAX = (2n ** 256n - 1n).toString();
+    const wire = JSON.parse(
+      JSON.stringify({ ...(await signAuth()), permit: { value: [MAX] } }),
+    );
+    const v = await inspectAuthorization(quote, wire, {
+      nowSeconds: FIXED_NOW,
+    });
+    expect(v.decision).not.toBe("allow");
+  });
+
+  it("does not allow when assetTransferMethod is not a string", async () => {
+    const wire = JSON.parse(
+      JSON.stringify({ ...(await signAuth()), assetTransferMethod: ["eip3009"] }),
+    );
+    const v = await inspectAuthorization(quote, wire, {
+      nowSeconds: FIXED_NOW,
+    });
+    expect(v.decision).not.toBe("allow");
+  });
+
+  it("still allows an honest authorization with no primaryType", async () => {
+    const v = await inspectAuthorization(quote, await signAuth(), {
+      nowSeconds: FIXED_NOW,
+    });
+    expect(v.decision).toBe("allow");
+  });
+
+  it("still allows the correct primaryType", async () => {
+    const v = await inspectAuthorization(
+      quote,
+      { ...(await signAuth()), primaryType: "TransferWithAuthorization" },
+      { nowSeconds: FIXED_NOW },
+    );
+    expect(v.decision).toBe("allow");
+  });
+});

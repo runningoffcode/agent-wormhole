@@ -439,14 +439,50 @@ const STANDING_AUTHORITY_TYPES = new Set([
  * positively verify it either (out of scope), so the caller still ABSTAINs on
  * any permit-family payload it did not allow via EIP-3009.
  */
+/**
+ * Read a classification field, distinguishing ABSENT from UNREADABLE.
+ *
+ * `typeof x === "string" ? x : null` conflates those two, and the conflation
+ * was a wrong-allow bug: every gate here is written "classify, else fall
+ * through to the EIP-3009 allow path", so an unclassifiable value selected the
+ * MOST permissive branch. `primaryType: ["Permit"]` -- reachable from a plain
+ * JSON body, no boxed primitives needed -- returned allow with zero findings
+ * where `primaryType: "Permit"` refused X402-106. One junk field suppressed
+ * the standing-authority check, the primaryType allowlist, the X402-103
+ * contradiction refuse, and the erc7710/permit2 abstains at once.
+ *
+ * `undefined` means the field is not present, which is legitimate.
+ * `null` means it is present and we cannot read it, which must never be
+ * treated as absence -- a check that could not run has to abstain, which is
+ * the entire reason this package is three-valued.
+ */
+function readMethodField(v: unknown): string | null | undefined {
+  if (v === undefined || v === null) return undefined;
+  return typeof v === "string" ? v.trim().toLowerCase() : null;
+}
+
 function detectStandingAuthority(
   payload: EvmPayload,
   method: string | null,
 ): Finding | null {
-  const pt =
-    typeof payload.primaryType === "string"
-      ? payload.primaryType.trim().toLowerCase()
-      : null;
+  const ptRaw = readMethodField(payload.primaryType);
+
+  // Present but unreadable. Refuse rather than fall through: the caller sent a
+  // primaryType, so it means something to them, and we cannot tell whether it
+  // names a one-shot transfer or an unbounded allowance.
+  if (ptRaw === null) {
+    return {
+      code: "X402-106",
+      severity: "critical",
+      message:
+        "payload declares a primaryType that is not a string, so the " +
+        "transfer/allowance distinction cannot be read — the only offline " +
+        "discriminator between a one-shot payment and a standing grant",
+      actual: JSON.stringify(payload.primaryType)?.slice(0, 80),
+    };
+  }
+
+  const pt = ptRaw ?? null;
 
   // A scoped witness transfer is the one permit shape that is a real payment.
   if (pt === "permitwitnesstransferfrom") return null;
@@ -466,6 +502,7 @@ function detectStandingAuthority(
   // allowance disguised as a one-off — flag even without an explicit type.
   const permit = payload.permit as { value?: unknown; amount?: unknown } | undefined;
   if (permit && typeof permit === "object") {
+    const raw = permit.value !== undefined ? permit.value : permit.amount;
     const val = toBig(permit.value) ?? toBig(permit.amount);
     const MAX_UINT256 = (1n << 256n) - 1n;
     if (val !== null && val === MAX_UINT256) {
@@ -475,6 +512,19 @@ function detectStandingAuthority(
         message:
           "payload carries an unbounded (max uint256) permit value — a blanket allowance, not a payment",
         actual: "value = 2^256 - 1",
+      };
+    }
+    // A permit body whose value will not parse is the same trap one level
+    // down: `permit.value: [MAX]` made toBig return null and the unbounded
+    // check silently pass. There is a permit here and we cannot size it.
+    if (val === null && raw !== undefined) {
+      return {
+        code: "X402-106",
+        severity: "critical",
+        message:
+          "payload carries a permit whose value cannot be read as an integer, " +
+          "so an unbounded allowance cannot be ruled out",
+        actual: JSON.stringify(raw)?.slice(0, 80),
       };
     }
   }
@@ -547,17 +597,28 @@ export async function inspectAuthorization(
   // disagrees with the server about which scheme it is paying under.
   const quoteExtra = (quote as unknown as { extra?: EvmAcceptedEntry["extra"] })
     .extra as EvmAcceptedEntry["extra"] | undefined;
-  const quoteMethod =
-    typeof quoteExtra?.assetTransferMethod === "string"
-      ? quoteExtra.assetTransferMethod.trim().toLowerCase()
-      : null;
-  const payloadMethod =
-    typeof (p as { assetTransferMethod?: unknown }).assetTransferMethod ===
-    "string"
-      ? ((p as { assetTransferMethod?: unknown }).assetTransferMethod as string)
-          .trim()
-          .toLowerCase()
-      : null;
+  const quoteMethodRaw = readMethodField(quoteExtra?.assetTransferMethod);
+  const payloadMethodRaw = readMethodField(
+    (p as { assetTransferMethod?: unknown }).assetTransferMethod,
+  );
+  // Present but unreadable, on either side. Abstaining rather than falling
+  // through is the point: a non-string method previously read as "not
+  // declared", which skipped the X402-103 contradiction refuse below and let
+  // the payload pick its own branch.
+  if (quoteMethodRaw === null) {
+    return abstain(
+      "quote extra.assetTransferMethod is not a string, so the payment scheme " +
+        "the server intends cannot be read",
+    );
+  }
+  if (payloadMethodRaw === null) {
+    return abstain(
+      "payload assetTransferMethod is not a string, so the scheme it claims " +
+        "to pay under cannot be read",
+    );
+  }
+  const quoteMethod = quoteMethodRaw ?? null;
+  const payloadMethod = payloadMethodRaw ?? null;
   if (quoteMethod && payloadMethod && quoteMethod !== payloadMethod) {
     return {
       decision: "refuse",
@@ -630,12 +691,17 @@ export async function inspectAuthorization(
   }
 
   // If the payload declares a primaryType, it must be the one we allow.
+  // `"primaryType" in p` rather than a typeof check: a declared-but-unreadable
+  // type must not read as undeclared. That conflation let ["Permit"] through
+  // the allowlist this comment calls the sole offline discriminator.
   if (
-    typeof p.primaryType === "string" &&
-    p.primaryType.trim() !== EIP3009.PRIMARY_TYPE
+    "primaryType" in p &&
+    p.primaryType !== undefined &&
+    (typeof p.primaryType !== "string" ||
+      p.primaryType.trim() !== EIP3009.PRIMARY_TYPE)
   ) {
     return abstain(
-      `payload primaryType (${p.primaryType}) is not ${EIP3009.PRIMARY_TYPE} — only TransferWithAuthorization is allowed`,
+      `payload primaryType (${JSON.stringify(p.primaryType)?.slice(0, 60)}) is not ${EIP3009.PRIMARY_TYPE} — only TransferWithAuthorization is allowed`,
     );
   }
 

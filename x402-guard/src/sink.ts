@@ -385,6 +385,40 @@ export function configureEventSink(opts: EventSinkOptions | null): boolean {
       // protected and is not, which is the worse of the two failures.
     }
 
+    // Refuse anything that is not a regular file BEFORE opening it.
+    //
+    // This module promises never to throw into the payment path, and every
+    // write is wrapped. But a FIFO defeats that promise on its own terms: a
+    // blocking `openSync`/`appendFileSync` on a pipe with no draining reader
+    // does not throw, it BLOCKS -- so no catch runs, `dropped` cannot record
+    // it, and the process sits in an uninterruptible syscall that SIGTERM does
+    // not clear. Measured: a checkout loop stopped dead and needed SIGKILL.
+    //
+    // lstat rather than stat, so a symlink pointing at a FIFO or a device is
+    // caught rather than followed. Checked at configure time, which is the only
+    // place a blocking open can be refused without being in the payment path
+    // already.
+    try {
+      const st = fs.lstatSync(opts.path);
+      if (!st.isFile()) {
+        throw new Error(
+          "event sink path must be a regular file, not a " +
+            (st.isFIFO()
+              ? "FIFO — a blocking write to a pipe would hang the payment path"
+              : st.isDirectory()
+                ? "directory"
+                : st.isSymbolicLink()
+                  ? "symlink"
+                  : "special file"),
+        );
+      }
+    } catch (err) {
+      // ENOENT is the normal first-run case: the file does not exist yet and
+      // appendFileSync below creates it. Anything else is a real refusal.
+      const code = (err as { code?: string } | null)?.code;
+      if (code !== "ENOENT") throw err;
+    }
+
     // Touch the file once, now, so a misconfigured path fails at startup where
     // an operator will see it rather than at the first payment.
     fs.appendFileSync(opts.path, "", { mode: 0o600 });
@@ -600,6 +634,20 @@ function writeThrough(s: SinkState, payload: string): boolean {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       if (s.fd === null) {
+        // Re-check the type on every reopen, not just at configure time: the
+        // path could have been replaced with a FIFO since then, and a blocking
+        // open on a pipe hangs the payment path where no catch would run.
+        //
+        // A MISSING path is not a refusal. Deletion and rotation are the normal
+        // cases this reopen loop exists to handle -- the open below recreates
+        // the file. Only a path that exists and is NOT a regular file is
+        // refused, which is the FIFO case and nothing else.
+        try {
+          const st = s.fs.lstatSync(s.path);
+          if (!st.isFile()) return false;
+        } catch (err) {
+          if ((err as { code?: string } | null)?.code !== "ENOENT") return false;
+        }
         // O_APPEND: every write lands at the current end of file, so a
         // concurrent writer in another process interleaves whole lines rather
         // than overwriting ours. This is why no lock is needed.

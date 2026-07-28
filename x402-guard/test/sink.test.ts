@@ -23,6 +23,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   configureEventSink,
@@ -666,5 +667,44 @@ describe("cached file descriptor", () => {
     }
     // Would throw EMFILE well before 300 if each configure leaked an fd.
     expect(lines().length).toBe(300);
+  });
+});
+
+describe("a non-regular-file spool path is refused, not opened", () => {
+  // The never-throw contract is defeated on its own terms by a FIFO: a blocking
+  // openSync/appendFileSync on a pipe with no draining reader does not throw,
+  // it BLOCKS. So every catch in this module is unreachable, `dropped` cannot
+  // record it, and the process sits in an uninterruptible syscall that SIGTERM
+  // does not clear. Measured before the fix: a checkout loop stopped dead at
+  // iteration 38 and needed SIGKILL.
+  //
+  // lstat, not stat, so a symlink pointing at a FIFO is caught rather than
+  // followed.
+  it("refuses a FIFO instead of blocking on it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sink-fifo-"));
+    const fifo = path.join(dir, "spool.jsonl");
+    try {
+      execFileSync("mkfifo", [fifo]);
+    } catch {
+      return; // no mkfifo on this platform; nothing to assert
+    }
+    expect(configureEventSink({ path: fifo, enabled: true })).toBe(false);
+    resetEventSink();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("refuses a directory", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sink-dir-"));
+    expect(configureEventSink({ path: dir, enabled: true })).toBe(false);
+    resetEventSink();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("still accepts a path that does not exist yet", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sink-new-"));
+    const p = path.join(dir, "fresh.jsonl");
+    expect(configureEventSink({ path: p, enabled: true })).toBe(true);
+    resetEventSink();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

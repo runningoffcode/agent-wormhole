@@ -342,6 +342,33 @@ export function inspectPayment(
               "transaction contains a transfer whose destination could not be read",
           });
         }
+      } else {
+        // ALLOWLIST, not a blocklist. Anything that is not one of the two
+        // transfer forms is refused here, including discriminants nobody has
+        // enumerated.
+        //
+        // This was a blocklist and it was a wrong-allow bug that moved money.
+        // Token-2022 namespaces its extensions: for TransferCheckedWithFee,
+        // data[0] = 26 selects the TransferFee extension GROUP and data[1] = 1
+        // selects the operation. A switch reading only data[0] therefore never
+        // sees a genuine funds-moving transfer, and 33 leading bytes fell
+        // through with no finding at all -- an attacker-destination transfer
+        // built by the official @solana/spl-token helper rode alongside a
+        // conforming payment and the verdict was allow with zero findings.
+        //
+        // Enumerating 26/27/36 into the dangerous table would repeat the
+        // mistake one layer down. An extension group is refused unless a
+        // specific (data[0], data[1]) pair is explicitly understood, and none
+        // are yet.
+        findings.push({
+          code: "X402-006",
+          severity: "critical",
+          message:
+            `token instruction ${disc}${data.length > 1 ? "/" + data[1] : ""} ` +
+            "is not one of the transfer forms an exact-scheme payment uses, so " +
+            "what it does to the payer's funds cannot be determined offline",
+          actual: `discriminant ${disc}`,
+        });
       }
     }
 

@@ -222,41 +222,12 @@ export const TRUSTED_DOMAINS: Readonly<Record<string, DomainEntry>> = {
  * caller ABSTAINs (a network we cannot resolve is not one we can check a
  * domain against).
  */
-const V1_NETWORK_CHAIN_IDS: Readonly<Record<string, number>> = {
-  base: 8453,
-  "base-sepolia": 84532,
-  ethereum: 1,
-  mainnet: 1,
-  "ethereum-mainnet": 1,
-  arbitrum: 42161,
-  "arbitrum-one": 42161,
-  polygon: 137,
-  "polygon-mainnet": 137,
-};
-
-/**
- * Resolve an x402 network string to a chainId. Accepts CAIP-2 `eip155:<id>`
- * (v2) and the known bare v1 names. Returns null when it cannot be resolved,
- * which the verifier treats as ABSTAIN — never as a default chain.
- */
-export function parseNetwork(network: unknown): number | null {
-  if (typeof network !== "string") return null;
-  const n = network.trim().toLowerCase();
-  if (n.length === 0) return null;
-
-  if (n.startsWith("eip155:")) {
-    const idPart = n.slice("eip155:".length);
-    if (!/^[0-9]+$/.test(idPart)) return null;
-    const id = Number(idPart);
-    if (!Number.isSafeInteger(id) || id <= 0) return null;
-    return id;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(V1_NETWORK_CHAIN_IDS, n)) {
-    return V1_NETWORK_CHAIN_IDS[n];
-  }
-  return null;
-}
+// parseNetwork moved to ./network so ./sink can use it without importing this
+// module -- that import pulled viem, an OPTIONAL peer dep, into every
+// consumer of the package root and broke Solana-only installs at import time.
+// Re-exported here so `wormhole-x402/evm` keeps its published surface.
+import { parseNetwork } from "./network.js";
+export { parseNetwork } from "./network.js";
 
 // --- envelope types (shape only; every field is validated before use) ------
 

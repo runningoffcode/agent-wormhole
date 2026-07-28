@@ -81,7 +81,7 @@
  */
 
 import { createRequire } from "node:module";
-import { parseNetwork } from "./evm.js";
+import { parseNetwork } from "./network.js";
 
 /**
  * A CommonJS-style loader that works inside this ESM package.

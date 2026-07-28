@@ -34,6 +34,80 @@ jobs:
         if: matrix.python-version == '3.12'
         run: python3 loop/mutate.py
 
+  no-network:
+    # THE OFFLINE PROMISE, ENFORCED.
+    #
+    # The free package is 100% local, offline, zero-telemetry. That claim is
+    # the reason anyone installs it, and it is worth more than any revenue
+    # from the hosted tier. A single `import requests` added by a well-meaning
+    # contributor breaks it silently: nothing else in this suite would notice.
+    #
+    # So this job imports every module in the package under a PEP 578 audit
+    # hook and fails the build if CPython raises any network audit event
+    # (connect, getaddrinfo, urllib, http.client, and also subprocess/exec,
+    # since shelling out to curl is an exfiltration path no socket hook sees).
+    # It also fails if the import pulls in a single non-stdlib module.
+    #
+    # This is a syscall-level assertion, not an import lint: a grep for
+    # "import socket" misses a transitive dependency, a C extension, and
+    # anything constructed dynamically.
+    #
+    # It runs as its own job, unconditionally, and blocks the release
+    # workflow. It ships BEFORE any hosted tier is announced.
+    name: offline promise (no sockets, no dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # A gate that cannot fail is not a gate. Before trusting the real
+      # check, prove the audit hook actually detects a socket: this branch
+      # deliberately opens one and connects it, and MUST exit 3. If the hook
+      # ever silently stops working, the build fails here rather than passing
+      # the real check vacuously.
+      - name: Prove the gate can fail
+        run: |
+          set +e
+          python3 tests/no_network_probe.py --self-test
+          rc=$?
+          set -e
+          if [ "$rc" -ne 3 ]; then
+            echo "::error::network gate self-test returned $rc, expected 3."
+            echo "The audit hook did not fire on a real socket connect, so"
+            echo "the offline check below proves nothing. Fix the probe."
+            exit 1
+          fi
+          echo "gate self-test OK (detected a real socket connect)"
+
+      # Deliberately NOT `pip install .` -- installing from the checkout is
+      # what an operator does, and the check must cover the installed
+      # artifact, not just the source tree.
+      - name: Install the package as a user would
+        run: pip install .
+
+      - name: No socket, no dependency, on import
+        run: |
+          MODS=$(python3 - <<'PY'
+          import pathlib
+          root = pathlib.Path("wormhole")
+          mods = ["wormhole"]
+          mods += sorted("wormhole." + p.stem for p in root.glob("*.py")
+                         if p.stem not in ("__init__", "__main__"))
+          mods += sorted("wormhole.scanners." + p.stem
+                         for p in (root / "scanners").glob("*.py")
+                         if p.stem != "__init__")
+          mods += ["wormhole.rules.injection"]
+          print(" ".join(mods))
+          PY
+          )
+          echo "checking: $MODS"
+          # Run from a directory that is NOT the checkout, so the import
+          # resolves to the installed package rather than the source tree.
+          cd "$RUNNER_TEMP"
+          python3 "$GITHUB_WORKSPACE/tests/no_network_probe.py" $MODS
+
   self-scan:
     # The tool must come up clean against its own repository. If our detection
     # rules fire on our own documentation, the rules are too greedy.

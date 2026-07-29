@@ -17,5 +17,11 @@ watchtower/out/cursor.json
 
 # x402-guard (TypeScript, published separately to npm)
 x402-guard/node_modules/
+
+# Examples install the published packages to prove they work against what
+# is actually shipped, not against the local build. Those installs are
+# reproducible from each example's README and do not belong in the repo.
+node_modules/
+examples/**/package-lock.json
 x402-guard/dist/
 x402-guard/*.tgz

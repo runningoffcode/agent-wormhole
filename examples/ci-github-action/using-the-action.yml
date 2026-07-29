@@ -1,0 +1,30 @@
+# The same scan via the bundled composite action, which is the shorter path if
+# you do not need SARIF.
+#
+# Copy to .github/workflows/agent-config-scan.yml.
+#
+# IMPORTANT: this action does NOT produce SARIF. It runs the scan and writes
+# the text output to the job summary. If you want inline annotations on the
+# pull request, use agent-config-scan.yml in this directory instead — it calls
+# the CLI directly and uploads SARIF.
+
+name: agent-config-scan
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The action checks out its own copy of the scanner and puts it on
+      # PYTHONPATH, so there is no pip install step here.
+      - uses: runningoffcode/agent-wormhole@main
+        with:
+          path: '.'
+          fail-on: 'high'
+          blast-radius: 'true'
+          local-only: 'true'

@@ -1,0 +1,45 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m wormhole guard --hook --block"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|SendMessage|Task|Workflow|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m wormhole outbound --hook"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|WebFetch|WebSearch|Bash|Grep|Glob|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m wormhole readguard --hook"
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m wormhole readguard --instructions"
+          }
+        ]
+      }
+    ]
+  }
+}

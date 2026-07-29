@@ -1,0 +1,70 @@
+# Agent config scanning in CI, with SARIF annotations on the pull request.
+#
+# Copy this to .github/workflows/agent-config-scan.yml in your repository.
+#
+# Two steps, and they are deliberately separate:
+#
+#   1. "Scan" is the gate. It fails the build at --fail-on high.
+#   2. "SARIF" is the reporting path. It runs with `if: always()` so findings
+#      still get annotated on the PR when step 1 failed — which is exactly the
+#      run where you want the annotations. It uses --fail-on never so the
+#      redirect cannot take the job down a second time for the same findings.
+#
+# An exit code tells you something broke. An annotation tells you which line
+# and why, in review, where the fix is cheapest. You want both.
+
+name: agent-config-scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # required to upload SARIF to code scanning
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # No dependencies to resolve — the package has none.
+      - name: Install wormhole-guard
+        run: pip install wormhole-guard
+
+      # --local-only skips the machine's global ~/.claude settings, MCP servers
+      # and skills. On a runner those either do not exist or belong to the
+      # runner image, not to your repository, so scanning them produces
+      # findings nobody in this PR can act on.
+      - name: Scan
+        run: |
+          wormhole scan . \
+            --local-only \
+            --no-color \
+            --fail-on high \
+            --blast-radius
+
+      # --fail-on never so this step exits 0 and the upload below still runs.
+      # Without it the redirect inherits a nonzero exit and the annotations —
+      # the whole point of this step — never get uploaded.
+      - name: SARIF
+        if: always()
+        run: |
+          wormhole scan . \
+            --local-only \
+            --no-color \
+            --sarif \
+            --fail-on never > wormhole.sarif
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: wormhole.sarif
+          category: agent-wormhole

@@ -588,3 +588,56 @@ describe("Token-2022", () => {
     expect(v.decision).toBe("allow");
   });
 });
+
+describe("x402 v1 and v2 envelope shapes", () => {
+  // The scheme moved between protocol versions:
+  //   v1  { x402Version: 1, scheme, network, payload }
+  //   v2  { x402Version: 2, accepted: { scheme, network, ... }, payload }
+  //
+  // Reading only the top level meant every current-spec payload arrived with
+  // scheme === undefined and abstained. Fail-closed, so no wrong-allow -- but a
+  // guard that abstains on all live traffic is one nobody keeps installed.
+  // Verified against specs/x402-specification-v2.md section 5.2.1.
+  const QUOTE = {
+    asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    payTo: "11111111111111111111111111111112",
+    amount: "1000000",
+  };
+  const enc = (o: unknown) =>
+    Buffer.from(JSON.stringify(o)).toString("base64");
+
+  it("reads the scheme from the v2 accepted object", () => {
+    const v = inspectPaymentPayload(
+      enc({ x402Version: 2, accepted: { scheme: "exact" }, payload: {} }),
+      QUOTE,
+    );
+    // Past the scheme gate: the next abstain is about the missing transaction,
+    // not about an unreadable scheme.
+    expect(v.reason).not.toMatch(/scheme/);
+  });
+
+  it("still reads the scheme from the v1 top level", () => {
+    const v = inspectPaymentPayload(
+      enc({ x402Version: 1, scheme: "exact", payload: {} }),
+      QUOTE,
+    );
+    expect(v.reason).not.toMatch(/scheme/);
+  });
+
+  it("abstains on a non-exact scheme in either location", () => {
+    for (const env of [
+      { x402Version: 2, accepted: { scheme: "upto" }, payload: {} },
+      { x402Version: 1, scheme: "upto", payload: {} },
+    ]) {
+      const v = inspectPaymentPayload(enc(env), QUOTE);
+      expect(v.decision).toBe("abstain");
+      expect(v.reason).toMatch(/upto/);
+    }
+  });
+
+  it("abstains, naming both locations, when no scheme is present", () => {
+    const v = inspectPaymentPayload(enc({ x402Version: 2, payload: {} }), QUOTE);
+    expect(v.decision).toBe("abstain");
+    expect(v.reason).toMatch(/accepted\.scheme/);
+  });
+});

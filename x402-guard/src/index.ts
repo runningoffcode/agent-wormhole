@@ -727,7 +727,12 @@ export function inspectPaymentPayload(
       }
     }
   }
-  const p = obj as { scheme?: unknown; payload?: { transaction?: unknown } };
+  const p = obj as {
+    x402Version?: unknown;
+    scheme?: unknown;
+    accepted?: { scheme?: unknown } | null;
+    payload?: { transaction?: unknown };
+  };
   if (typeof p !== "object" || p === null) {
     return {
       decision: "abstain",
@@ -735,11 +740,36 @@ export function inspectPaymentPayload(
       reason: "payment payload is not an object",
     };
   }
-  if (p.scheme !== "exact") {
+
+  // The scheme moved between protocol versions.
+  //
+  //   v1: { x402Version: 1, scheme: "exact", network, payload: {...} }
+  //   v2: { x402Version: 2, accepted: { scheme: "exact", network, ... },
+  //         payload: {...}, resource: {...}, extensions: {} }
+  //
+  // Read from the v2 location first, falling back to the v1 one. Reading only
+  // the top level meant every current-spec payload arrived with
+  // `scheme === undefined` and abstained -- fail-closed, so no wrong-allow,
+  // but a guard that abstains on 100% of live traffic is a guard nobody keeps
+  // installed. Verified against specs/x402-specification-v2.md §5.2.1 in the
+  // x402-foundation repository.
+  //
+  // Deliberately not keyed on `x402Version`: an envelope that declares v1 and
+  // carries `accepted`, or vice versa, is still unambiguous about where its
+  // scheme is, and refusing to read it would reintroduce the same blind spot
+  // for anyone whose version field is wrong.
+  const accepted =
+    typeof p.accepted === "object" && p.accepted !== null ? p.accepted : null;
+  const scheme = accepted?.scheme !== undefined ? accepted.scheme : p.scheme;
+
+  if (scheme !== "exact") {
     return {
       decision: "abstain",
       findings: [],
-      reason: `unsupported x402 scheme (${String(p.scheme)}) — only "exact" is checked`,
+      reason:
+        scheme === undefined
+          ? "payment payload declares no scheme in either the v2 (accepted.scheme) or v1 (scheme) location — refusing to guess"
+          : `unsupported x402 scheme (${String(scheme)}) — only "exact" is checked`,
     };
   }
   const tx = p.payload?.transaction;

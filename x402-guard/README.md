@@ -47,10 +47,25 @@ headless agent has neither a website nor a human.
 
 ## Install
 
+Every chain dependency is an **optional peer**, so you install only the one you
+use — and you must install it. The entry point for each chain imports its own SDK
+at the top level, so `wormhole-x402` alone imports nothing useful:
+
 ```bash
-npm install wormhole-x402          # Solana
-npm install wormhole-x402 viem     # add EVM (viem is an optional peer dep)
+# Solana
+npm install wormhole-x402 @solana/web3.js @solana/spl-token
+
+# EVM
+npm install wormhole-x402 viem
+
+# Text scanning only — no chain SDK needed
+npm install wormhole-x402
 ```
+
+Each entry point is independent. `wormhole-x402/evm` and
+`wormhole-x402/quotetext` work with no Solana packages present, and
+`wormhole-x402` works with no `viem`. Importing an entry point whose SDK is not
+installed is a module-resolution error, not a silent no-op.
 
 ```ts
 import { guardSigner } from "wormhole-x402";

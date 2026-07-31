@@ -953,3 +953,145 @@ export function evmQuoteFromRequirements(
   }
   return q;
 }
+
+/**
+ * Every method through which an EVM signer can authorise a payment.
+ *
+ * The Solana guard's reasoning applies unchanged: wrapping one method and
+ * leaving the others bare is a door with a doorman standing beside it. An x402
+ * payment on EVM is an EIP-712 signature, so `signTypedData` is the method that
+ * matters — but the same wallet object usually also offers raw message and
+ * transaction signing, and an agent told to "just sign this" reaches for
+ * whichever one is available.
+ *
+ * `sendTransaction` is included deliberately even though it is not a signature:
+ * a wallet that can send can move value without ever producing a detached
+ * authorisation, and a firewall that permits it is not a firewall.
+ */
+const EVM_SIGNING_METHODS = new Set([
+  "signTypedData",
+  "signTypedData_v4",
+  "_signTypedData",
+  "signMessage",
+  "signTransaction",
+  "sendTransaction",
+]);
+
+/**
+ * Wrap an EVM signer so nothing is authorised unless it matches the quote.
+ *
+ * ═══ WHY THIS EXISTS SEPARATELY FROM `guardSigner` ═══
+ *
+ * `guardSigner` in ./index guards a Solana wallet, whose signing surface takes a
+ * `VersionedTransaction`. An EVM x402 payment is not a transaction at all — it is
+ * a detached EIP-3009 authorisation signed as EIP-712 typed data, which the payer
+ * hands to a facilitator to submit. Different input, different check
+ * (`inspectAuthorization`), and it is ASYNC because domain verification can
+ * require a network read. One function cannot do both without lying about its
+ * return type.
+ *
+ * ═══ FAILS CLOSED, INCLUDING ON THE METHODS IT CANNOT CHECK ═══
+ *
+ * No quote means refuse. A signing method whose arguments this wrapper cannot
+ * interpret ALSO means refuse — not pass-through. That is the whole difference
+ * between a guard and a suggestion: an agent that can reach an unguarded method
+ * has an unguarded wallet, and "we did not recognise the call so we allowed it"
+ * is how every bypass is written up afterwards.
+ *
+ * The cost is real and is the right trade: a wallet method this wrapper does not
+ * model becomes unusable rather than unchecked. A caller who needs one back adds
+ * it to `allow` explicitly, which is a decision with a name on it.
+ */
+export function guardEvmSigner<T extends object>(
+  signer: T,
+  getQuote: () => EvmPaymentQuote | null,
+  opts: InspectAuthorizationOptions & {
+    /**
+     * Methods to leave UNGUARDED, named explicitly.
+     *
+     * Exists so that a read-only or unrelated method does not have to be
+     * modelled here to remain callable. It is an allowlist rather than a
+     * denylist because the failure directions are not symmetric: forgetting to
+     * deny a method leaves a hole, forgetting to allow one produces an error the
+     * caller sees immediately.
+     */
+    allow?: readonly string[];
+  } = {},
+): T {
+  const allow = new Set(opts.allow ?? []);
+
+  /**
+   * Pull the x402 payload out of a signing call's arguments.
+   *
+   * Returns `undefined` when the shape is not recognised, which the caller turns
+   * into a refusal. It does NOT guess: an EIP-712 payload has an
+   * `authorization` (EIP-3009) or a `permit`, and anything else is a signing
+   * request this wrapper has no basis to approve.
+   */
+  const payloadFrom = (args: unknown[]): EvmPayload | undefined => {
+    for (const a of args) {
+      if (typeof a !== "object" || a === null) continue;
+      const o = a as Record<string, unknown>;
+      if ("authorization" in o || "permit" in o) return o as EvmPayload;
+      // viem/ethers style: { domain, types, primaryType, message }
+      const msg = o["message"];
+      if (typeof msg === "object" && msg !== null) {
+        const m = msg as Record<string, unknown>;
+        if ("from" in m && "to" in m && "value" in m) {
+          // The signature must be carried across. Rebuilding the payload without
+          // it makes every viem/ethers-shaped call abstain on "signature is
+          // malformed" — which fails closed, so it is safe, but it refuses
+          // CORRECT payments and an operator would reasonably turn the guard off.
+          return {
+            authorization: m as unknown as EvmAuthorization,
+            primaryType: o["primaryType"],
+            signature: o["signature"] ?? m["signature"],
+          };
+        }
+      }
+    }
+    return undefined;
+  };
+
+  return new Proxy(signer, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (
+        typeof prop !== "string" ||
+        allow.has(prop) ||
+        !EVM_SIGNING_METHODS.has(prop) ||
+        typeof value !== "function"
+      ) {
+        return value;
+      }
+
+      return async (...args: unknown[]) => {
+        const quote = getQuote();
+        if (!quote) {
+          throw new Error(
+            "x402-guard: refusing to authorise — no payment quote was supplied, " +
+              "so there is nothing to check this against.",
+          );
+        }
+        const payload = payloadFrom(args);
+        if (payload === undefined) {
+          throw new Error(
+            `x402-guard: refusing to authorise — could not read an x402 payment ` +
+              `payload from the arguments to ${prop}(). This wrapper fails closed: ` +
+              `an unrecognised signing request is refused, not passed through. ` +
+              `If ${prop} is not a payment path, name it in \`allow\`.`,
+          );
+        }
+        const verdict = await inspectAuthorization(quote, payload, opts);
+        if (verdict.decision !== "allow") {
+          const detail = verdict.findings.map((f) => `${f.code}: ${f.message}`).join("; ");
+          throw new Error(
+            `x402-guard: refusing to authorise (${verdict.decision}). ` +
+              (verdict.reason ?? detail),
+          );
+        }
+        return (value as Function).apply(target, args);
+      };
+    },
+  }) as T;
+}

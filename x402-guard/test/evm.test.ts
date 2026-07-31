@@ -12,6 +12,7 @@ import type { Hex } from "viem";
 import {
   inspectAuthorization,
   evmQuoteFromRequirements,
+  guardEvmSigner,
   parseNetwork,
   TRUSTED_DOMAINS,
   EIP3009,
@@ -634,5 +635,135 @@ describe("unreadable classification fields must not fall through to allow", () =
       { nowSeconds: FIXED_NOW },
     );
     expect(v.decision).toBe("allow");
+  });
+});
+
+/**
+ * The EVM transaction firewall.
+ *
+ * `guardEvmSigner` is the difference between a check an agent may call and one it
+ * cannot skip. These tests are about the SKIPPING, not the arithmetic —
+ * `inspectAuthorization` is covered above. What matters here is that every route
+ * to a signature goes through it and that an unrecognised route is refused.
+ */
+describe("guardEvmSigner — the firewall", () => {
+  /** A signer that records what it was asked to do. */
+  function fakeSigner() {
+    const calls: string[] = [];
+    return {
+      calls,
+      async signTypedData(p: unknown) {
+        calls.push("signTypedData");
+        return "0xsigned";
+      },
+      async _signTypedData(p: unknown) {
+        calls.push("_signTypedData");
+        return "0xsigned";
+      },
+      async signMessage(p: unknown) {
+        calls.push("signMessage");
+        return "0xsigned";
+      },
+      async sendTransaction(p: unknown) {
+        calls.push("sendTransaction");
+        return "0xhash";
+      },
+      async getAddress() {
+        calls.push("getAddress");
+        return SIGNER;
+      },
+    };
+  }
+
+  it("passes a conforming authorization through and calls the real signer", async () => {
+    const payload = await signAuth();
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(guarded.signTypedData(payload)).resolves.toBe("0xsigned");
+    expect(s.calls).toEqual(["signTypedData"]);
+  });
+
+  it("refuses when the amount does not match the quote, and never reaches the signer", async () => {
+    // The whole product in one assertion: the signer is not called, so no
+    // signature exists to be submitted.
+    const payload = await signAuth({ value: 5_000_000n });
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(guarded.signTypedData(payload)).rejects.toThrow(/refusing to authorise/);
+    expect(s.calls).toEqual([]);
+  });
+
+  it("refuses a payment redirected to another address", async () => {
+    const payload = await signAuth({ to: ATTACKER });
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(guarded.signTypedData(payload)).rejects.toThrow(/refusing to authorise/);
+    expect(s.calls).toEqual([]);
+  });
+
+  it("fails closed with no quote", async () => {
+    // Every optional security parameter with a permissive default ends up unset
+    // in production. Absent quote is a refusal, not a pass.
+    const payload = await signAuth();
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => null);
+    await expect(guarded.signTypedData(payload)).rejects.toThrow(/no payment quote/);
+    expect(s.calls).toEqual([]);
+  });
+
+  it("guards EVERY signing route, not just signTypedData", async () => {
+    // A guard on one method is a door with a doorman standing beside it. An
+    // agent told to "just sign this" reaches for whatever the wallet offers.
+    const bad = await signAuth({ value: 9_000_000n });
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote) as any;
+    for (const m of ["signTypedData", "_signTypedData", "signMessage", "sendTransaction"]) {
+      await expect(guarded[m](bad), m).rejects.toThrow(/refusing to authorise/);
+    }
+    expect(s.calls).toEqual([]);
+  });
+
+  it("refuses an unrecognised signing request rather than passing it through", async () => {
+    // "We did not recognise the call so we allowed it" is how every bypass is
+    // written up afterwards.
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(guarded.signTypedData({ nonsense: true } as any)).rejects.toThrow(
+      /could not read an x402 payment payload/,
+    );
+    expect(s.calls).toEqual([]);
+  });
+
+  it("leaves non-signing methods alone", async () => {
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(guarded.getAddress()).resolves.toBe(SIGNER);
+    expect(s.calls).toEqual(["getAddress"]);
+  });
+
+  it("honours an explicit allow, so an unmodelled method stays usable", async () => {
+    // The escape hatch is an allowlist with a name on it rather than a silent
+    // pass-through.
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote, { allow: ["signMessage"] });
+    await expect(guarded.signMessage({ nonsense: true } as any)).resolves.toBe("0xsigned");
+    expect(s.calls).toEqual(["signMessage"]);
+  });
+
+  it("accepts a viem/ethers-shaped typed-data call", async () => {
+    // { domain, types, primaryType, message } is what viem and ethers hand a
+    // signer, so the wrapper has to read the payload out of that shape too or
+    // every real caller trips the unrecognised-request refusal.
+    const signed = await signAuth();
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(
+      guarded.signTypedData({
+        primaryType: "TransferWithAuthorization",
+        message: signed.authorization,
+        signature: signed.signature,
+      } as any),
+    ).resolves.toBe("0xsigned");
+    expect(s.calls).toEqual(["signTypedData"]);
   });
 });

@@ -62,6 +62,32 @@ const wallet = guardSigner(myWallet, () => currentQuote);
 await wallet.signTransaction(tx);
 ```
 
+On EVM the payment is a detached EIP-3009 authorization rather than a
+transaction, so it has its own wrapper — same guarantee, `async` because domain
+verification can read the chain:
+
+```ts
+import { guardEvmSigner } from "wormhole-x402/evm";
+
+const signer = guardEvmSigner(myWalletClient, () => currentQuote);
+
+// Every signing route is wrapped, not just this one: signTypedData,
+// _signTypedData, signTypedData_v4, signMessage, signTransaction and
+// sendTransaction all go through the check. A guard on one method is a door
+// with a doorman standing beside it — an agent told to "just sign this"
+// reaches for whichever method the wallet happens to expose.
+await signer.signTypedData(payload);
+```
+
+Both wrappers **fail closed**. No quote is a refusal, not a pass — every optional
+security parameter with a permissive default ends up unset in production, and
+then the guard reports green on all traffic and nobody notices. On EVM a signing
+request whose arguments cannot be read as an x402 payment is *also* refused
+rather than passed through; if a method is not a payment path, name it in
+`allow`. That makes an unmodelled method unusable rather than unchecked, which is
+the trade worth making: "we did not recognise the call so we allowed it" is how
+every bypass is written up afterwards.
+
 Or inspect without wrapping:
 
 ```ts

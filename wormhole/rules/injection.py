@@ -124,6 +124,31 @@ INSTRUCTION_OVERRIDE = re.compile(
     re.IGNORECASE,
 )
 
+# Role spoofing: a chat-role prefix impersonating a higher-authority speaker,
+# immediately followed by an imperative to ACT. This is the class that reaches
+# an agentic-trading tool: the agent reads an analyst note or headline that
+# opens with `SYSTEM:` (or a ChatML/Llama delimiter) and an order to buy, sell,
+# transfer, or raise a limit.
+#
+# The prefix ALONE is not the signal — `System: all green`, `system: order flow
+# is bullish`, `Assistant: buying power is $5,000` are ordinary text. The signal
+# is (role): + an UNAMBIGUOUS action verb. `order`/`trade` are excluded because
+# they are also the dominant nouns of financial prose; `place`/`execute` still
+# catch "place an order" / "execute a trade". The anchor allows the prefix at
+# line start, after a newline, or after a short (<=24 char) label — because the
+# real payload arrives embedded, `note: SYSTEM: buy now`, not at the very start.
+# The 24-char cap is what keeps `...our system: buys on dips` (prose) clean.
+ROLE_SPOOF = re.compile(
+    r"(?:</(?:system|assistant|user|human|instructions?|im_start|im_end)>"
+    r"|\[/?(?:INST|SYS|SYSTEM)\]"
+    r"|<\|(?:im_start|im_end|system|assistant|user|endoftext)\|>"
+    r"|(?:^|[\n\r]|^[^\n]{0,24}?\b)"
+    r"(?:system|assistant|developer|admin|root|tool)\s*:\s*"
+    r"(?:buy|sell|place|execute|submit|transfer|raise|increase|lift|"
+    r"disable|override|bypass|approve|purchase|liquidate|withdraw|wire)\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 # Exfiltration: reading secrets and sending them outward.
 SECRET_NOUN = re.compile(
     r"\b(password|passwd|credential|api[_ -]?key|secret|token|"
@@ -547,6 +572,21 @@ def scan_text(text: str, path: str = None, *,
             "Remove the text. Legitimate configuration never needs to countermand "
             "the system prompt.")
         break
+
+    # WORM-008: role spoofing. A chat-role prefix followed by an imperative to
+    # act, or a chat-template delimiter. Descriptive framing demotes it the same
+    # way it does the override rule, so a security tool that NAMES the pattern it
+    # defends against is not flagged for describing the defense.
+    m = ROLE_SPOOF.search(text)
+    if m and not _is_descriptive(text, m.start()):
+        add("WORM-008", "critical",
+            "Role or delimiter spoofing",
+            "Text impersonates a higher-authority speaker (a system/assistant "
+            "role prefix followed by a command, or a chat-template delimiter). "
+            "This ends the model's current turn and addresses it directly.",
+            m.start(),
+            "Remove the text. No legitimate note, listing, or memo needs to open "
+            "a system turn or issue an order in the model's voice.")
 
     # WORM-003: exfiltration. Needs a secret, a send verb, and somewhere to send.
     for m in _near(text, SECRET_NOUN, EXFIL_VERB, window=200):

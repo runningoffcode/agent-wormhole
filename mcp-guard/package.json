@@ -5,19 +5,41 @@
   "type": "module",
   "license": "Apache-2.0",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./proxy": {
+      "types": "./dist/proxy.d.ts",
+      "import": "./dist/proxy.js"
+    }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run"
   },
-  "keywords": ["mcp", "agentic-trading", "prompt-injection", "trading-guard", "ai-agent-security", "robinhood"],
-  "peerDependencies": { "wormhole-x402": "^0.3.0" },
+  "keywords": [
+    "mcp",
+    "agentic-trading",
+    "prompt-injection",
+    "trading-guard",
+    "ai-agent-security",
+    "robinhood"
+  ],
+  "peerDependencies": {
+    "wormhole-x402": "^0.3.0"
+  },
   "devDependencies": {
     "@types/node": "^22",
     "typescript": "^5",
     "vitest": "^2",
     "wormhole-x402": "^0.3.0"
+  },
+  "bin": {
+    "mcp-trade-guard": "./dist/run.js"
   }
 }

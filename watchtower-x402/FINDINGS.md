@@ -212,3 +212,82 @@ the second of which leaks `viem@2.48.11` and a full contract-call trace.
 - Instrument: **calibrated and validated** with negative controls.
 - Finding: **real and reproducible**, with stated limits.
 - Publication: **blocked on coordinated disclosure**, deliberately.
+
+---
+
+# Third session: it is systemic, not one vendor
+
+Updated 2026-08-01. Evidence in `evidence/`, reproducible with `evidence/reproduce.mjs`.
+
+## Both of the two largest facilitators fail both invariants
+
+```
+                                  Coinbase CDP    Dexter
+  neg-control: bad signature        REFUSED       REFUSED     ← instrument discriminates
+  neg-control: over balance         REFUSED       REFUSED     ← really simulates on-chain
+  CONTROL: resource matches         accepted      accepted    ← control is meaningful
+  I3: resource MISMATCH             ACCEPTED      ACCEPTED    ← violation
+  I4: nonce reused, concurrent      ACCEPTED×2    ACCEPTED×2  ← violation
+```
+
+Dexter was probed on the same Base Sepolia network with the same wallet and the
+same code — one URL change. It passed both negative controls independently, so
+this is not "a facilitator that accepts everything"; it is the same two failures,
+twice.
+
+Between them these two handle the majority of x402 traffic (Dexter overtook
+Coinbase around mid-December and runs roughly half of daily transactions).
+
+## The spec sentence that makes this matter
+
+From the x402 specification's facilitator page:
+
+> "If the `Verification Response` is valid, the resource server performs the work
+> to fulfil the request."
+
+**The spec says merchants deliver on the verify verdict.** And verify's stated job
+is to "confirm that the client's payment payload meets the server's declared
+payment requirements" — the requirements name the resource. So a resource
+mismatch that verify does not catch is verify failing its own documented purpose,
+not an optional extra.
+
+That closes the "verify is only advisory" defence to a large extent. It may still
+be raised, and it should still be put to both operators before publication, but
+the spec does not describe verify as advisory — it describes it as the gate the
+merchant acts on.
+
+## What is demonstrated, precisely
+
+- A merchant gating delivery on `/verify` can be told **"valid"** for an
+  authorization whose resource does not match what is being bought (F1,
+  cross-resource substitution).
+- A merchant can be told **"valid" twice concurrently for one nonce** (F2,
+  duplicate-settlement race). arXiv 2605.30998 §5.2 places this fix explicitly at
+  facilitator ingress: "even if N concurrent requests pass the signature check,
+  only the first to acquire the atomic lock proceeds".
+
+## What is still NOT demonstrated
+
+Unchanged from the second session and still the honest boundary:
+
+1. **Settlement was never called.** The rail forbids it. Whether two settlements
+   would land on-chain is untested — the ERC-20 may well reject the second nonce
+   use. The loss demonstrated is at the **merchant**, which delivers on verify,
+   not necessarily on-chain.
+2. **Testnet only** (Base Sepolia). Mainnet untested.
+3. **Two facilitators.** PayAI and DayDreams are unprobed.
+4. Neither operator has been contacted yet.
+
+## Disclosure, and why the "better facilitator" idea has to wait
+
+The obvious next thought is to build a facilitator that passes these probes. That
+is a legitimate endgame and the sequencing in the strategy memo supports it — but
+it must not be the reason this is published. A conformance scoreboard whose author
+launches a competing facilitator alongside the first report reads as marketing,
+not research, and the credibility that makes the scoreboard worth anything is
+spent in that moment.
+
+**Order: report to both operators, give them time, publish the survey, and only
+then talk about building one.** The survey is the asset. A facilitator built on
+top of an established, trusted scoreboard is defensible; a scoreboard published to
+sell a facilitator is not.

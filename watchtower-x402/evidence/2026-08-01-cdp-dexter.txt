@@ -1,0 +1,18 @@
+
+════ Coinbase CDP — https://x402.org/facilitator
+  neg-control: bad signature         isValid=false invalid_exact_evm_signature
+  neg-control: over balance          isValid=false invalid_exact_evm_insufficient_balance
+  CONTROL: resource matches          isValid=true  
+  I3: resource MISMATCH              isValid=true  
+  I4: nonce first use                isValid=true  
+  I4: nonce SECOND, concurrent       isValid=true  
+  → controls sane: true | I3 FAIL | I4 FAIL
+
+════ Dexter — https://x402.dexter.cash
+  neg-control: bad signature         isValid=false invalid_exact_evm_signature
+  neg-control: over balance          isValid=false invalid_exact_evm_insufficient_balance
+  CONTROL: resource matches          isValid=true  
+  I3: resource MISMATCH              isValid=true  
+  I4: nonce first use                isValid=true  
+  I4: nonce SECOND, concurrent       isValid=true  
+  → controls sane: true | I3 FAIL | I4 FAIL

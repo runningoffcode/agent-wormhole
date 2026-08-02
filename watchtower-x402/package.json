@@ -5,11 +5,20 @@
   "description": "Black-box conformance probes for x402 facilitators: does this facilitator honour the security invariants it is supposed to?",
   "type": "module",
   "license": "Apache-2.0",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "scripts": { "build": "tsc", "test": "vitest run" },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
   "devDependencies": {
     "@types/node": "^22",
     "typescript": "^5",
+    "viem": "^2.55.10",
     "vitest": "^2"
   }
 }

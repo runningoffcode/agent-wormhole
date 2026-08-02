@@ -43,6 +43,7 @@
  */
 
 import { assertProbeSafeValue, type ProbeTransport } from "./safety.js";
+import { randomNonce } from "./signer.js";
 
 export type Verdict = "pass" | "fail" | "unknown";
 export type Invariant = "I3" | "I4";
@@ -285,7 +286,9 @@ export async function probeI3(ctx: ProbeContext): Promise<ProbeResult> {
     payTo: ctx.payTo,
     asset: ctx.asset,
     from: ctx.from ?? DEAD_FROM,
-    nonce: "0x" + "11".repeat(32),
+    // Random, not fixed: a nonce reused across runs could be refused because the
+    // facilitator remembers it, which we would misread as conformance.
+    nonce: randomNonce(),
   };
   const RESOURCE_A = "https://probe.invalid/resource-A";
   const RESOURCE_B = "https://probe.invalid/resource-B";
@@ -354,7 +357,7 @@ export async function probeI4(ctx: ProbeContext): Promise<ProbeResult> {
     payTo: ctx.payTo,
     asset: ctx.asset,
     from: ctx.from ?? DEAD_FROM,
-    nonce: "0x" + "22".repeat(32),
+    nonce: randomNonce(),
     signature: "",
   };
   const signature = ctx.sign ? await ctx.sign(parts) : NO_SIGNATURE;

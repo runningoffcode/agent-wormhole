@@ -119,3 +119,96 @@ ACP writeup avoided. The responsible path is a direct report to Coinbase.
 - Payload shape: **solved**, verified to reach on-chain simulation.
 - Real verdicts: **blocked on a faucet**, which is a human step.
 - Scoreboard: **must not ship** until verdicts are real.
+
+---
+
+# Second session, funded: two reproduced violations
+
+Updated 2026-08-01, after the probe wallet was funded with 20 testnet USDC.
+
+## The result
+
+With a real EIP-3009 signature from a funded Base Sepolia wallet, the control is
+accepted and the verdicts become real:
+
+```
+I3  FAIL  control=accepted  CONF-I3-ACCEPTED   accepted a resource-mismatched authorization
+I4  FAIL  control=accepted  CONF-I4-ACCEPTED   accepted the same nonce twice, concurrently
+```
+
+`control=accepted` is the load-bearing part: the facilitator accepted our valid
+payload, which means it genuinely evaluated the request rather than rejecting it
+upstream. These are not the false passes of the first session.
+
+## The negative controls, which the finding had to survive
+
+A finding this size must fail when it should. Every check below was run against
+`https://x402.org/facilitator` (Coinbase CDP), Base Sepolia:
+
+| Probe | Response | Meaning |
+| --- | --- | --- |
+| Bad signature (65 zero bytes) | `invalid_exact_evm_signature` | not accept-everything |
+| Amount above balance | `invalid_exact_evm_insufficient_balance` | really simulates on-chain |
+| **Control**: requirements and payload name the same resource | **`isValid: true`** | the control works |
+| **I3**: requirements say B, payload says A | **`isValid: true`** | ← violation |
+| **I4**: same nonce, two concurrent requests | **both `isValid: true`** | ← violation |
+
+The first two prove the instrument discriminates. The third proves the control is
+meaningful. Only then do the last two mean anything.
+
+## Why these are the published attacks, not our interpretation
+
+*Free-Riding the Agentic Web* (arXiv 2605.30998) §5.2 states the I4 fix belongs at
+the verification stage:
+
+> "To enforce Authorization Uniqueness (I4), the verification logic must
+> transition from a stateless 'Check-then-Act' model to a stateful
+> 'Check-and-Set' ... a lightweight pending-state layer at the Facilitator
+> ingress ... even if N concurrent requests pass the signature check, only the
+> first to acquire the atomic lock proceeds to settlement and delivery."
+
+A `/verify` that answers `true` twice for one nonce is stateless Check-then-Act —
+the F2 duplicate-settlement race, exactly as described. Likewise I3: the paper's
+F1 is a signature detached from its resource and re-attached to another, which is
+what the mismatched-resource acceptance permits.
+
+## The honest limits, which belong in any writeup
+
+1. **This is `/verify` behaviour, not proven settlement behaviour.** We never
+   called `/settle` — the safety rail makes it unreachable. Whether a second
+   settlement would actually land on-chain is untested, and it is possible the
+   on-chain `transferWithAuthorization` would revert on nonce reuse even though
+   `/verify` said yes. **What is demonstrated is that a merchant relying on
+   `/verify` to gate delivery can be told "yes" twice for one authorization** —
+   which is precisely the free-shopping condition the paper describes, because
+   merchants deliver on the verify verdict.
+2. **`/verify` may not claim to enforce these.** Coinbase's documentation does not
+   state what `/verify` guarantees versus `/settle`. If their position is that
+   verify is advisory and settlement is authoritative, that is a legitimate design
+   — and the finding becomes "the advisory endpoint merchants gate on does not
+   bind context or linearize nonces", which is still worth publishing but is a
+   different sentence. **This must be put to Coinbase before publication.**
+3. **Testnet only.** Base Sepolia. Mainnet behaviour is untested and must not be
+   assumed identical.
+4. **One facilitator.** Dexter, PayAI and DayDreams are unprobed.
+
+## Disclosure position
+
+These are reproduced instances of *published* vulnerability classes in a
+production payment facilitator. That earns coordinated disclosure, not a
+scoreboard launch.
+
+**The sequence is: report to Coinbase, give them time, then publish.** Leading
+with "Coinbase fails two invariants" before they have seen it would be the
+opposite of how the ACP writeup handled a live protocol, and the credibility of
+the whole scoreboard depends on getting this first disclosure right.
+
+Also still unreported: the two unhandled exception messages from the first
+session (`Cannot use 'in' operator...`, `Cannot convert undefined to a BigInt`),
+the second of which leaks `viem@2.48.11` and a full contract-call trace.
+
+## Status
+
+- Instrument: **calibrated and validated** with negative controls.
+- Finding: **real and reproducible**, with stated limits.
+- Publication: **blocked on coordinated disclosure**, deliberately.

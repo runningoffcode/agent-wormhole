@@ -1,0 +1,18 @@
+x402 facilitator conformance survey — Base Sepolia — /verify only
+
+── Coinbase CDP
+   controls sane=true  control accepted=true
+   I3 FAIL     I4 FAIL
+
+── Dexter
+   controls sane=true  control accepted=true
+   I3 FAIL     I4 FAIL
+
+── PayAI
+   controls sane=true  control accepted=false
+   I3 UNKNOWN  I4 UNKNOWN   (invalid_payload)
+
+── DayDreams
+   controls sane=false  control accepted=false
+   I3 UNKNOWN  I4 UNKNOWN   (Unauthorized)
+

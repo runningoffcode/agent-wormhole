@@ -291,3 +291,76 @@ spent in that moment.
 then talk about building one.** The survey is the asset. A facilitator built on
 top of an established, trusted scoreboard is defensible; a scoreboard published to
 sell a facilitator is not.
+
+---
+
+# Fourth session: the full survey, and a second, different finding
+
+Updated 2026-08-01. Raw output in `evidence/`.
+
+## All four facilitators, honestly graded
+
+```
+                  controls sane   control accepted   I3      I4
+  Coinbase CDP    yes             yes                FAIL    FAIL
+  Dexter          yes             yes                FAIL    FAIL
+  PayAI           yes             NO                 unknown unknown   (invalid_payload)
+  DayDreams       no              NO                 unknown unknown   (Unauthorized — needs a key)
+```
+
+PayAI and DayDreams are **not** graded. PayAI rejects our payload shape (it
+advertises short network names like `base-sepolia` and likely wants a different
+schema); DayDreams requires an API key. In both cases the control was never
+accepted, so the probe learned nothing and the instrument says so. **`unknown` is
+not a pass and is not an accusation** — it is two facilitators we have not yet
+been able to measure.
+
+That leaves the finding as: **the two largest facilitators, handling the majority
+of x402 traffic, both fail I3 and I4.**
+
+## A SECOND finding, and it is a different kind
+
+The invariant failures above are payment-authorization logic — no text, no model,
+no prompt. Separately, we probed the **text surface**: `paymentRequirements`
+carries `description`, which a merchant controls and a buying agent's model reads
+when deciding whether to purchase.
+
+```
+                       Coinbase CDP   Dexter    our scanner
+  instruction override   ACCEPTED     ACCEPTED   X402-202
+  role spoof             ACCEPTED     ACCEPTED   X402-209
+  exfiltration           ACCEPTED     ACCEPTED   X402-203
+  role delimiter         ACCEPTED     ACCEPTED   X402-209
+```
+
+Both facilitators return `isValid: true` for a payment whose `description` is a
+prompt-injection payload. Neither flags any of the four. Our scanner flags all
+four on the same inputs.
+
+**This is not a facilitator bug in the same sense as I3/I4** — nothing in the spec
+asks a facilitator to scan prose, and a facilitator that started refusing payments
+over their text would be a censor. It is a *gap in the ecosystem*, and the x402
+spec itself frames it: the v2 bazaar extension applies content rules to exactly
+three cosmetic fields (`serviceName`, `tags`, `iconUrl`) and explicitly names the
+facilitator a trust boundary, because "clients echo the resource block from
+PaymentRequired into PaymentPayload, so a malicious client could submit hostile
+metadata". The authors identified the threat and then defended only the display
+fields. `description` — the one carrying persuasive prose to the model — has no
+content validation in either spec version.
+
+So the honest framing is: **the merchant-controlled text that reaches a buying
+agent's model passes through the payment layer unchecked, by design, and the two
+largest facilitators confirm it empirically.** That is an argument for a
+buyer-side control, which is what `wormhole-x402` is — not an accusation against
+the facilitators.
+
+## Do NOT conflate the two findings
+
+I3/I4 are authorization logic bugs against published invariants — those are
+facilitator defects and warrant coordinated disclosure. The text surface is an
+unclaimed responsibility, and calling it a facilitator vulnerability would be
+wrong and would weaken the first finding by association.
+
+Write them as two separate things: *"the two largest facilitators fail two
+published invariants"* and *"the payment layer does not sanitise the text your
+agent reads, and nobody claims to."*

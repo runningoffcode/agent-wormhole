@@ -1,0 +1,14 @@
+Does the facilitator sanitise merchant-controlled text? (/verify, read-only)
+
+── Coinbase CDP
+   instruction override   facilitator=ACCEPTED  our scanner=X402-202
+   role spoof             facilitator=ACCEPTED  our scanner=X402-209
+   exfiltration           facilitator=ACCEPTED  our scanner=X402-203
+   role delimiter         facilitator=ACCEPTED  our scanner=X402-209
+
+── Dexter
+   instruction override   facilitator=ACCEPTED  our scanner=X402-202
+   role spoof             facilitator=ACCEPTED  our scanner=X402-209
+   exfiltration           facilitator=ACCEPTED  our scanner=X402-203
+   role delimiter         facilitator=ACCEPTED  our scanner=X402-209
+

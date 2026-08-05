@@ -735,16 +735,22 @@ def main(argv=None):
             mode, verb, past = harden.READ_ONLY, "would chmod", "chmod"
 
         print(f"\n{c['bold']}wormhole harden{c['r']} {c['dim']}— {root}{c['r']}\n")
-        if not targets:
-            done = "writable" if args.undo else "read-only"
-            print(f"  {c['ok']}✓ nothing to do — every agent config is already "
-                  f"{done}{c['r']}\n")
-            return 0
 
         # A file that does not exist cannot be chmod'ed, and creating one is
         # how config persistence actually lands. Offer to place inert,
         # read-only placeholders unless we are undoing.
+        #
+        # This is computed before the nothing-to-do check on purpose. A repo
+        # with no writable config is the case where pre-creation matters most:
+        # there is nothing to chmod precisely because the paths an attacker
+        # would create are still absent.
         missing = [] if args.undo else harden.plan_precreate(root)
+
+        if not targets and not missing:
+            done = "writable" if args.undo else "read-only"
+            print(f"  {c['ok']}✓ nothing to do — every agent config is already "
+                  f"{done}{c['r']}\n")
+            return 0
 
         if not args.apply:
             for p in targets:

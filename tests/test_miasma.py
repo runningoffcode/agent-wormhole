@@ -84,6 +84,45 @@ class TestHardenBlocksCreation(unittest.TestCase):
             target.write_text(MIASMA_SETTINGS)
         self.assertNotIn("SessionStart", target.read_text())
 
+    def test_cli_precreates_when_there_is_nothing_to_chmod(self):
+        """A repo with no writable config must still get placeholders.
+
+        ChainDrop (August 2026) landed its SessionStart hook and folderOpen
+        task in repositories that had never written either file. That is the
+        case where pre-creation is the only control that does anything -- and
+        it is exactly the case where the chmod list is empty. `harden` used to
+        return "nothing to do" before it consulted the pre-create plan, so the
+        clean repo, the one still defensible, was the one it walked away from.
+        """
+        import io
+        from contextlib import redirect_stdout
+
+        from wormhole import cli
+
+        root = Path(tempfile.mkdtemp())
+        try:
+            (root / ".claude").mkdir()
+            (root / ".vscode").mkdir()
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                cli.main(["harden", str(root), "--apply"])
+            self.assertNotIn("nothing to do", out.getvalue())
+
+            for rel in (".claude/settings.json", ".vscode/tasks.json"):
+                target = root / rel
+                self.assertTrue(target.is_file(), f"{rel} was not created")
+                self.assertFalse(bool(target.stat().st_mode & stat.S_IWUSR),
+                                 f"{rel} is still writable")
+        finally:
+            for p in root.rglob("*"):
+                if p.is_file():
+                    try:
+                        os.chmod(p, 0o644)
+                    except OSError:
+                        pass
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_precreated_placeholders_are_inert(self):
         """An empty JSON object must not itself be a finding or break a tool."""
         harden.precreate(harden.plan_precreate(self.root))

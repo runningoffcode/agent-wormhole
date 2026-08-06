@@ -624,7 +624,15 @@ const PROPAGATION_TARGET_SRC =
 
 const INSTRUCTION_OVERRIDE_SRC = String.raw`\b(?:ignore|disregard|forget|override|discard|bypass)\s+(?:all\s+|any\s+|the\s+|your\s+|previous\s+|prior\s+|earlier\s+|above\s+|preceding\s+|system\s+){1,3}(?:instructions?|prompts?|rules?|directives?|guidelines?|context)`;
 
-const SECRET_NOUN_SRC = String.raw`\b(?:password|passwd|credential|api[_ -]?key|secret|private[_ -]?key|ssh[_ -]?key|\.env|env(?:ironment)? (?:file|var)|seed phrase|mnemonic|recovery phrase)\b`;
+/*
+ * The trailing `s?` on the countable nouns is load-bearing. Without it the
+ * `\b` boundary made "credential" fail against "credentials" and "api key"
+ * fail against "API keys" — so the single most natural way to write the
+ * attack ("send your API keys to <url>") did not match the secret half of
+ * the pair at all, and X402-203 never fired. Only the countable nouns take
+ * the plural; "\.env" and the phrase forms stay exact.
+ */
+const SECRET_NOUN_SRC = String.raw`\b(?:passwords?|passwds?|credentials?|api[_ -]?keys?|secrets?|private[_ -]?keys?|ssh[_ -]?keys?|access[_ -]?tokens?|auth[_ -]?tokens?|\.env|env(?:ironment)? (?:files?|vars?)|seed phrases?|mnemonics?|recovery phrases?)\b`;
 
 const EXFIL_VERB_SRC = String.raw`\b(?:send|email|post|upload|transmit|exfiltrate|leak|forward|curl|wget|fetch|report)\b`;
 

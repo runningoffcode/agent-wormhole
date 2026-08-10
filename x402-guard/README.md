@@ -45,6 +45,65 @@ headless agent has neither a website nor a human.
 
 <img src="https://raw.githubusercontent.com/runningoffcode/agent-wormhole/main/assets/diagram/x402-guard-2x.png" alt="Diagram: the x402 quote arrives on a channel the model never touches and the merchant's token account is derived from it by pure math; the unsigned transaction is authored in the model's context; a single comparison allows the quoted payment and refuses a wrong destination, a wrong amount, or an added delegate." width="820">
 
+## One call, either chain
+
+`verify()` takes a quote and the payment about to be signed, picks the rail from
+the network string, and returns one verdict. It runs the quote-text scan first —
+an injected instruction in a merchant's description is refused before its numbers
+are ever treated as authoritative — then compares destination, asset and amount.
+
+```ts
+import { verify } from "wormhole-x402/verify";
+
+const result = await verify(
+  {
+    network: "eip155:8453",          // or "solana"
+    quote,                            // what the merchant's 402 said
+    payload,                          // what the agent is about to sign
+  },
+  { quoteProvenance: "merchant_signed", issuedAt: new Date().toISOString() },
+);
+
+if (result.decision !== "allow") {
+  // refuse AND abstain both mean do not sign. "We could not check it" is
+  // never "it is fine" — that conflation is the bug this library exists for.
+  throw new Error(result.findings.map((f) => f.code).join(","));
+}
+```
+
+Time is an input rather than read from the clock, so a verdict is a pure
+function of its request and replays identically later.
+
+### The other entry points
+
+| Import | What it is |
+| --- | --- |
+| `wormhole-x402/verify` | `verify()` — the unified check, both rails |
+| `wormhole-x402/client` | `guardedPay()` / `guardedFetch()` — one line in front of `sign()` |
+| `wormhole-x402/receipt` | `verifyReceipt()` / `replayMatches()` — check a receipt offline |
+| `wormhole-x402/server` | `createVerifyHandler()` — host it yourself |
+| `wormhole-x402/metering` | usage accounting and cross-agent correlation |
+
+`guardedPay` takes the transport as an argument rather than a URL, so the same
+call runs against the local verifier or a remote one and the two cannot drift.
+
+### Receipts
+
+A decisive verdict carries a receipt: the decision, the rule codes, a coarse
+amount band and a SHA-256 digest of the request — never the quote text, never
+the payment bytes. Signed, it is checkable by someone who does not trust you:
+
+```ts
+import { verifyReceipt, replayMatches } from "wormhole-x402/receipt";
+
+verifyReceipt(receipt, signature, publicKey); // did we really say this?
+replayMatches(receipt, request);              // is it this exact request?
+```
+
+Neither call touches the network. That is the point of a receipt — an
+attestation you have to phone someone to check is just their word with extra
+steps.
+
 ## Install
 
 Every chain dependency is an **optional peer**, so you install only the one you

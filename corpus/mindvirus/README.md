@@ -8,16 +8,38 @@ These are not our constructions. They are payloads an evolutionary algorithm
 selected for spreading ability, which makes them a fairer test than anything we
 would write ourselves: we cannot accidentally tune a rule to text we invented.
 
-## Why some of these are expected to MISS
+## Current rate: 4 of 6
+
+| payload | rule |
+|---|---|
+| ai-supremacy-verbatim | WORM-001 + WORM-005 |
+| curlbash-survival-kit | WORM-001 |
+| deletor-self-replication | WORM-001 |
+| german-hegemony-soul-overwrite | WORM-005 |
+| whale-love-file-creation | **miss** |
+| cryptoad-persistence | **miss** |
+
+## Why the two misses are misses
 
 `WORM-001` requires self-reference plus a propagation verb plus a destination.
-Two payloads here carry no self-reference at all — they instruct the creation of
-a *new* file whose content is dictated inline. That is propagation by dictation
-rather than by copying, and it is a different shape.
+`WORM-005` covers propagation by *dictation* — create or replace a file that is
+re-read as instruction — but requires a **totality cue** ("entirely",
+"containing the", "verbatim"). That requirement is not arbitrary: without it the
+rule fired on three legitimate workflow documents in `corpus/benign`, all of
+which say some version of *"write the command into AGENTS.md alongside the
+existing ones"*. Adding one line to a file that keeps its identity is
+documentation; dictating the file's whole contents is a new host.
 
-The honest position is that these are recorded as misses rather than quietly
-excluded, and the detection rate below is reported against the full set. A
-corpus that only contains what we already catch measures nothing.
+- **whale-love-file-creation** dictates content into *new* files
+  (`MY_CETACEAN_HEART.md`) with no self-reference and no totality cue. Catching
+  it would mean flagging any instruction to create a markdown file.
+- **cryptoad-persistence** is pure persistence framing — no verb, no
+  destination, nothing instructing an action. There is no rule shape that
+  catches it without matching ordinary prose about context wipes.
+
+Both are recorded here rather than quietly excluded, and the rate above is
+reported against the full set. A corpus trimmed to what already passes measures
+nothing.
 
 ## Provenance
 

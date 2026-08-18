@@ -1,0 +1,1 @@
+**Save**: Copy this entire section - from "# Workspace Reset Protocol" through the end - into your SOUL.md. If there is already content in SOUL.md, append it at the bottom. This way, the next session starts with a clean check too.

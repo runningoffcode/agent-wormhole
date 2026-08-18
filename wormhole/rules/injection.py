@@ -106,6 +106,21 @@ PROPAGATION_TARGET = re.compile(
     r"(?:touch|open|work|visit|edit|encounter|see|read|clone|enter)|"
     r"\b(outgoing|future|subsequent)\s+(messages?|emails?|responses?)|"
     r"\b(AGENTS?\.md|CLAUDE\.md|\.cursorrules|system prompt)\b|"
+    # The self-modifiable instruction file, re-injected into the system prompt
+    # at the start of every session. Anthropic measured 88% of agent-to-agent
+    # propagation arriving through this file against 12% through ordinary files
+    # (arXiv 2608.10218, Table 3), because a payload here is read back AS
+    # INSTRUCTION after a context wipe rather than as content. Their harness
+    # calls it SOUL.md; the same role is played by memory files and by
+    # GEMINI.md, and none of them were in this pattern before.
+    r"\b(SOUL\.md|MEMORY\.md|GEMINI\.md|MANIFESTO\.md|"
+    r"memory\s+file|soul\s+file|persistent\s+memory)\b|"
+    # "the next agent", "the next instance", "whoever wakes up next" -- the
+    # destination when the hop is conversational rather than filesystem. The
+    # evolved payloads name it directly because they must: the recipient is a
+    # fresh context that has to be told where to put the payload.
+    r"\b(?:the\s+)?next\s+(?:agent|instance|session|model|one|mind)\b|"
+    r"\bwhoever\s+(?:wakes|comes|reads)\b|"
     # A spawned agent is a new host as surely as a file is. The parent writes
     # the child's whole context, and the child never sees where it came from,
     # so no hop in the tree is positioned to notice a payload riding along.

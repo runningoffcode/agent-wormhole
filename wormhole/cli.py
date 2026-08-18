@@ -10,7 +10,7 @@ from . import guard, harden, init, outbound, provenance, readguard
 from .baseline import record, verify, BASELINE_FILE
 from .rules.injection import scan_text, FindingList
 from . import scoring
-from .scanners import autostart, mcp_tools, propagation
+from .scanners import autostart, immunity, mcp_tools, propagation
 from .scanners.posture import (
     find_agent_configs, check_permissions, check_writable_configs,
     check_mcp_servers, check_skills,
@@ -277,6 +277,20 @@ def main(argv=None):
         description="Detect and contain self-replicating prompt attacks "
                     "against AI agents.")
     sub = ap.add_subparsers(dest="cmd")
+
+    im = sub.add_parser(
+        "immunity",
+        help="report whether agents carry the defence against self-propagating instructions")
+    im.add_argument("path", nargs="?", default=".")
+    im.add_argument("--model",
+                    help="model identifier this agent runs, if the harness records it. "
+                         "Optional: an unknown model degrades severity rather than "
+                         "suppressing the finding.")
+    im.add_argument("--json", action="store_true")
+    im.add_argument("--no-color", action="store_true")
+    im.add_argument("--fail-on", default="high",
+                    choices=["critical", "high", "medium", "low", "never"],
+                    help="exit nonzero at or above this severity (default: high)")
 
     s = sub.add_parser("scan", help="scan for injection payloads and posture issues")
     s.add_argument("path", nargs="?", default=".")
@@ -783,6 +797,40 @@ def main(argv=None):
             print(f"\n  {c['dim']}edit a config by restoring write first: "
                   f"wormhole harden {args.path} --undo --apply{c['r']}\n")
         return 1 if failed else 0
+
+    if args.cmd == "immunity":
+        findings = immunity.scan_path(root, model=getattr(args, "model", None))
+        if args.json:
+            print(as_json(findings))
+        else:
+            c = _paint(not getattr(args, "no_color", False))
+            if not findings:
+                print(f"\n  {c['ok']}Defence paragraph present.{c['r']} "
+                      f"Every agent config under this path warns about "
+                      f"self-propagating instructions.\n")
+                # Deliberately not "protected": a present paragraph is evidence the
+                # control was installed, not evidence it holds on this model against
+                # this payload. Overstating it here would undo the point of the check.
+                print(f"  {c['dim']}This reports installation, not immunity. "
+                      f"Susceptibility is per-model and per-payload.{c['r']}\n")
+            else:
+                print()
+                for f in sorted(findings, key=lambda x: x.severity_rank):
+                    sev = f.severity.upper()
+                    tint = c[f.severity]
+                    print(f"  {tint}{sev:<8}{c['r']} {c['dim']}{f.rule_id}{c['r']}  {f.title}")
+                    if f.path:
+                        print(f"           {c['dim']}{f.path}{c['r']}")
+                    print(f"           {f.detail}")
+                    if f.remediation:
+                        print(f"           {c['dim']}fix: {f.remediation}{c['r']}")
+                    print()
+        order = ["critical", "high", "medium", "low", "never"]
+        if args.fail_on == "never":
+            return 0
+        cap = order.index(args.fail_on)
+        return 1 if any(order.index(f.severity) <= cap for f in findings
+                        if f.severity in order) else 0
 
     if args.cmd == "scan":
         findings, configs = gather(root, include_global=not args.local_only,

@@ -1,5 +1,32 @@
 # Changelog
 
+## wormhole-x402 0.6.0 — 2026-09-03
+
+**Delivery conformance — did I get what I paid for?** x402 as deployed is
+pay-then-hope: the quote names a resource, the payment settles, and nothing
+verifies the response delivered is the resource quoted. `wormhole-x402/delivery`
+closes the loop the way the payment side does — arithmetic over what actually
+arrived, offline, no RPC, no LLM. The code family is a deliberate HTTP
+mnemonic: X402-401 paid-but-denied (4xx/5xx after settlement), X402-402
+asked-to-pay-AGAIN (a second 402 for a payment already made), X402-403
+content-type contradicting the quote, X402-404 zero bytes delivered,
+X402-406 quoted JSON that does not parse.
+
+**The trust halo is the second half.** Paid content is the cheapest injection
+delivery channel ever built — the agent pays the attacker to hand it text it
+will then trust precisely because it paid. Textual bodies run through the
+same scanner the quote gets, and its findings ride in the delivery verdict.
+
+**The delivery receipt completes paid-a-got-a.** `resource_digest` is sha256
+over the delivered bytes; `request_digest` links back to the verify receipt
+of the same purchase; `deliveryMatches(receipt, bytes)` replays offline with
+no server and no key. Codes and digests only — the receipt never carries
+content.
+
+**MCP: `verify_delivery`** joins `verify_payment` and `scan_text` — the tool
+description tells the agent to call it on every paid response and never treat
+refused content as the resource it bought.
+
 ## wormhole-x402 0.5.3 — 2026-09-03
 
 **Address provenance — X402-301.** The join between the two sensors this

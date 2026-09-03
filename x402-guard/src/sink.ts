@@ -179,6 +179,8 @@ export const KNOWN_CODES: ReadonlySet<string> = new Set([
   "X402-207", "X402-208", "X402-209", "X402-210", "X402-211", "X402-212",
   // Address provenance (provenance.ts)
   "X402-301",
+  // Delivery conformance (delivery.ts) — deliberate HTTP mnemonics
+  "X402-401", "X402-402", "X402-403", "X402-404", "X402-406",
 ]);
 
 const SEVERITIES: ReadonlySet<string> = new Set(["critical", "high", "medium"]);

@@ -85,6 +85,7 @@ function of its request and replays identically later.
 | `wormhole-x402/metering` | usage accounting and cross-agent correlation |
 | `wormhole-x402/mcp` | the verifier as an MCP tool server — `npx wormhole-x402-mcp` |
 | `wormhole-x402/provenance` | X402-301 — was this payee introduced by anything legitimate? |
+| `wormhole-x402/delivery` | X402-4xx — did the paid response deliver the quoted resource? |
 
 `guardedPay` takes the transport as an argument rather than a URL, so the same
 call runs against the local verifier or a remote one and the two cannot drift.
@@ -547,6 +548,31 @@ const finding = checkPayeeProvenance(quote.payTo, loadAddressLedger());
 The MCP server runs this automatically. Advisory (high, non-blocking) for
 now, and an address the ledger has never seen is never flagged — absence of
 provenance is not evidence of taint.
+
+### Did I get what I paid for
+
+The other half of the purchase. x402 as deployed is pay-then-hope; the
+delivery check runs AFTER the payment, over what actually arrived:
+
+```ts
+import { inspectDelivery, deliveryMatches } from "wormhole-x402/delivery";
+
+const v = inspectDelivery(quote, { status, contentType, body }, {
+  requestDigest: verifyReceipt.request_digest,  // chains the two receipts
+  issuedAt: new Date().toISOString(),
+});
+// X402-401 paid-but-denied · X402-402 asked to pay AGAIN · X402-403 wrong
+// content-type · X402-404 zero bytes · X402-406 quoted JSON that won't parse.
+// Textual bodies also pass through the quote-text scanner: paid content is
+// the cheapest injection channel ever built — the agent pays the attacker to
+// hand it text it will then trust because it paid.
+
+deliveryMatches(v.receipt, bytes); // sha256 replay, offline, no server
+```
+
+The receipt's `resource_digest` + the verify receipt's `request_digest` are
+the paid-a-got-a chain: a third party holding the response bytes replays both
+with no access to anyone's servers. Codes and digests only — no content.
 
 ## What it does not do
 

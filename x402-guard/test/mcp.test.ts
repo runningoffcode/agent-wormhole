@@ -95,10 +95,10 @@ describe("MCP handshake", () => {
     expect(res.result.capabilities.tools).toBeDefined();
   });
 
-  it("lists both tools with input schemas", async () => {
+  it("lists the tools with input schemas", async () => {
     const res: any = await handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     const names = res.result.tools.map((t: any) => t.name);
-    expect(names).toEqual(["verify_payment", "scan_text"]);
+    expect(names).toEqual(["verify_payment", "verify_delivery", "scan_text"]);
     for (const t of TOOLS) expect(t.inputSchema.type).toBe("object");
   });
 

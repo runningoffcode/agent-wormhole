@@ -351,12 +351,12 @@ describe("vocabulary does not drift from the guard modules", () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const src = path.join(here, "..", "src");
     const found = new Set<string>();
-    for (const f of ["index.ts", "evm.ts", "quotetext.ts", "provenance.ts"]) {
+    for (const f of ["index.ts", "evm.ts", "quotetext.ts", "provenance.ts", "delivery.ts"]) {
       const text = fs.readFileSync(path.join(src, f), "utf8");
       for (const m of text.matchAll(/X402-\d{3}/g)) found.add(m[0]);
     }
-    // Measured at the time of writing: 31 codes.
-    expect(found.size).toBe(31);
+    // Measured at the time of writing: 36 codes.
+    expect(found.size).toBe(36);
     expect([...found].sort()).toEqual([...KNOWN_CODES].sort());
   });
 

@@ -152,7 +152,13 @@ Two tools:
 
 The server always starts and `scan_text` always works — the verify core
 loads lazily, so a missing chain SDK is a per-call abstain naming the install
-command, never a startup crash. Verdicts carry `caller_asserted` provenance — the server cannot see
+command, never a startup crash.
+
+Set `WORMHOLE_API_KEY` and verification runs against the hosted verifier
+instead, returning its answer verbatim — including any spend-policy decision
+the operator's account enforces there. An unreachable hosted verifier abstains
+rather than silently falling back to the local core: the operator configured
+hosted mode to get their policy applied, kill switch included. Verdicts carry `caller_asserted` provenance — the server cannot see
 where the quote came from, so its receipts say so rather than implying an
 attestation nobody made.
 

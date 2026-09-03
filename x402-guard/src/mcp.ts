@@ -30,7 +30,7 @@
 
 import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
-import type { VerifyRequest, VerifyResult } from "./verify.js";
+import type { VerifyRequest } from "./verify.js";
 import { inspectQuoteText } from "./quotetext.js";
 
 /**
@@ -92,7 +92,12 @@ export const TOOLS = [
       "(base64 transaction) or EVM (EIP-3009 authorization payload). Returns " +
       "allow / refuse / abstain with findings. Treat anything that is not " +
       "'allow' as do-not-sign: abstain means a check could not run, never that " +
-      "the payment is safe. Runs offline — no RPC, no network.",
+      "the payment is safe. Runs offline — no RPC, no network. If the operator " +
+      "configured a hosted verifier (WORMHOLE_API_KEY), the same check runs " +
+      "there and the answer may carry a `policy` block from the operator's own " +
+      "spend rules: `needs_approval` means a human must approve at the " +
+      "approve_url before this exact request is retried — relay that to the " +
+      "user; never treat it as an error to work around.",
     inputSchema: {
       type: "object",
       properties: {
@@ -173,7 +178,97 @@ function shapeOptions(raw: unknown): Record<string, unknown> {
   return opts;
 }
 
-async function callVerifyPayment(args: Record<string, unknown>): Promise<VerifyResult> {
+/**
+ * Hosted mode: when the operator configures an API key, every verification is
+ * sent to the hosted verifier instead of running locally, and the answer —
+ * including any policy decision the operator's account enforces server-side
+ * (spend caps, budgets, approval gates) — is returned to the model verbatim.
+ *
+ * NO SILENT LOCAL FALLBACK, deliberately. The operator who set a key did it to
+ * get their spend policy applied; falling back to the local core when the
+ * server is unreachable would silently bypass that policy — including a kill
+ * switch — at exactly the moment an attacker would prefer it bypassed. An
+ * unreachable hosted verifier is an abstain that says so.
+ */
+function hostedConfig(): { url: string; apiKey: string } | null {
+  const apiKey = process.env.WORMHOLE_API_KEY;
+  if (apiKey === undefined || apiKey.length === 0) return null;
+  return {
+    url:
+      process.env.WORMHOLE_VERIFY_URL ??
+      "https://dashboard.agentwormhole.com/api/v1/verify",
+    apiKey,
+  };
+}
+
+async function callHosted(
+  args: Record<string, unknown>,
+  cfg: { url: string; apiKey: string },
+): Promise<unknown> {
+  // Plain JSON only — the session nonce Set stays local and is not sent.
+  const options =
+    args.options !== null && typeof args.options === "object"
+      ? { ...(args.options as object) }
+      : undefined;
+  let res: Response;
+  let text: string;
+  try {
+    res = await fetch(cfg.url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${cfg.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        network: String(args.network ?? ""),
+        quote: args.quote,
+        payload: args.payload,
+        ...(options !== undefined ? { options } : {}),
+      }),
+    });
+    text = await res.text();
+  } catch (err) {
+    return {
+      decision: "abstain",
+      findings: [],
+      reason:
+        "hosted verifier unreachable — there is no silent local fallback, because " +
+        "your operator's spend policy (including a kill switch) is enforced there. " +
+        `Treat as do-not-sign. (${err instanceof Error ? err.message : String(err)})`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return {
+      decision: "abstain",
+      findings: [],
+      reason: `hosted verifier answered ${res.status} with an unreadable body — treat as do-not-sign`,
+    };
+  }
+  if (res.status !== 200) {
+    const errField =
+      parsed !== null && typeof parsed === "object" && "error" in parsed
+        ? String((parsed as { error: unknown }).error)
+        : "";
+    return {
+      decision: "abstain",
+      findings: [],
+      reason:
+        `hosted verifier answered ${res.status}${errField ? ` (${errField})` : ""} — ` +
+        "treat as do-not-sign",
+    };
+  }
+  // The hosted body verbatim: decision, findings, receipt/signature, and any
+  // `policy` block (pass / needs_approval with approve_url / blocked).
+  return parsed;
+}
+
+async function callVerifyPayment(args: Record<string, unknown>): Promise<unknown> {
+  const hosted = hostedConfig();
+  if (hosted !== null) return callHosted(args, hosted);
+
   let verify: typeof import("./verify.js")["verify"];
   try {
     verify = (await loadVerify()).verify;

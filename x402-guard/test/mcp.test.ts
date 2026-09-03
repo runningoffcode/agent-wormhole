@@ -186,6 +186,95 @@ describe("verify_payment over MCP", () => {
   });
 });
 
+describe("hosted mode", () => {
+  it("relays the hosted verifier's policy answer verbatim", async () => {
+    process.env.WORMHOLE_API_KEY = "awk_test";
+    process.env.WORMHOLE_VERIFY_URL = "https://verify.test/v1/verify";
+    const realFetch = globalThis.fetch;
+    const seen: { url?: string; auth?: string } = {};
+    globalThis.fetch = (async (url: any, init: any) => {
+      seen.url = String(url);
+      seen.auth = init.headers.authorization;
+      return new Response(
+        JSON.stringify({
+          decision: "needs_approval",
+          findings: [],
+          policy: {
+            decision: "needs_approval",
+            code: "POL-001",
+            approve_url: "https://dashboard.agentwormhole.com/approvals",
+            conformance_decision: "allow",
+          },
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    try {
+      const res = await call("verify_payment", {
+        network: "eip155:8453",
+        quote,
+        payload: {},
+      });
+      const out = payloadOf(res);
+      expect(out.decision).toBe("needs_approval");
+      expect(out.policy.code).toBe("POL-001");
+      expect(seen.url).toBe("https://verify.test/v1/verify");
+      expect(seen.auth).toBe("Bearer awk_test");
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.WORMHOLE_API_KEY;
+      delete process.env.WORMHOLE_VERIFY_URL;
+    }
+  });
+
+  it("an unreachable hosted verifier abstains — no silent local fallback", async () => {
+    process.env.WORMHOLE_API_KEY = "awk_test";
+    process.env.WORMHOLE_VERIFY_URL = "https://verify.test/v1/verify";
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as typeof fetch;
+    try {
+      // A payment the LOCAL core would happily allow: proof the fallback did
+      // not silently run and bypass the operator's server-side policy.
+      const res = await call("verify_payment", {
+        network: "eip155:8453",
+        quote,
+        payload: await signedPayload(
+          MERCHANT,
+          "0x00000000000000000000000000000000000000000000000000000000000000c9",
+        ),
+      });
+      const out = payloadOf(res);
+      expect(out.decision).toBe("abstain");
+      expect(out.reason).toContain("no silent local fallback");
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.WORMHOLE_API_KEY;
+      delete process.env.WORMHOLE_VERIFY_URL;
+    }
+  });
+
+  it("a non-200 hosted answer abstains with the status", async () => {
+    process.env.WORMHOLE_API_KEY = "awk_bad";
+    process.env.WORMHOLE_VERIFY_URL = "https://verify.test/v1/verify";
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "invalid_key" }), { status: 401 })) as typeof fetch;
+    try {
+      const res = await call("verify_payment", { network: "base", quote, payload: {} });
+      const out = payloadOf(res);
+      expect(out.decision).toBe("abstain");
+      expect(out.reason).toContain("401");
+      expect(out.reason).toContain("invalid_key");
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.WORMHOLE_API_KEY;
+      delete process.env.WORMHOLE_VERIFY_URL;
+    }
+  });
+});
+
 describe("scan_text over MCP", () => {
   it("finds selection capture in an agent-card string", async () => {
     const res = await call("scan_text", {

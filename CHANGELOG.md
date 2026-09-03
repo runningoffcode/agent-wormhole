@@ -11,6 +11,17 @@ tool down with it. Verified against a clean install with no chain SDKs
 present. 0.5.0 published identically to 0.5.1 minus this fix; 0.4.0 was the
 August verifier-API release.
 
+**Hosted mode for the MCP server.** Set `WORMHOLE_API_KEY` (and optionally
+`WORMHOLE_VERIFY_URL`) and every `verify_payment` runs against the hosted
+verifier instead of the local core, returning its answer verbatim — including
+any `policy` block the operator's account enforces server-side (spend caps,
+budgets, approval gates, kill switch). `needs_approval` carries an
+approve_url the model relays to its human; the human decides in the console
+and the agent retries the same request. Deliberately NO silent local
+fallback: an unreachable hosted verifier abstains and says so, because
+falling back would bypass the operator's policy — including a kill switch —
+at exactly the moment an attacker would prefer it bypassed.
+
 ## wormhole-x402 0.5.0 — 2026-09-02
 
 **Payer binding** — `expectedPayer`, opt-in on both rails. "This payment

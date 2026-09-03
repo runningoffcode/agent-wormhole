@@ -73,7 +73,14 @@
     "./server": {
       "types": "./dist/server.d.ts",
       "import": "./dist/server.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp.d.ts",
+      "import": "./dist/mcp.js"
     }
+  },
+  "bin": {
+    "wormhole-x402-mcp": "./dist/mcp-run.js"
   },
   "files": [
     "dist",

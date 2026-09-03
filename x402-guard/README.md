@@ -83,6 +83,7 @@ function of its request and replays identically later.
 | `wormhole-x402/receipt` | `verifyReceipt()` / `replayMatches()` — check a receipt offline |
 | `wormhole-x402/server` | `createVerifyHandler()` — host it yourself |
 | `wormhole-x402/metering` | usage accounting and cross-agent correlation |
+| `wormhole-x402/mcp` | the verifier as an MCP tool server — `npx wormhole-x402-mcp` |
 
 `guardedPay` takes the transport as an argument rather than a URL, so the same
 call runs against the local verifier or a remote one and the two cannot drift.
@@ -125,6 +126,29 @@ Each entry point is independent. `wormhole-x402/evm` and
 `wormhole-x402/quotetext` work with no Solana packages present, and
 `wormhole-x402` works with no `viem`. Importing an entry point whose SDK is not
 installed is a module-resolution error, not a silent no-op.
+
+## As an MCP tool server
+
+Agents that cannot be rewired — Claude Code, Cursor, any MCP host — get the
+same checkpoint as a tool. Zero extra dependencies: the server is
+newline-delimited JSON-RPC over stdio, spoken with Node's own `readline`.
+
+```bash
+claude mcp add x402-guard -- npx -y wormhole-x402-mcp
+```
+
+Two tools:
+
+- **`verify_payment`** — network, quote, payload (and optionally
+  `expectedPayer`) in; `allow` / `refuse` / `abstain` with findings out.
+  Anything that is not `allow` means do-not-sign.
+- **`scan_text`** — a 402 body, a merchant listing, an agent card, a memo;
+  scanned for injection shapes before the model reads it.
+
+The chain SDK for the rail you verify must be installed alongside (see
+Install). Verdicts carry `caller_asserted` provenance — the server cannot see
+where the quote came from, so its receipts say so rather than implying an
+attestation nobody made.
 
 ```ts
 import { guardSigner } from "wormhole-x402";
@@ -445,6 +469,7 @@ a JS agent's payment path.
 | `X402-008` | Memo contains instruction-shaped text |
 | `X402-009` | A System/ATA instruction with no place in a payment — `Assign`, allocation, or unclassifiable |
 | `X402-010` | Priority fee above the cap (default 0.01 SOL) — fees drain the payer regardless of the quote |
+| `X402-011` | Payer binding (opt-in `expectedPayer`) — the transfer's authority or source account is not the named wallet |
 
 Programs are an **allowlist**, not a blocklist — so it holds against
 instructions nobody has catalogued yet.
@@ -460,6 +485,7 @@ instructions nobody has catalogued yet.
 | `X402-105` | Validity window is too wide, inverted, or empty |
 | `X402-106` | Signs a standing allowance (`Approve` / EIP-2612 `Permit` / Permit2) — spend authority, not a one-shot transfer |
 | `X402-107` | Nonce is malformed, or reused within the session |
+| `X402-108` | Payer binding (opt-in `expectedPayer`) — the proven signer is not the named wallet |
 | `X402-110` | `erc7710` delegation — opaque `permissionContext`, no offline destination or amount → abstain |
 
 Verified today: EIP-3009 `transferWithAuthorization`, on the chains in the
@@ -467,6 +493,24 @@ trusted domain table (Base first, on-chain verified). Permit2 *positive*
 verification is deferred — a Permit2 payload abstains or refuses rather than
 being green-lit, until its witness type is checked against a real facilitator
 signature.
+
+### Whose funds moved
+
+"This payment matches the quote" and "my agent made this payment" are different
+claims, and by default only the first is checked: a valid payment moving a
+**third party's** funds to the quoted merchant conforms perfectly. Name the
+wallet and the second claim is checked too:
+
+```ts
+inspectPayment(tx, quote, { expectedPayer: agentWallet });      // Solana
+inspectAuthorization(quote, payload, { expectedPayer: agent }); // EVM
+```
+
+On Solana the transfer's authority must be that wallet and the source must be
+its associated token account for the quoted asset (`X402-011`); on EVM the
+recovered signer must be that address (`X402-108`). An unreadable
+`expectedPayer` abstains — a payer question asked and not answered is never
+reported as answered. Multisig payers refuse rather than pass: fail-closed.
 
 ## What it does not do
 

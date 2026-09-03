@@ -134,7 +134,12 @@ same checkpoint as a tool. Zero extra dependencies: the server is
 newline-delimited JSON-RPC over stdio, spoken with Node's own `readline`.
 
 ```bash
-claude mcp add x402-guard -- npx -y wormhole-x402-mcp
+# full install — verifies payments on both rails
+claude mcp add x402-guard -- npx -y -p wormhole-x402 -p @solana/web3.js -p @solana/spl-token -p viem wormhole-x402-mcp
+
+# lightest form — text scanning only; verify_payment abstains with install
+# instructions until the chain SDKs for your rail are present
+claude mcp add x402-guard -- npx -y wormhole-x402
 ```
 
 Two tools:
@@ -145,8 +150,9 @@ Two tools:
 - **`scan_text`** — a 402 body, a merchant listing, an agent card, a memo;
   scanned for injection shapes before the model reads it.
 
-The chain SDK for the rail you verify must be installed alongside (see
-Install). Verdicts carry `caller_asserted` provenance — the server cannot see
+The server always starts and `scan_text` always works — the verify core
+loads lazily, so a missing chain SDK is a per-call abstain naming the install
+command, never a startup crash. Verdicts carry `caller_asserted` provenance — the server cannot see
 where the quote came from, so its receipts say so rather than implying an
 attestation nobody made.
 

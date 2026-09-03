@@ -30,8 +30,24 @@
 
 import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
-import { verify, type VerifyRequest, type VerifyResult } from "./verify.js";
+import type { VerifyRequest, VerifyResult } from "./verify.js";
 import { inspectQuoteText } from "./quotetext.js";
+
+/**
+ * The verify core is loaded LAZILY, at the first `verify_payment` call — not
+ * imported at the top. The chain SDKs are optional peers, and `npx -y
+ * wormhole-x402` installs none of them; a static import chain through
+ * verify.js → index.js would crash the whole server on startup, taking
+ * `scan_text` (which needs nothing) down with it. Loaded once, the module is
+ * cached; a missing SDK surfaces per-call as an abstain that names the exact
+ * install command, because "the guard could not run" must be an answer the
+ * agent reads, never a stack trace the agent never sees.
+ */
+let verifyModule: typeof import("./verify.js") | null = null;
+async function loadVerify(): Promise<typeof import("./verify.js")> {
+  if (verifyModule === null) verifyModule = await import("./verify.js");
+  return verifyModule;
+}
 
 /** JSON-RPC 2.0 message, loosely typed — each handler validates its own shape. */
 interface RpcMessage {
@@ -158,6 +174,21 @@ function shapeOptions(raw: unknown): Record<string, unknown> {
 }
 
 async function callVerifyPayment(args: Record<string, unknown>): Promise<VerifyResult> {
+  let verify: typeof import("./verify.js")["verify"];
+  try {
+    verify = (await loadVerify()).verify;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      decision: "abstain",
+      findings: [],
+      reason:
+        "the chain SDKs the verifier needs are not installed — run the server " +
+        "with them (npx -y -p wormhole-x402 -p @solana/web3.js -p @solana/spl-token " +
+        "-p viem wormhole-x402-mcp) or install them beside wormhole-x402. " +
+        `Treat as do-not-sign. (${detail})`,
+    };
+  }
   const req: VerifyRequest = {
     network: String(args.network ?? ""),
     quote: args.quote,

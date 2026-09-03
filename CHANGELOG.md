@@ -1,5 +1,16 @@
 # Changelog
 
+## wormhole-x402 0.5.1 — 2026-09-02
+
+**MCP server hardening for bare installs.** The verify core now loads lazily,
+at the first `verify_payment` call: `npx -y wormhole-x402` (which installs no
+optional chain peers) starts the server, serves `scan_text` with zero
+dependencies, and answers `verify_payment` with an abstain that names the
+exact install command — instead of crashing on startup and taking the working
+tool down with it. Verified against a clean install with no chain SDKs
+present. 0.5.0 published identically to 0.5.1 minus this fix; 0.4.0 was the
+August verifier-API release.
+
 ## wormhole-x402 0.5.0 — 2026-09-02
 
 **Payer binding** — `expectedPayer`, opt-in on both rails. "This payment

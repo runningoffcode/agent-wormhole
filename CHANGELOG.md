@@ -1,15 +1,6 @@
 # Changelog
 
-## wormhole-x402 0.5.1 — 2026-09-02
-
-**MCP server hardening for bare installs.** The verify core now loads lazily,
-at the first `verify_payment` call: `npx -y wormhole-x402` (which installs no
-optional chain peers) starts the server, serves `scan_text` with zero
-dependencies, and answers `verify_payment` with an abstain that names the
-exact install command — instead of crashing on startup and taking the working
-tool down with it. Verified against a clean install with no chain SDKs
-present. 0.5.0 published identically to 0.5.1 minus this fix; 0.4.0 was the
-August verifier-API release.
+## wormhole-x402 0.5.2 — 2026-09-03
 
 **Hosted mode for the MCP server.** Set `WORMHOLE_API_KEY` (and optionally
 `WORMHOLE_VERIFY_URL`) and every `verify_payment` runs against the hosted
@@ -21,6 +12,17 @@ and the agent retries the same request. Deliberately NO silent local
 fallback: an unreachable hosted verifier abstains and says so, because
 falling back would bypass the operator's policy — including a kill switch —
 at exactly the moment an attacker would prefer it bypassed.
+
+## wormhole-x402 0.5.1 — 2026-09-02
+
+**MCP server hardening for bare installs.** The verify core now loads lazily,
+at the first `verify_payment` call: `npx -y wormhole-x402` (which installs no
+optional chain peers) starts the server, serves `scan_text` with zero
+dependencies, and answers `verify_payment` with an abstain that names the
+exact install command — instead of crashing on startup and taking the working
+tool down with it. Verified against a clean install with no chain SDKs
+present. 0.5.0 published identically to 0.5.1 minus this fix; 0.4.0 was the
+August verifier-API release.
 
 ## wormhole-x402 0.5.0 — 2026-09-02
 

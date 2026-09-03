@@ -1,6 +1,6 @@
 # Changelog
 
-## wormhole-x402 0.4.0 — 2026-09-02
+## wormhole-x402 0.5.0 — 2026-09-02
 
 **Payer binding** — `expectedPayer`, opt-in on both rails. "This payment
 matches the quote" and "my agent made this payment" are different claims, and

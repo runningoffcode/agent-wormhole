@@ -32,6 +32,7 @@ import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
 import type { VerifyRequest } from "./verify.js";
 import { inspectQuoteText } from "./quotetext.js";
+import { checkPayeeProvenance, loadAddressLedger } from "./provenance.js";
 
 /**
  * The verify core is loaded LAZILY, at the first `verify_payment` call — not
@@ -265,9 +266,35 @@ async function callHosted(
   return parsed;
 }
 
+/**
+ * The address-provenance check — local in BOTH modes, because the ledger the
+ * readguard hook writes lives on this machine, beside this server. Advisory:
+ * the finding is appended, the decision untouched — X402-301 says "nothing
+ * legitimate introduced this payee", and whether that warrants refusing is
+ * the operator's call, not this transport's. A missing or empty ledger checks
+ * nothing and adds nothing.
+ */
+function provenanceFinding(args: Record<string, unknown>): unknown | null {
+  const quote = args.quote;
+  if (quote === null || typeof quote !== "object") return null;
+  const payTo = (quote as { payTo?: unknown }).payTo;
+  if (typeof payTo !== "string" || payTo.length === 0) return null;
+  return checkPayeeProvenance(payTo, loadAddressLedger());
+}
+
+function withProvenance(result: unknown, args: Record<string, unknown>): unknown {
+  const finding = provenanceFinding(args);
+  if (finding === null) return result;
+  if (result !== null && typeof result === "object") {
+    const r = result as { findings?: unknown[] };
+    r.findings = Array.isArray(r.findings) ? [...r.findings, finding] : [finding];
+  }
+  return result;
+}
+
 async function callVerifyPayment(args: Record<string, unknown>): Promise<unknown> {
   const hosted = hostedConfig();
-  if (hosted !== null) return callHosted(args, hosted);
+  if (hosted !== null) return withProvenance(await callHosted(args, hosted), args);
 
   let verify: typeof import("./verify.js")["verify"];
   try {
@@ -290,10 +317,11 @@ async function callVerifyPayment(args: Record<string, unknown>): Promise<unknown
     payload: args.payload,
     options: shapeOptions(args.options) as VerifyRequest["options"],
   };
-  return verify(req, {
+  const result = await verify(req, {
     quoteProvenance: "caller_asserted",
     issuedAt: new Date().toISOString(),
   });
+  return withProvenance(result, args);
 }
 
 /** One tool result in MCP shape. */

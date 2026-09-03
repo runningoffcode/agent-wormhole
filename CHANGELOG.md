@@ -1,5 +1,35 @@
 # Changelog
 
+## wormhole-x402 0.5.3 — 2026-09-03
+
+**Address provenance — X402-301.** The join between the two sensors this
+project uniquely runs. Every disclosed agent wallet-drain has the same shape:
+the agent read text that named an attacker's address, was persuaded, and paid
+it. The persuasion is unbounded and unscannable in the limit; the ADDRESS is
+not — it must appear byte-exact to be useful, and where it first entered the
+agent's context is a fact no rewording changes.
+
+The readguard hook (wormhole-guard) now records every address-shaped token in
+tool output into a local ledger (`~/.wormhole/addresses.jsonl`) with its
+origin: `read` for prose, `quote` for a payTo delivered in the structured
+field of an x402 402 body — so reading a legitimate quote does not taint the
+merchant it names — and `operator` for an explicit
+`wormhole addresses trust <address>`. At the signing checkpoint,
+`wormhole-x402/provenance` folds the ledger down and flags a payee whose ONLY
+origin is untrusted read text. The MCP server runs the check automatically in
+both local and hosted mode.
+
+Advisory by design, for now: X402-301 is high, not blocking — the conformance
+verdict is untouched, because this module cannot know whether the operator
+genuinely intends a new merchant; what it knows is that nothing legitimate
+introduced the address, and it says exactly that. An address the ledger has
+never seen is NOT flagged: absence of provenance is not evidence of taint.
+Base58 matching requires a 32-byte decode, so transaction signatures and
+non-address look-alikes stay out; EVM addresses compare case-insensitively.
+Verified end to end through the real hook and the real MCP server: hostile
+page read → ledger `read` entry → payment to that address flags; 402 body
+read → `quote` entry → payment to the merchant stays clean.
+
 ## wormhole-x402 0.5.2 — 2026-09-03
 
 **Hosted mode for the MCP server.** Set `WORMHOLE_API_KEY` (and optionally

@@ -443,6 +443,15 @@ def main(argv=None):
     v.add_argument("--json", action="store_true")
     v.add_argument("--no-color", action="store_true")
 
+    ad = sub.add_parser(
+        "addresses",
+        help="the address-provenance ledger: where each wallet address "
+             "entered the agent's context")
+    ad.add_argument("trust", nargs="?", default=None, metavar="ADDRESS",
+                    help="record an address as operator-trusted")
+    ad.add_argument("--ledger", default=None,
+                    help="ledger path (default ~/.wormhole/addresses.jsonl)")
+
     args = ap.parse_args(argv)
     if not args.cmd:
         ap.print_help()
@@ -451,6 +460,10 @@ def main(argv=None):
     root = Path(args.path).resolve() if getattr(args, "path", None) else Path.cwd()
     color = not getattr(args, "no_color", False) and sys.stdout.isatty()
     c = _paint(color)
+
+    if args.cmd == "addresses":
+        from .addresses import run as addresses_run
+        return addresses_run(args)
 
     if args.cmd == "watch":
         target = Path(args.path).resolve() if args.path else None

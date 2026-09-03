@@ -84,6 +84,7 @@ function of its request and replays identically later.
 | `wormhole-x402/server` | `createVerifyHandler()` — host it yourself |
 | `wormhole-x402/metering` | usage accounting and cross-agent correlation |
 | `wormhole-x402/mcp` | the verifier as an MCP tool server — `npx wormhole-x402-mcp` |
+| `wormhole-x402/provenance` | X402-301 — was this payee introduced by anything legitimate? |
 
 `guardedPay` takes the transport as an argument rather than a URL, so the same
 call runs against the local verifier or a remote one and the two cannot drift.
@@ -523,6 +524,29 @@ its associated token account for the quoted asset (`X402-011`); on EVM the
 recovered signer must be that address (`X402-108`). An unreadable
 `expectedPayer` abstains — a payer question asked and not answered is never
 reported as answered. Multisig payers refuse rather than pass: fail-closed.
+
+### Where did this payee come from
+
+Every disclosed agent wallet-drain has the same shape: the agent read text
+that named an attacker's address, was persuaded, and paid it. The persuasion
+is unbounded; the address is not — it must appear byte-exact to be useful,
+and where it first entered the agent's context is a fact no rewording
+changes. The readguard hook (`wormhole-guard` on PyPI) records every
+address-shaped token the agent reads into `~/.wormhole/addresses.jsonl` with
+its origin — `read` for prose, `quote` for a structured x402 `payTo`,
+`operator` for an explicit `wormhole addresses trust <address>` — and this
+package folds it down at the signing checkpoint:
+
+```ts
+import { loadAddressLedger, checkPayeeProvenance } from "wormhole-x402/provenance";
+
+const finding = checkPayeeProvenance(quote.payTo, loadAddressLedger());
+// X402-301 when the payee's ONLY known origin is untrusted read text
+```
+
+The MCP server runs this automatically. Advisory (high, non-blocking) for
+now, and an address the ledger has never seen is never flagged — absence of
+provenance is not evidence of taint.
 
 ## What it does not do
 

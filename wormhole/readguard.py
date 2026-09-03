@@ -205,6 +205,18 @@ def run_hook(stream=None, out=None, redact_mode: bool = False) -> int:
     source = (payload.get("tool_input") or {}).get("file_path") or \
              (payload.get("tool_input") or {}).get("url") or ""
 
+    # Address provenance: note WHERE any wallet address in this tool output
+    # came from, so the payment guard can later answer "did this destination
+    # enter the context through untrusted prose?" (X402-301). Recording must
+    # never stand between the agent and its tool output — any failure here
+    # degrades to "no provenance recorded", never to a failed hook.
+    if _is_inbound(tool):
+        try:
+            from . import addresses as _addresses
+            _addresses.record_from_text(text, via=f"tool:{tool}")
+        except Exception:
+            pass
+
     findings = inspect_inbound(tool, text, str(source))
     if not findings:
         return 0

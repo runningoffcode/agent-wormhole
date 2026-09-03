@@ -170,13 +170,13 @@ export const CHAIN_ID_SOLANA = 0;
 export const KNOWN_CODES: ReadonlySet<string> = new Set([
   // Solana conformance (index.ts)
   "X402-001", "X402-002", "X402-003", "X402-006",
-  "X402-007", "X402-008", "X402-009", "X402-010",
+  "X402-007", "X402-008", "X402-009", "X402-010", "X402-011",
   // EVM EIP-3009 conformance (evm.ts)
   "X402-101", "X402-102", "X402-103", "X402-104",
-  "X402-105", "X402-106", "X402-107", "X402-110",
+  "X402-105", "X402-106", "X402-107", "X402-108", "X402-110",
   // Quote-text injection (quotetext.ts)
   "X402-201", "X402-202", "X402-203", "X402-204", "X402-205", "X402-206",
-  "X402-207", "X402-208", "X402-209", "X402-210", "X402-211",
+  "X402-207", "X402-208", "X402-209", "X402-210", "X402-211", "X402-212",
 ]);
 
 const SEVERITIES: ReadonlySet<string> = new Set(["critical", "high", "medium"]);

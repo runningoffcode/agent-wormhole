@@ -284,6 +284,14 @@ export interface InspectAuthorizationOptions {
    * absorb clock skew between the agent and the facilitator. Default 0.
    */
   clockSkewSeconds?: bigint;
+  /**
+   * The wallet whose funds this payment is supposed to move. When set,
+   * `authorization.from` (already proven to be the signer by X402-104) must BE
+   * this address, or X402-108 refuses. Without it, a valid EIP-3009
+   * authorization moving a THIRD PARTY's funds to the quoted merchant returns
+   * allow — conformance without payer binding cannot answer "did MY agent pay?"
+   */
+  expectedPayer?: string;
 }
 
 // --- small parse helpers ---------------------------------------------------
@@ -705,6 +713,17 @@ export async function inspectAuthorization(
   if (from === null) {
     return abstain("authorization.from is not a valid address");
   }
+  // An unreadable expectedPayer must abstain, never be skipped: a caller who
+  // asked the payer question and got an allow believes it was answered.
+  let expectedPayer: string | null = null;
+  if (opts.expectedPayer !== undefined) {
+    expectedPayer = normAddress(opts.expectedPayer);
+    if (expectedPayer === null) {
+      return abstain(
+        "options.expectedPayer is not a valid address — refusing to report the payer as checked",
+      );
+    }
+  }
   if (to === null) {
     return abstain("authorization.to is not a valid address");
   }
@@ -775,6 +794,20 @@ export async function inspectAuthorization(
     });
     // A bad signature invalidates every downstream comparison; refuse now.
     return { decision: "refuse", findings };
+  }
+
+  // --- 5b. the payer must be the expected wallet (X402-108) ----------------
+  // Runs after X402-104, so `from` here is the proven signer, not a claim.
+  if (expectedPayer !== null && from.toLowerCase() !== expectedPayer.toLowerCase()) {
+    findings.push({
+      code: "X402-108",
+      severity: "critical",
+      message:
+        "authorization is signed by a wallet other than the expected payer — " +
+        "a conforming payment of someone else's funds is not this agent's payment",
+      expected: expectedPayer,
+      actual: from,
+    });
   }
 
   // --- 6. destination must be the quoted payee (X402-101) -----------------

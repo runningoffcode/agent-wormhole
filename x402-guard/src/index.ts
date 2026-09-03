@@ -135,6 +135,20 @@ export interface InspectOptions {
    * matches the quote, and drains the fee payer anyway.
    */
   maxPriorityFeeLamports?: bigint;
+  /**
+   * The wallet (base58 pubkey) whose funds this payment is supposed to move.
+   * When set, the transfer's authority must BE this wallet and the source must
+   * be this wallet's associated token account for the quoted asset — otherwise
+   * X402-011 refuses. Without it, a conforming payment of a THIRD PARTY's
+   * funds to the quoted merchant returns allow, and the guard cannot answer
+   * the question it exists to answer: "did MY agent make this payment?"
+   * "This payment matches the quote" and "my agent paid" are different claims.
+   *
+   * A multisig authority will not equal a wallet pubkey and therefore refuses;
+   * that is fail-closed by design — a payment whose signer set cannot be read
+   * offline is not something to report as payer-checked.
+   */
+  expectedPayer?: string;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -248,6 +262,40 @@ export function inspectPayment(
     };
   }
 
+  // --- 1b. payer binding, when the caller names one ------------------------
+  // Derived up front for the same reason the merchant ATA is: an unreadable
+  // option must abstain before any instruction is judged, never be skipped.
+  let expectedAuthority: string | null = null;
+  let payerAta: string | null = null;
+  let payerAta2022: string | null = null;
+  if (opts.expectedPayer !== undefined) {
+    try {
+      const payer = new PublicKey(opts.expectedPayer);
+      const mint = new PublicKey(quote.asset);
+      expectedAuthority = payer.toBase58();
+      payerAta = getAssociatedTokenAddressSync(
+        mint,
+        payer,
+        true,
+        TOKEN_PROGRAM_ID,
+      ).toBase58();
+      payerAta2022 = getAssociatedTokenAddressSync(
+        mint,
+        payer,
+        true,
+        TOKEN_2022_PROGRAM_ID,
+      ).toBase58();
+    } catch (e) {
+      return {
+        decision: "abstain",
+        findings: [],
+        reason: `expectedPayer is not a readable address (${
+          e instanceof Error ? e.message : String(e)
+        }) — refusing to report the payer as checked`,
+      };
+    }
+  }
+
   // --- 2. walk the instructions -------------------------------------------
   let sawTransferToExpected = false;
   let transferredAmount: bigint | null = null;
@@ -321,6 +369,52 @@ export function inspectPayment(
             } else {
               sawTransferToExpected = true;
               transferredAmount = amt;
+            }
+
+            // Payer binding: the quoted transfer must move the EXPECTED
+            // wallet's funds. TransferChecked accounts are [source, mint,
+            // destination, authority]; Transfer is [source, destination,
+            // authority]. Both the authority (who signs the movement) and the
+            // source (whose account drains) are checked — authority alone
+            // misses a delegate spending from a stranger's account, source
+            // alone misses an authority that is not the wallet at all.
+            if (expectedAuthority !== null) {
+              const authIdx = isChecked ? 3 : 2;
+              const authority =
+                ix.accountKeyIndexes.length > authIdx
+                  ? keys[ix.accountKeyIndexes[authIdx]]
+                  : undefined;
+              const source = keys[ix.accountKeyIndexes[0]];
+
+              if (authority === undefined) {
+                findings.push({
+                  code: "X402-011",
+                  severity: "critical",
+                  message:
+                    "transfer authority could not be read, so the payer cannot be confirmed",
+                  expected: expectedAuthority,
+                });
+              } else if (authority !== expectedAuthority) {
+                findings.push({
+                  code: "X402-011",
+                  severity: "critical",
+                  message:
+                    "payment is authorized by a wallet other than the expected payer — " +
+                    "a conforming payment of someone else's funds is not this agent's payment",
+                  expected: expectedAuthority,
+                  actual: authority,
+                });
+              } else if (source !== payerAta && source !== payerAta2022) {
+                findings.push({
+                  code: "X402-011",
+                  severity: "critical",
+                  message:
+                    "funds leave a token account that is not the expected payer's " +
+                    "associated account for the quoted asset",
+                  expected: payerAta ?? undefined,
+                  actual: source,
+                });
+              }
             }
           } else {
             findings.push({

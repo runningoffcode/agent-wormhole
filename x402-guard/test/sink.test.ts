@@ -355,8 +355,8 @@ describe("vocabulary does not drift from the guard modules", () => {
       const text = fs.readFileSync(path.join(src, f), "utf8");
       for (const m of text.matchAll(/X402-\d{3}/g)) found.add(m[0]);
     }
-    // Measured at the time of writing: 36 codes.
-    expect(found.size).toBe(36);
+    // Measured at the time of writing: 37 codes.
+    expect(found.size).toBe(37);
     expect([...found].sort()).toEqual([...KNOWN_CODES].sort());
   });
 

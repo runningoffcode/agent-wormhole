@@ -177,6 +177,7 @@ export const KNOWN_CODES: ReadonlySet<string> = new Set([
   // Quote-text injection (quotetext.ts)
   "X402-201", "X402-202", "X402-203", "X402-204", "X402-205", "X402-206",
   "X402-207", "X402-208", "X402-209", "X402-210", "X402-211", "X402-212",
+  "X402-213",
   // Address provenance (provenance.ts)
   "X402-301",
   // Delivery conformance (delivery.ts) — deliberate HTTP mnemonics

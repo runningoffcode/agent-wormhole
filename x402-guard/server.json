@@ -1,0 +1,47 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.runningoffcode/wormhole-x402",
+  "title": "Agent Wormhole",
+  "description": "Check anything before your agent trusts it, and guard every x402 payment: check_before_use (pages, MCP manifests, listings \u2014 with changed-since-first-seen history), verify_payment (quote conformance + payer binding, Solana & EVM), verify_delivery (did you get what you paid for), scan_text (prompt-injection rules). Verdicts are offline arithmetic \u2014 no RPC, no LLM.",
+  "repository": {
+    "url": "https://github.com/runningoffcode/agent-wormhole",
+    "source": "github",
+    "subfolder": "x402-guard"
+  },
+  "websiteUrl": "https://agentwormhole.com",
+  "version": "0.6.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "wormhole-x402",
+      "version": "0.6.2",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "WORMHOLE_API_KEY",
+          "description": "Optional. Hosted-mode key from dashboard.agentwormhole.com: adds URL checks with change history, and the operator's spend policy (budgets, approvals, kill switch) on payments.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "WORMHOLE_VERIFY_URL",
+          "description": "Optional. Override the hosted verifier endpoint (default https://dashboard.agentwormhole.com/api/v1/verify).",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "WORMHOLE_ADDRESS_LEDGER",
+          "description": "Optional. Path to the address-provenance ledger written by wormhole-guard's readguard hook (default ~/.wormhole/addresses.jsonl).",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

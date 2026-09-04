@@ -1,5 +1,11 @@
 # Changelog
 
+## wormhole-x402 0.6.2 — 2026-09-04
+
+**Official MCP registry listing.** `server.json` + the `mcpName` ownership
+marker the registry validates against npm. No code changes — 0.6.2 exists so
+the published package carries the marker the listing requires.
+
 ## wormhole-x402 0.6.1 — 2026-09-03
 
 **`check_before_use`** — the fourth MCP tool: check anything before trusting

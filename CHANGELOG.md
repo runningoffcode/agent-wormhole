@@ -1,5 +1,18 @@
 # Changelog
 
+## wormhole-x402 0.6.1 — 2026-09-03
+
+**`check_before_use`** — the fourth MCP tool: check anything before trusting
+it. A page about to be read, an MCP manifest about to be installed, an x402
+listing about to be paid. In hosted mode (WORMHOLE_API_KEY) it calls the
+metered `/v1/check` service — SSRF-guarded fetch, every engine, and HISTORY:
+whether this exact subject changed since first seen, the observed rug-pull,
+surfaced as CHECK-001. $0.005 per check, payable via x402 like everything
+else. In local mode it scans pasted content with the content rules and says
+so honestly (no fetch, no history) — and refuses URLs outright, because the
+local tool never fetches, by doctrine. A failed hosted check answers
+"unchecked", never clean.
+
 ## wormhole-x402 0.6.0 — 2026-09-03
 
 **Delivery conformance — did I get what I paid for?** x402 as deployed is

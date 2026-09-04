@@ -144,6 +144,7 @@ describe("through the MCP tool", () => {
     expect(list.result.tools.map((t: any) => t.name)).toEqual([
       "verify_payment",
       "verify_delivery",
+      "check_before_use",
       "scan_text",
     ]);
 

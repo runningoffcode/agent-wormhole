@@ -145,6 +145,7 @@ describe("through the MCP tool", () => {
       "verify_payment",
       "verify_delivery",
       "check_before_use",
+      "check_token",
       "scan_text",
     ]);
 

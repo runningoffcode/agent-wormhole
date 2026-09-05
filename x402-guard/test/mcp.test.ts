@@ -98,7 +98,13 @@ describe("MCP handshake", () => {
   it("lists the tools with input schemas", async () => {
     const res: any = await handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     const names = res.result.tools.map((t: any) => t.name);
-    expect(names).toEqual(["verify_payment", "verify_delivery", "check_before_use", "scan_text"]);
+    expect(names).toEqual([
+      "verify_payment",
+      "verify_delivery",
+      "check_before_use",
+      "check_token",
+      "scan_text",
+    ]);
     for (const t of TOOLS) expect(t.inputSchema.type).toBe("object");
   });
 
@@ -339,6 +345,106 @@ describe("check_before_use over MCP", () => {
       globalThis.fetch = realFetch;
       delete process.env.WORMHOLE_API_KEY;
       delete process.env.WORMHOLE_VERIFY_URL;
+    }
+  });
+});
+
+describe("check_token over MCP", () => {
+  it("refuses garbage that is not a token address", async () => {
+    const res: any = await call("check_token", { address: "not-an-address" });
+    const out = payloadOf(res);
+    expect(out.verdict).toBe("unchecked");
+    expect(res.result.isError).toBe(true);
+  });
+
+  it("free verification: relays the registry answer, no key required", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: { url?: string } = {};
+    globalThis.fetch = (async (url: any) => {
+      seen.url = String(url);
+      return new Response(
+        JSON.stringify({ observed: true, verdict: "findings", metadata_note: "withheld" }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    try {
+      const res: any = await call("check_token", {
+        address: "0x4a900de55d98544bcb2dd89920d40f4534c86b3a",
+      });
+      const out = payloadOf(res);
+      expect(seen.url).toBe(
+        "https://dashboard.agentwormhole.com/api/v1/token/4663/0x4a900de55d98544bcb2dd89920d40f4534c86b3a",
+      );
+      expect(out.verdict).toBe("findings");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("infers Solana from a base58 mint and keeps its case", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: { url?: string } = {};
+    globalThis.fetch = (async (url: any) => {
+      seen.url = String(url);
+      return new Response(JSON.stringify({ observed: true, verdict: "clean_by_rules" }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+    try {
+      await call("check_token", { address: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263" });
+      expect(seen.url).toBe(
+        "https://dashboard.agentwormhole.com/api/v1/token/0/DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("unobserved without a key says so and never reads as clean", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ observed: false }), { status: 404 })) as typeof fetch;
+    try {
+      const res: any = await call("check_token", {
+        address: "0x4a900de55d98544bcb2dd89920d40f4534c86b3a",
+      });
+      const out = payloadOf(res);
+      expect(out.verdict).toBe("unobserved");
+      expect(out.reason).toContain("not a verdict");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("unobserved WITH a key runs the on-demand scan and relays it", async () => {
+    process.env.WORMHOLE_API_KEY = "awk_test";
+    const realFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: any, init?: any) => {
+      calls.push(String(url));
+      if (String(url).includes("/token/")) {
+        return new Response(JSON.stringify({ observed: false }), { status: 404 });
+      }
+      expect(init.headers.authorization).toBe("Bearer awk_test");
+      expect(JSON.parse(init.body)).toEqual({
+        network: "solana",
+        address: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+      });
+      return new Response(
+        JSON.stringify({ mode: "observe", verdict: "clean_by_rules" }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    try {
+      const res: any = await call("check_token", {
+        address: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+      });
+      const out = payloadOf(res);
+      expect(calls[1]).toBe("https://dashboard.agentwormhole.com/api/v1/scan");
+      expect(out.mode).toBe("observe");
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.WORMHOLE_API_KEY;
     }
   });
 });

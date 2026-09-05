@@ -1,5 +1,19 @@
 # Changelog
 
+## wormhole-x402 0.8.0 — 2026-09-04
+
+**`check_token`** — the fifth MCP tool: check a token launch before reading
+its metadata. The point is ingestion order: a poisoned token description is a
+prompt injection, so an agent that reads it "to decide" has already lost. The
+tool answers verdict-first from the launch registry (free, no key — verdict,
+codes, mutation count, signed attestation, never the raw bytes; the registry
+withholds a flagged token's labels entirely), infers the chain from the
+address shape (0x… → Robinhood Chain 4663, base58 → Solana), and with
+`WORMHOLE_API_KEY` set scans an unobserved token on demand ($0.01 via x402).
+An unobserved token without a key is reported as exactly that — absence of an
+attestation is not a verdict, and the tool says so rather than letting it
+read as clean.
+
 ## wormhole-x402 0.7.0 — 2026-09-04
 
 **X402-213 — trading imperatives.** The rule the launch layer's own design

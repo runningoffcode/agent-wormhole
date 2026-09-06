@@ -2,19 +2,19 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.runningoffcode/wormhole-x402",
   "title": "Agent Wormhole",
-  "description": "Check anything before your agent trusts it; verify x402 payments and deliveries. Offline verdicts.",
+  "description": "Check tokens, pages and x402 payments before your agent trusts them. Offline verdicts.",
   "repository": {
     "url": "https://github.com/runningoffcode/agent-wormhole",
     "source": "github",
     "subfolder": "x402-guard"
   },
   "websiteUrl": "https://agentwormhole.com",
-  "version": "0.6.2",
+  "version": "0.8.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "wormhole-x402",
-      "version": "0.6.2",
+      "version": "0.8.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

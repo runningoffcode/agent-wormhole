@@ -13,6 +13,7 @@ import {
   guardRequest,
   guardResponse,
   createProxyServer,
+  inspectToolList,
 } from "../src/proxy.js";
 
 const policy = defaultPolicy({ maxOrderUsd: 250, maxDailyUsd: 1000, allowedSymbols: ["AAPL", "NVDA"] });
@@ -192,5 +193,35 @@ describe("createProxyServer — end to end over a socket", () => {
         expect(body.result.content[0].text).toMatch(/untrusted text/i);
       },
     );
+  });
+});
+
+/* ── tool-list reconciliation on the wire ───────────────────────────────── */
+
+describe("inspectToolList", () => {
+  const listResult = (...names: string[]) => ({
+    jsonrpc: "2.0", id: 1, result: { tools: names.map((name) => ({ name })) },
+  });
+
+  it("names a money-moving tool the default ruleset would forward uncapped", () => {
+    const r = inspectToolList(listResult("orders.create", "get_quote"));
+    expect(r?.matched).toEqual([]);
+    expect(r?.unguarded).toEqual(["orders.create"]);
+  });
+
+  it("reconciles against the guard's OWN vocabulary, not the shipped defaults", () => {
+    // Regression: reconciling against DEFAULT_ORDER_TOOLS reported a correctly
+    // configured operator as a total mismatch and killed the process. A false
+    // alarm here is worse than none — it teaches people to pass the override.
+    const guard = new McpGuard({ policy: defaultPolicy(), orderTools: ["orders.create"] });
+    const r = inspectToolList(listResult("orders.create", "get_quote"), guard);
+    expect(r?.matched).toEqual(["orders.create"]);
+    expect(r?.unguarded).toEqual([]);
+  });
+
+  it("ignores messages that are not a tool listing", () => {
+    expect(inspectToolList({ jsonrpc: "2.0", id: 1, result: { content: [] } })).toBeUndefined();
+    expect(inspectToolList({ method: "tools/call" })).toBeUndefined();
+    expect(inspectToolList(null)).toBeUndefined();
   });
 });

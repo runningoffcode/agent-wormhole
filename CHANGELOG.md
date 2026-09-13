@@ -1,5 +1,25 @@
 # Changelog
 
+## mcp-trade-guard 0.2.0 — 2026-09-12
+
+**The guard checks that it is guarding anything.** Up to 0.1.0 the caps applied
+to tools matched by name against a built-in list, and a name outside that list
+was forwarded with no cap applied — silently. Measured against nine plausible
+broker vocabularies, five passed a $5,000 order straight through while the proxy
+printed `per-order $100` and looked healthy. The list was written against one
+broker's names and never verified, because the endpoint requires credentials.
+
+The guard now reconciles against the broker's own `tools/list` on first use. Any
+advertised tool that looks like it moves money but would not be intercepted is
+printed by name with the exact fix; a guard matching *none* of the advertised
+tools exits rather than run. `MCP_ORDER_TOOLS` sets the real names,
+`MCP_ALLOW_UNMATCHED=1` overrides the refusal as a decision with a name on it.
+
+Reconciliation runs against the vocabulary the guard is actually configured
+with, not the shipped defaults — checking the defaults reported a correctly
+configured operator as a total mismatch, and a false alarm here teaches people
+to pass the override.
+
 ## wormhole-x402 0.8.0 — 2026-09-04
 
 **`check_token`** — the fifth MCP tool: check a token launch before reading

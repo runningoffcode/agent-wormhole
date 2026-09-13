@@ -11,6 +11,7 @@
 
 import { McpGuard, defaultPolicy } from "./index.js";
 import { createProxyServer, type GuardEvent } from "./proxy.js";
+import type { ToolNameReport } from "./index.js";
 
 function envNum(name: string, fallback: number): number {
   const v = process.env[name];
@@ -36,7 +37,10 @@ const policy = defaultPolicy({
   onUnknownNotional: process.env.MCP_ALLOW_UNKNOWN === "1" ? "allow" : "refuse",
 });
 
-const guard = new McpGuard({ policy });
+// The advertised names belong to the server, so the operator must be able to
+// state them. Without this the only fix for a mismatch was editing the package.
+const orderTools = envList("MCP_ORDER_TOOLS");
+const guard = new McpGuard({ policy, ...(orderTools.length ? { orderTools } : {}) });
 
 /** Audit line. Codes and normalised order only — never the payload text. */
 function log(e: GuardEvent): void {
@@ -52,7 +56,41 @@ function log(e: GuardEvent): void {
   }
 }
 
-const server = createProxyServer({ guard, upstreamUrl: UPSTREAM, onEvent: log });
+/**
+ * React to what the broker actually advertises.
+ *
+ * The guard intercepts by NAME, and the names are the server's to choose. Until
+ * this ran, a vocabulary mismatch was invisible: the proxy printed its caps,
+ * looked healthy, and forwarded every order untouched. Whatever else happens,
+ * that silence is not acceptable — so an unguarded money-moving tool is printed
+ * in full, and a guard matching NOTHING stops the process by default rather
+ * than pretending to protect an account it is not protecting.
+ */
+function onToolList(r: ToolNameReport): void {
+  if (r.matched.length > 0 && r.unguarded.length === 0) {
+    console.log(`\n  guarding    ${r.matched.join(", ")}  (${r.advertised.length} tools advertised)\n`);
+    return;
+  }
+
+  if (r.unguarded.length > 0) {
+    console.error(`\n  !! UNGUARDED TOOLS — these move money and are NOT capped:`);
+    for (const n of r.unguarded) console.error(`       ${n}`);
+    console.error(`     Add them:  MCP_ORDER_TOOLS="${[...r.matched, ...r.unguarded].join(",")}"`);
+  }
+
+  if (r.matched.length === 0) {
+    console.error(
+      `\n  !! This guard matched NONE of the ${r.advertised.length} tools this server advertises.\n` +
+        `     Every order would reach the broker uncapped. Refusing to run as a\n` +
+        `     guard that guards nothing. Set MCP_ORDER_TOOLS to the real names,\n` +
+        `     or MCP_ALLOW_UNMATCHED=1 to proceed anyway.\n`,
+    );
+    if (process.env.MCP_ALLOW_UNMATCHED !== "1") process.exit(1);
+  }
+  console.error("");
+}
+
+const server = createProxyServer({ guard, upstreamUrl: UPSTREAM, onEvent: log, onToolList });
 
 server.listen(PORT, HOST, () => {
   console.log(`mcp-trade-guard`);
@@ -64,5 +102,7 @@ server.listen(PORT, HOST, () => {
     `  symbols     ${policy.allowedSymbols.length ? policy.allowedSymbols.join(", ") : "ANY (set MCP_ALLOWED_SYMBOLS to restrict)"}`,
   );
   console.log(`  priceless   ${policy.onUnknownNotional === "refuse" ? "refused (fail closed)" : "allowed (MCP_ALLOW_UNKNOWN=1)"}`);
+  if (orderTools.length) console.log(`  order tools ${orderTools.join(", ")}  (MCP_ORDER_TOOLS)`);
+  console.log(`\n  Tool names are checked against the broker's own listing on first use.`);
   console.log(`\nPoint your agent's MCP endpoint at the address above instead of the broker.\n`);
 });

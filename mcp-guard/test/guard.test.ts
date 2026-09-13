@@ -9,6 +9,8 @@ import {
   MemorySpendLedger,
   defaultPolicy,
   scanText,
+  classifyToolNames,
+  toolNamesFromListResult,
   CODES,
   type OrderIntent,
 } from "../src/index.js";
@@ -124,5 +126,57 @@ describe("tool classification", () => {
     expect(g.isReadTool("read_analyst_notes")).toBe(true);
     expect(g.isOrderTool("get_positions")).toBe(false);
     expect(g.isReadTool("get_positions")).toBe(false);
+  });
+});
+
+/* ── tool-name reconciliation ──────────────────────────────────────────────
+   The guard decides what to inspect by name, and names belong to the server.
+   Before this, a vocabulary mismatch forwarded every order uncapped while the
+   proxy reported itself healthy. These tests pin the failure mode shut. */
+
+describe("classifyToolNames", () => {
+  it("reports a money-moving tool this guard would NOT intercept", () => {
+    // The exact shape of the original defect: a real order tool, a name the
+    // shipped ruleset does not know, and no runtime signal that it is unguarded.
+    const r = classifyToolNames(["orders.create", "get_portfolio"]);
+    expect(r.matched).toEqual([]);
+    expect(r.unguarded).toEqual(["orders.create"]);
+  });
+
+  it("matches the names the shipped ruleset does know", () => {
+    const r = classifyToolNames(["place_order", "get_quote"]);
+    expect(r.matched).toEqual(["place_order"]);
+    expect(r.unguarded).toEqual([]);
+  });
+
+  it("does not flag reads as unguarded orders", () => {
+    const r = classifyToolNames(["get_quote", "read_analyst_notes", "headlines"]);
+    expect(r.matched).toEqual([]);
+    expect(r.unguarded).toEqual([]);
+  });
+
+  it("honours an operator-supplied vocabulary", () => {
+    const r = classifyToolNames(["orders.create"], ["orders.create"]);
+    expect(r.matched).toEqual(["orders.create"]);
+    expect(r.unguarded).toEqual([]);
+  });
+
+  it("catches every name that silently forwarded a $5,000 order", () => {
+    // Regression: each of these was measured passing through uninspected.
+    const leaked = ["orders.create", "createOrder", "trade", "place_market_order", "submit_equity_order"];
+    const r = classifyToolNames(leaked);
+    expect(r.matched.concat(r.unguarded).sort()).toEqual([...leaked].sort());
+  });
+});
+
+describe("toolNamesFromListResult", () => {
+  it("reads names out of a tools/list result", () => {
+    expect(toolNamesFromListResult({ tools: [{ name: "a" }, { name: "b" }] })).toEqual(["a", "b"]);
+  });
+  it("survives shapes it does not recognise", () => {
+    expect(toolNamesFromListResult(null)).toEqual([]);
+    expect(toolNamesFromListResult({})).toEqual([]);
+    expect(toolNamesFromListResult({ tools: "nope" })).toEqual([]);
+    expect(toolNamesFromListResult({ tools: [{}, { name: 5 }] })).toEqual([]);
   });
 });

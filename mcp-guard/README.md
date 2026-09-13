@@ -67,6 +67,8 @@ npx mcp-trade-guard
 | `MCP_ALLOWED_SYMBOLS` | any | Comma-separated allowlist; empty means any |
 | `MCP_ALLOW_UNKNOWN` | `0` | `1` to allow orders with no dollar amount (see below) |
 | `MCP_UPSTREAM` | Robinhood | The real MCP server to forward to |
+| `MCP_ORDER_TOOLS` | built-in list | Your broker's order tool names, comma-separated |
+| `MCP_ALLOW_UNMATCHED` | `0` | `1` to run even when no advertised tool is guarded |
 | `MCP_GUARD_PORT` | `8900` | Where the guard listens |
 
 ## How it works
@@ -117,6 +119,14 @@ We publish the limits because a security tool that oversells is worse than none.
 - **Order scanning needs a current ruleset.** The role-prefix payload above
   requires `wormhole-x402` ≥ 0.3.1. The caps depend on no ruleset and work on any
   version.
+- **The caps apply to tools it recognises by name.** The guard decides what to
+  inspect from the tool's name, and names belong to the server. Up to 0.1.0 a
+  broker that called its order tool something unexpected — `orders.create`,
+  `submit_equity_order` — had every order forwarded uncapped while the proxy
+  still printed its limits and looked healthy. Since 0.2.0 the guard reconciles
+  against the broker's own `tools/list`, prints any money-moving tool it would
+  not intercept, and **exits rather than run as a guard that guards nothing**.
+  Set `MCP_ORDER_TOOLS` to your broker's real names.
 - **It is not the broker's controls.** It is a layer you add in front of them, not
   a replacement for them.
 
@@ -124,6 +134,30 @@ We measured the surface before shipping this: 1,606 real trading documents
 scanned for injection, zero found —
 [the research](https://agentwormhole.com/research/agentic-trading-injection),
 reproducible.
+
+## When the names don't match
+
+The guard intercepts by name. If it does not recognise your broker's order tool,
+it says so on the first listing rather than silently forwarding:
+
+```
+  !! UNGUARDED TOOLS — these move money and are NOT capped:
+       orders.create
+     Add them:  MCP_ORDER_TOOLS="orders.create"
+
+  !! This guard matched NONE of the 2 tools this server advertises.
+     Every order would reach the broker uncapped. Refusing to run as a
+     guard that guards nothing.
+```
+
+Set the names and it reports what it is protecting:
+
+```
+  guarding    orders.create  (2 tools advertised)
+```
+
+`MCP_ALLOW_UNMATCHED=1` proceeds anyway — a decision with a name on it, not a
+default.
 
 ## Fail closed on orders, fail open on reads
 

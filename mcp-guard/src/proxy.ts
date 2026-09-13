@@ -47,7 +47,14 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { McpGuard, type OrderIntent, type GuardDecision } from "./index.js";
+import {
+  McpGuard,
+  classifyToolNames,
+  toolNamesFromListResult,
+  type OrderIntent,
+  type GuardDecision,
+  type ToolNameReport,
+} from "./index.js";
 
 /** One line of the audit log — what the proxy decided, never the payload text. */
 export interface GuardEvent {
@@ -67,6 +74,12 @@ export interface ProxyOptions {
   upstreamUrl: string;
   /** Called for every guarded decision. Wire a dashboard or a log file here. */
   onEvent?: (e: GuardEvent) => void;
+  /**
+   * Called once the upstream advertises its tools, with what this guard would
+   * and would not intercept. The runner uses it to warn — or stop — when the
+   * ruleset does not match the server it is actually in front of.
+   */
+  onToolList?: (report: ToolNameReport) => void;
   /** Injected for tests. */
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -204,6 +217,28 @@ export function guardRequest(
 }
 
 /**
+ * Inspect a `tools/list` response and report what this guard would intercept.
+ *
+ * Name matching fails OPEN — an order tool whose name is not in the ruleset is
+ * forwarded with no cap applied, and nothing at runtime says so. Reconciling
+ * against what the server actually advertises is the only way the operator
+ * learns that their guard is inspecting nothing.
+ *
+ * Returns the report, or undefined when the message is not a tool listing.
+ */
+export function inspectToolList(msg: unknown, guard?: McpGuard): ToolNameReport | undefined {
+  if (typeof msg !== "object" || msg === null) return undefined;
+  const m = msg as Record<string, unknown>;
+  if (!("result" in m)) return undefined;
+  const names = toolNamesFromListResult(m["result"]);
+  if (names.length === 0) return undefined;
+  // Reconcile against the vocabulary THIS guard runs with. Checking the
+  // shipped defaults instead would report an operator's correct configuration
+  // as a total mismatch — a false alarm that teaches people to ignore it.
+  return classifyToolNames(names, guard?.orderTools);
+}
+
+/**
  * Apply the guard to a single parsed JSON-RPC message flowing upstream → agent.
  *
  * Annotates a read result whose text matches an injection rule. Returns the
@@ -334,6 +369,11 @@ export function createProxyServer(opts: ProxyOptions): Server {
         let outBody = text;
         try {
           const parsed = JSON.parse(text);
+          // A tool listing is the one chance to check that this guard's name
+          // rules match the server in front of it. Report it before anything
+          // is allowed to trade.
+          const report = inspectToolList(parsed, opts.guard);
+          if (report) opts.onToolList?.(report);
           const scanned = guardResponse(parsed, opts.guard, opts.onEvent, now);
           outBody = JSON.stringify(scanned);
         } catch {

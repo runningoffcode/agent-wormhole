@@ -1,6 +1,6 @@
 {
   "name": "mcp-trade-guard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A policy gate between an AI agent and an agentic-trading MCP: scans the text the agent reads for injection, and enforces per-order and daily dollar caps as arithmetic the agent cannot argue with.",
   "type": "module",
   "license": "Apache-2.0",

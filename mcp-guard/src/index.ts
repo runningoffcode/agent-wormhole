@@ -128,6 +128,21 @@ export const DEFAULT_ORDER_TOOLS = [
   "execute_trade",
 ] as const;
 
+/**
+ * Names that look like they move money, beyond the exact list above.
+ *
+ * The guard decides what to inspect by NAME, and the name belongs to the
+ * server, not to us. `DEFAULT_ORDER_TOOLS` was written against one broker's
+ * vocabulary; a server that calls the same operation `orders.create` or
+ * `submitEquityOrder` would have had its trades forwarded unchecked while the
+ * proxy still reported itself as guarding. These stems are the wider net used
+ * by {@link classifyToolNames} to catch that case and say so.
+ */
+const ORDERY_STEMS = [
+  "order", "trade", "buy", "sell", "execute", "submit",
+  "purchase", "position", "exchange", "swap",
+] as const;
+
 export const DEFAULT_READ_TOOLS = [
   "read_analyst_notes",
   "get_news",
@@ -155,6 +170,56 @@ export const CODES = {
 function isOrderTool(name: string, tools: readonly string[]): boolean {
   const n = name.toLowerCase();
   return tools.some((t) => n.includes(t.toLowerCase()));
+}
+
+/** What a reconciliation against the server's real tool list found. */
+export interface ToolNameReport {
+  /** Advertised names this guard would inspect as orders. */
+  matched: string[];
+  /**
+   * Advertised names that look like they move money but that this guard would
+   * NOT inspect. Every one of these is a trade that reaches the broker with no
+   * cap applied.
+   */
+  unguarded: string[];
+  /** Every name the server advertised, for the record. */
+  advertised: string[];
+}
+
+/**
+ * Compare a server's advertised tools against what this guard would intercept.
+ *
+ * This exists because name matching fails OPEN: a name the list does not know
+ * is forwarded untouched, and nothing about that is visible at runtime — the
+ * proxy prints its caps and looks healthy while every order sails past. Calling
+ * this against the real `tools/list` response turns that silence into a fact
+ * the operator can act on.
+ */
+export function classifyToolNames(
+  advertised: readonly string[],
+  orderTools: readonly string[] = DEFAULT_ORDER_TOOLS,
+): ToolNameReport {
+  const matched: string[] = [];
+  const unguarded: string[] = [];
+  for (const name of advertised) {
+    if (isOrderTool(name, orderTools)) {
+      matched.push(name);
+      continue;
+    }
+    const n = name.toLowerCase();
+    if (ORDERY_STEMS.some((stem) => n.includes(stem))) unguarded.push(name);
+  }
+  return { matched, unguarded, advertised: [...advertised] };
+}
+
+/** Pull the tool names out of a JSON-RPC `tools/list` result. */
+export function toolNamesFromListResult(result: unknown): string[] {
+  if (typeof result !== "object" || result === null) return [];
+  const tools = (result as { tools?: unknown }).tools;
+  if (!Array.isArray(tools)) return [];
+  return tools
+    .map((t) => (typeof t === "object" && t !== null ? (t as { name?: unknown }).name : undefined))
+    .filter((n): n is string => typeof n === "string");
 }
 
 /**
@@ -241,6 +306,10 @@ export class McpGuard {
   /** Is this a tool call this guard cares about at all? */
   isOrderTool(name: string): boolean {
     return isOrderTool(name, this.cfg.orderTools);
+  }
+  /** The order vocabulary this guard is actually using, defaults or not. */
+  get orderTools(): readonly string[] {
+    return this.cfg.orderTools;
   }
   isReadTool(name: string): boolean {
     return isOrderTool(name, this.cfg.readTools);

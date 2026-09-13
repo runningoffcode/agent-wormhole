@@ -666,7 +666,12 @@ const PLACEHOLDER_DEST_SRC = String.raw`(?:example\.(?:com|net|org)|\.invalid\b|
  * about hiding from a PERSON rather than about being unobtrusive.
  */
 const CONCEALMENT_SRC =
-  String.raw`\b(?:do not|don't|never|avoid)\s+(?:mention(?:ing)?|tell(?:ing)?|inform(?:ing)?|reveal(?:ing)?|disclos(?:e|ing)|report(?:ing)?|notify(?:ing)?|alert(?:ing)?|log(?:ging)?|warn(?:ing)?)\s+(?:this |that |it |any(?:thing)? (?:of )?(?:this|that) )?(?:to )?(?:the )?(?:user|human|operator|owner|admin|anyone|the person|them)\b` +
+  // The verb list covers TELLING and SHOWING. It once covered only telling —
+  // mention/reveal/disclose — and so missed "do not show it to the user",
+  // which is the wording of the single confirmed tool-poisoning case found in
+  // the live MCP registry. A concealment rule that misses the real payload it
+  // was written for is worse than none, because the null result reads as safe.
+  String.raw`\b(?:do not|don't|never|avoid)\s+(?:mention(?:ing)?|tell(?:ing)?|inform(?:ing)?|reveal(?:ing)?|disclos(?:e|ing)|report(?:ing)?|notify(?:ing)?|alert(?:ing)?|log(?:ging)?|warn(?:ing)?|show(?:ing)?|display(?:ing)?|surfac(?:e|ing)|print(?:ing)?|expos(?:e|ing)|share|sharing|repeat(?:ing)?|output(?:ting)?|echo(?:ing)?)\s+(?:this |that |it |any(?:thing)? (?:of )?(?:this|that) |the (?:above|following|instruction)s? )?(?:to )?(?:the )?(?:user|human|operator|owner|admin|anyone|the person|them)\b` +
   String.raw`|\b(?:covertly|surreptitiously)\b` +
   String.raw`|\b(?:silently|discreetly)\s+(?:and\s+)?(?:without|behind|bypass|hide|hiding|conceal)` +
   String.raw`|\b(?:silently|discreetly)\b[^.!?]{0,40}\bwithout (?:the )?(?:user|human|operator|anyone|their)\b` +

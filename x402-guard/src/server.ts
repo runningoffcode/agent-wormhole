@@ -47,6 +47,12 @@ export interface ServerOptions {
   /** ed25519 private key used to sign receipts. Public half is published so
    *  anyone can verify a receipt offline. Omit to run unsigned (dev only). */
   signingKey?: KeyObject;
+  /** Trusted server integration only. Must validate evidence for this exact
+   * request (independent fetch, merchant signature, or facilitator proof).
+   * Never return a value merely because a request header claims it.
+   * Without this callback every HTTP request is caller_asserted.
+   */
+  resolveQuoteProvenance?: (request: VerifyRequest, req: IncomingMessage) => QuoteProvenance | Promise<QuoteProvenance>;
   /** Called once per billable verification. Must not block; enqueue and return. */
   meter?: Meter;
   /** Supplies the current time as ISO-8601. Injected so tests are deterministic
@@ -84,11 +90,13 @@ export function createVerifyHandler(opts: ServerOptions = {}) {
       return send(res, 400, { error: "bad_request", detail: String(err instanceof Error ? err.message : err) });
     }
 
-    // Provenance is asserted by the transport/caller relationship, never taken
-    // from the payload being judged. Absent header ⇒ caller_asserted (answered,
-    // not billed). A caller wanting a billable attestation must present the
-    // quote through a path that proves one of the trusted provenances.
-    const provenance = readProvenance(req);
+    let provenance: QuoteProvenance = "caller_asserted";
+    try {
+      const resolved = await opts.resolveQuoteProvenance?.(body, req);
+      if (resolved && BILLABLE.has(resolved)) provenance = resolved;
+    } catch {
+      return send(res, 200, { decision: "abstain", findings: [], reason: "quote provenance could not be verified" });
+    }
     const issuedAt = now();
 
     let result;
@@ -150,19 +158,6 @@ export function listen(port: number, opts: ServerOptions = {}) {
 }
 
 // --- helpers ---------------------------------------------------------------
-
-function readProvenance(req: IncomingMessage): QuoteProvenance {
-  const h = req.headers["x-quote-provenance"];
-  const v = Array.isArray(h) ? h[0] : h;
-  switch (v) {
-    case "independent_fetch":
-    case "merchant_signed":
-    case "facilitator_held":
-      return v;
-    default:
-      return "caller_asserted";
-  }
-}
 
 function readJson(req: IncomingMessage, maxBytes: number): Promise<VerifyRequest> {
   return new Promise((resolve, reject) => {

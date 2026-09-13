@@ -1,5 +1,7 @@
 # wormhole-x402
 
+[Integration guide: payment safety, policy, confirmed top-ups and launch attestations](../docs/integration.md).
+
 [![npm](https://img.shields.io/npm/v/wormhole-x402)](https://www.npmjs.com/package/wormhole-x402)
 [![npm downloads](https://img.shields.io/npm/dm/wormhole-x402)](https://www.npmjs.com/package/wormhole-x402)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](../LICENSE)
@@ -61,7 +63,7 @@ const result = await verify(
     quote,                            // what the merchant's 402 said
     payload,                          // what the agent is about to sign
   },
-  { quoteProvenance: "merchant_signed", issuedAt: new Date().toISOString() },
+  { quoteProvenance: "caller_asserted", issuedAt: new Date().toISOString() },
 );
 
 if (result.decision !== "allow") {

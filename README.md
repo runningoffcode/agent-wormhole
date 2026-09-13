@@ -1,5 +1,7 @@
 # Agent Wormhole
 
+[Integration guide: payment safety, policy, confirmed top-ups and launch attestations](docs/integration.md).
+
 [![ci](https://github.com/runningoffcode/agent-wormhole/actions/workflows/ci.yml/badge.svg)](https://github.com/runningoffcode/agent-wormhole/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/wormhole-guard?label=pypi%20wormhole-guard)](https://pypi.org/project/wormhole-guard/)
 [![npm](https://img.shields.io/npm/v/wormhole-x402?label=npm%20wormhole-x402)](https://www.npmjs.com/package/wormhole-x402)

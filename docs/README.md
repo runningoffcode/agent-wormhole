@@ -1,5 +1,7 @@
 # Documentation
 
+[Integration guide: payment safety, policy, confirmed top-ups and launch attestations](integration.md).
+
 Long-form material that used to live in the README. The
 [landing page](../README.md) is the short version; these are the full ones.
 

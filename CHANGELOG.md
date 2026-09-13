@@ -1,5 +1,27 @@
 # Changelog
 
+## wormhole-x402 0.8.1 — 2026-09-12
+
+**The concealment rule missed the display verbs.** The verb list covered
+*telling* — mention, tell, inform, reveal, disclose, notify — but not *showing*.
+So `do not show it to the user` did not match, and that is the wording of the
+single confirmed tool-poisoning case found in the live MCP registry: a rule
+written for that payload did not fire on it.
+
+Adds show, display, surface, print, expose, share, repeat, output and echo, and
+widens the object to cover "the above" / "the following" / "the instructions".
+The payload hidden in an HTML comment now raises X402-204; beside an exfil verb
+it raises X402-207.
+
+Found by running a firing control before publishing a null result — three of
+eight known-bad payloads were silent. A scanner that reports zero without being
+shown to fire is reporting nothing at all.
+
+Fourteen tests pin both halves, six of them benign twins that must stay silent
+("Do not show the raw response to the user; format it as a table first").
+A scanner that fires on real copy gets disabled, and a disabled scanner catches
+nothing.
+
 ## mcp-trade-guard 0.2.0 — 2026-09-12
 
 **The guard checks that it is guarding anything.** Up to 0.1.0 the caps applied

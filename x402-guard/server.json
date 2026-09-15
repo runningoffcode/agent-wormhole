@@ -9,12 +9,12 @@
     "subfolder": "x402-guard"
   },
   "websiteUrl": "https://agentwormhole.com",
-  "version": "0.8.0",
+  "version": "0.8.3",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "wormhole-x402",
-      "version": "0.8.0",
+      "version": "0.8.3",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

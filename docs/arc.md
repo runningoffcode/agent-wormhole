@@ -24,6 +24,42 @@ chain agrees with that configuration.
 Two things the verification does **not** establish: that any contract's
 source matches its bytecode, and that any of it has been audited.
 
+## End-to-end run on Arc Testnet, 2026-09-15
+
+Every integration below was exercised against the live chain with a funded
+signer. Amounts are real testnet USDC; the transactions are on the public
+explorer.
+
+| Step | Result |
+| --- | --- |
+| Deployment readiness | `ready: true`, RPC chain id and USDC EIP-712 domain both matched the configuration |
+| Poisoned quote (attacker payee, injected instruction) | refused `ARC-002`; quote text separately flagged `X402-202`, `X402-209`; nothing signed |
+| Legitimate payment, 0.25 USDC | confirmed in block 62283751, verified against the exact `Transfer` log |
+| Replay of the same request id | same transaction hash returned, no second payment |
+| Same request id, different amount | `409 ARC-006` |
+| Over the per-payment cap | refused `ARC-003` |
+| Base quote offered to an Arc task | refused `ARC-007` |
+| Budget ceiling | three payments allowed, the fourth refused `ARC-004` at 1.75 of 2.00 USDC |
+| ERC-8183 job, provider outside the task | refused `ARC-002` before any approval was signed |
+| ERC-8183 fund | approve-exact-budget then fund, both confirmed, leftover allowance `0` |
+| ERC-8183 release, wrong content | refused `ARC-009` |
+| ERC-8183 release, submitted content | confirmed, job `Completed`, 0.40 USDC released to the provider |
+| ERC-8004 scan | live registry read, document resolved over IPFS, endpoints listed, evidence signed |
+| Private record | sealed; no plaintext and no operator credential recoverable from the database |
+| Private delivery without an approved endpoint | refused `ARC-013` |
+| Private delivery to the approved endpoint | delivered, receipt signed, replay returned the stored result rather than resending |
+| Receipts | verified against the published ed25519 key; a one-byte change fails verification |
+
+Reconciliation after the run: the merchant held exactly 1.75 USDC, the signer's
+nonce was 4, and the task ledger's spend matched the chain. The four refusals
+signed nothing, which is the property worth stating — a refusal is a row in the
+ledger, not a transaction.
+
+Two defects surfaced only because the run was live, and both are fixed: the
+private-request guard answered Node's DNS lookup in the wrong shape and so
+could never connect, and ERC-8004 documents resolved through a single IPFS
+gateway that was unreachable from the verification network.
+
 ## The SDK: Arc Testnet USDC in the trusted-domain table
 
 `wormhole-x402` 0.8.3 adds `5042002:0x3600…` to `TRUSTED_DOMAINS` with the

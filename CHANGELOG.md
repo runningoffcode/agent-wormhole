@@ -1,5 +1,20 @@
 # Changelog
 
+## wormhole-x402 0.8.4 — 2026-09-16
+
+**Arc mainnet.** It opened today; the entry is here because the deployed
+contract was read, not because the date arrived. USDC at `0x3600…` reports
+name `USDC`, version `2` and six ERC-20 decimals, and its `DOMAIN_SEPARATOR()`
+reproduces from those values with chain id 5042. Four independent providers —
+arc.io, Blockdaemon, dRPC and QuickNode — returned byte-identical answers, so
+the entry does not rest on one endpoint's word, and a test pins the separator
+so a drift in name or version cannot silently start recovering the wrong
+signer.
+
+What is NOT covered: the ERC-8004 registries and the ERC-8183 job contract are
+not deployed at their testnet addresses on mainnet. This entry is payment
+conformance only.
+
 ## wormhole-x402 0.8.3 — 2026-09-15
 
 **Arc Testnet USDC is in the trusted-domain table.** `5042002:0x3600…` with

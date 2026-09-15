@@ -212,6 +212,21 @@ export const TRUSTED_DOMAINS: Readonly<Record<string, DomainEntry>> = {
     label: "Base Sepolia USDC",
     verified: true,
   },
+
+  // Arc Testnet USDC — the ERC-20 interface of the native gas token (6
+  // decimals). Verified 2026-09-15 against the live contract: name() = "USDC",
+  // version() = "2", and DOMAIN_SEPARATOR() equals the EIP-712 hash of
+  // (name, version, 5042002, 0x3600…). EIP-3009 dispatch confirmed — a
+  // malformed authorization reverts "FiatTokenV2: invalid signature".
+  // Arc MAINNET is deliberately absent: no official mainnet configuration
+  // was published when this entry was added, and a guessed domain recovers
+  // the wrong signer. Add it only after reading the deployed getters.
+  "5042002:0x3600000000000000000000000000000000000000": {
+    name: "USDC",
+    version: "2",
+    label: "Arc Testnet USDC",
+    verified: true,
+  },
 } as const;
 
 // --- network parsing -------------------------------------------------------

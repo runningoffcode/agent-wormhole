@@ -1,5 +1,23 @@
 # Changelog
 
+## wormhole-x402 0.8.3 — 2026-09-15
+
+**Arc Testnet USDC is in the trusted-domain table.** `5042002:0x3600…` with
+name `USDC`, version `2`, marked verified: the deployed contract's
+`DOMAIN_SEPARATOR()` reproduces from those values, and a malformed
+`transferWithAuthorization` reverts `FiatTokenV2: invalid signature`, so the
+contract dispatches EIP-3009. `inspectAuthorization` now answers on Arc
+Testnet instead of abstaining.
+
+No Arc mainnet entry, deliberately: no official mainnet configuration existed
+when this was added, and a guessed domain recovers the wrong signer. A test
+pins both facts.
+
+The hosted layer's Arc integrations (task-bound payments through a
+server-side signer, ERC-8004 registration scans, ERC-8183 job funding and
+release, sealed private delivery, Arc launch scans) are documented in
+[docs/arc.md](docs/arc.md) with a demo in `examples/arc-commerce/`.
+
 ## wormhole-x402 0.8.1 — 2026-09-12
 
 **The concealment rule missed the display verbs.** The verb list covered

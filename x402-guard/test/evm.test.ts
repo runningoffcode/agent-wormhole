@@ -134,6 +134,14 @@ describe("the domain table is the source of truth, not the quote", () => {
     expect(e.version).toBe("2");
     expect(e.verified).toBe(true);
   });
+  it("has Arc Testnet USDC verified with the on-chain name/version, and no Arc mainnet guess", () => {
+    const e = TRUSTED_DOMAINS["5042002:0x3600000000000000000000000000000000000000"];
+    expect(e).toBeTruthy();
+    expect(e.name).toBe("USDC");
+    expect(e.version).toBe("2");
+    expect(e.verified).toBe(true);
+    expect(Object.keys(TRUSTED_DOMAINS).some((k) => k.startsWith("5042:"))).toBe(false);
+  });
 });
 
 describe("a conforming EIP-3009 authorization", () => {

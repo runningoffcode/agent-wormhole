@@ -31,11 +31,11 @@ answer at all.
 pass you have a guard that reports green on every chain it does not cover. Fail
 closed on `abstain` unless you have another reason to trust the payment.
 
-The complete table is five entries — Base, Ethereum, Arbitrum, Polygon USDC and
-Base Sepolia USDC. Everything else on any chain abstains today. Note Base
-Sepolia's test token reports `name` as `"USDC"`, not `"USD Coin"`; it is a
-separate entry precisely because using the mainnet name there would recover the
-wrong signer.
+The complete table is six entries — Base, Ethereum, Arbitrum, Polygon USDC,
+Base Sepolia USDC and Arc Testnet USDC. Everything else on any chain abstains
+today. Note Base Sepolia's test token reports `name` as `"USDC"`, not
+`"USD Coin"`; it is a separate entry precisely because using the mainnet name
+there would recover the wrong signer.
 
 ## What this does NOT show
 

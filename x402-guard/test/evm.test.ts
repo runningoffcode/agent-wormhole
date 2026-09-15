@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import type { Hex } from "viem";
+import { keccak256, encodeAbiParameters, toBytes, type Hex } from "viem";
 import {
   inspectAuthorization,
   evmQuoteFromRequirements,
@@ -140,7 +140,35 @@ describe("the domain table is the source of truth, not the quote", () => {
     expect(e.name).toBe("USDC");
     expect(e.version).toBe("2");
     expect(e.verified).toBe(true);
-    expect(Object.keys(TRUSTED_DOMAINS).some((k) => k.startsWith("5042:"))).toBe(false);
+  });
+
+  it("has Arc mainnet verified against the deployed contract, not against a launch date", () => {
+    const e = TRUSTED_DOMAINS["5042:0x3600000000000000000000000000000000000000"];
+    expect(e).toBeTruthy();
+    expect(e.name).toBe("USDC");
+    expect(e.version).toBe("2");
+    expect(e.verified).toBe(true);
+  });
+
+  it("recovers an Arc mainnet signer against the on-chain domain separator", async () => {
+    // The separator below was read from the deployed contract on four
+    // independent providers. If this entry's name/version ever drift from it,
+    // recovery silently returns the WRONG signer, so pin the arithmetic.
+    const ARC_USDC = "0x3600000000000000000000000000000000000000";
+    const e = TRUSTED_DOMAINS[`5042:${ARC_USDC}`];
+    const separator = keccak256(
+      encodeAbiParameters(
+        [{ type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }, { type: "uint256" }, { type: "address" }],
+        [
+          keccak256(toBytes("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")),
+          keccak256(toBytes(e.name)),
+          keccak256(toBytes(e.version)),
+          5042n,
+          ARC_USDC as `0x${string}`,
+        ],
+      ),
+    );
+    expect(separator).toBe("0x940506929bba468048a19b567f4f0d534714bc06604b5c3017e5d16785ccdf84");
   });
 });
 

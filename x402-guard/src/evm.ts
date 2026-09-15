@@ -227,6 +227,28 @@ export const TRUSTED_DOMAINS: Readonly<Record<string, DomainEntry>> = {
     label: "Arc Testnet USDC",
     verified: true,
   },
+
+  // Arc MAINNET USDC. Added 2026-09-16, after mainnet opened — and after the
+  // deployed contract was read, not because a launch date arrived.
+  //
+  // The documentation still published no mainnet configuration when this was
+  // added, so the entry rests on the chain itself: name() = "USDC",
+  // version() = "2", six ERC-20 decimals, and a DOMAIN_SEPARATOR() of
+  // 0x940506929bba468048a19b567f4f0d534714bc06604b5c3017e5d16785ccdf84 that
+  // reproduces from those values with chain id 5042. Four independent RPC
+  // providers (arc.io, Blockdaemon, dRPC, QuickNode) returned byte-identical
+  // answers, so this is not one endpoint's word.
+  //
+  // WHAT IS STILL NOT HERE. The ERC-8004 registries and the ERC-8183 job
+  // contract are NOT deployed at their testnet addresses on mainnet. Anything
+  // that needs them must read them from mainnet first; this entry covers
+  // payment conformance only.
+  "5042:0x3600000000000000000000000000000000000000": {
+    name: "USDC",
+    version: "2",
+    label: "Arc USDC",
+    verified: true,
+  },
 } as const;
 
 // --- network parsing -------------------------------------------------------

@@ -150,6 +150,41 @@ describe("the domain table is the source of truth, not the quote", () => {
     expect(e.verified).toBe(true);
   });
 
+  it("has Robinhood Chain USDG on both networks, pinned to the on-chain separator", () => {
+    const MAIN = "4663:0x5fc5360d0400a0fd4f2af552add042d716f1d168";
+    const TEST = "46630:0x7e955252e15c84f5768b83c41a71f9eba181802f";
+    for (const k of [MAIN, TEST]) {
+      const e = TRUSTED_DOMAINS[k];
+      expect(e).toBeTruthy();
+      expect(e.name).toBe("Global Dollar");
+      expect(e.version).toBe("1");
+      expect(e.verified).toBe(true);
+    }
+    // The separator each contract actually returns. `version()` reverts on
+    // this token, so the pinned "1" is only defensible while these match —
+    // if a future edit changes name or version, recovery would silently
+    // start returning the WRONG signer rather than failing.
+    const sep = (chainId: bigint, contract: string, name: string) =>
+      keccak256(
+        encodeAbiParameters(
+          [{ type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }, { type: "uint256" }, { type: "address" }],
+          [
+            keccak256(toBytes("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")),
+            keccak256(toBytes(name)),
+            keccak256(toBytes("1")),
+            chainId,
+            contract as `0x${string}`,
+          ],
+        ),
+      );
+    expect(sep(4663n, "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", TRUSTED_DOMAINS[MAIN].name)).toBe(
+      "0x7a3d7400b27830f4f91c2c16a082486d67c1befecaec2f53b33f1f35d5b62036",
+    );
+    expect(sep(46630n, "0x7E955252E15c84f5768B83c41a71F9eba181802F", TRUSTED_DOMAINS[TEST].name)).toBe(
+      "0xb1debe91e09d82163fd9cddaab89359061c0671664e1611258a3c3de7c2d950b",
+    );
+  });
+
   it("recovers an Arc mainnet signer against the on-chain domain separator", async () => {
     // The separator below was read from the deployed contract on four
     // independent providers. If this entry's name/version ever drift from it,

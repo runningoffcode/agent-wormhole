@@ -249,6 +249,36 @@ export const TRUSTED_DOMAINS: Readonly<Record<string, DomainEntry>> = {
     label: "Arc USDC",
     verified: true,
   },
+
+  // Robinhood Chain USDG (Global Dollar, Paxos) — mainnet and testnet.
+  //
+  // Verified 2026-09-18 against both deployed contracts. name() is
+  // "Global Dollar", six decimals, and DOMAIN_SEPARATOR() reproduces exactly
+  // from (name, "1", chainId, contract) on each network.
+  //
+  // THE VERSION CANNOT BE DISCOVERED, WHICH IS WHY IT IS PINNED HERE. The
+  // token sits behind a facet router and `version()` reverts, so a client
+  // that tries to read the domain gets nothing and a client that guesses gets
+  // the wrong signer. "1" is not a guess: it is the only value whose keccak
+  // reproduces the separator the contract returns.
+  //
+  // EIP-3009 dispatch confirmed by differential control rather than by
+  // grepping bytecode — the router makes a selector scan give false
+  // negatives. A malformed authorization reverts InvalidSignature()
+  // (0x8baa579f), i.e. it reaches real validation, while an unknown selector
+  // reverts 0x800ab12c, the router's "no such function". Both networks agree.
+  "4663:0x5fc5360d0400a0fd4f2af552add042d716f1d168": {
+    name: "Global Dollar",
+    version: "1",
+    label: "Robinhood Chain USDG",
+    verified: true,
+  },
+  "46630:0x7e955252e15c84f5768b83c41a71f9eba181802f": {
+    name: "Global Dollar",
+    version: "1",
+    label: "Robinhood Testnet USDG",
+    verified: true,
+  },
 } as const;
 
 // --- network parsing -------------------------------------------------------

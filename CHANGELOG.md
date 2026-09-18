@@ -1,5 +1,32 @@
 # Changelog
 
+## wormhole-x402 0.8.5 — 2026-09-18
+
+**Robinhood Chain USDG, both networks.** `4663:0x5fc5360d…` and
+`46630:0x7e955252…` — Global Dollar (Paxos), six decimals. An x402 payment on
+Robinhood Chain now reaches a real verdict instead of abstaining.
+
+Verified against the deployed contracts, not documentation: `name()` is
+`"Global Dollar"` and `DOMAIN_SEPARATOR()` reproduces exactly from
+(name, "1", chainId, contract) on each network. A test pins both separators.
+
+**The version could not be discovered and is pinned.** This token sits behind
+a facet router, so `version()` reverts and a client cannot read its own
+domain. `"1"` is not a guess — it is the only value whose keccak reproduces
+the separator each contract returns, and the test fails if that ever stops
+being true.
+
+**EIP-3009 was confirmed by differential control, not by reading bytecode.**
+The router makes a selector scan give false negatives; we initially concluded
+no EIP-3009 token existed on the chain because of it. The reliable test is
+behavioural: a malformed authorization reverts `InvalidSignature()`
+(`0x8baa579f`) — real validation — while an unknown selector reverts
+`0x800ab12c`, the router's "no such function". Both networks agree.
+
+A negative control pins the whole point of the table: a signature made under
+the wrong name, the wrong version or the wrong chain id refuses with X402-104
+rather than recovering some other address.
+
 ## wormhole-x402 0.8.4 — 2026-09-16
 
 **Arc mainnet.** It opened today; the entry is here because the deployed

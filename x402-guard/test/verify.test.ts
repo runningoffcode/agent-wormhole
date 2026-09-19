@@ -182,3 +182,65 @@ describe("verify — the paid API core", () => {
     });
   });
 });
+
+describe("the quote inherits the request's network", () => {
+  /**
+   * The documented body is `{network, quote, payload}` — one network, at the
+   * top. But the EVM lane looks its EIP-712 domain up by the QUOTE's network,
+   * so a caller who followed the documentation exactly got an abstain reading
+   * "quote network (undefined) could not be resolved to a chainId". Two
+   * fields, one of them undocumented, and a failure that looked like an
+   * unsupported chain rather than a missing field.
+   */
+  it("verifies an EVM payment when only the top-level network is given", async () => {
+    const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
+    const payer = privateKeyToAccount(
+      "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    );
+    const to = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+    const nonce = ("0x" + "99".repeat(32)) as `0x${string}`;
+    const signature = await payer.signTypedData({
+      domain: { name: "Global Dollar", version: "1", chainId: 4663, verifyingContract: USDG },
+      types: {
+        TransferWithAuthorization: [
+          { name: "from", type: "address" }, { name: "to", type: "address" },
+          { name: "value", type: "uint256" }, { name: "validAfter", type: "uint256" },
+          { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" },
+        ],
+      },
+      primaryType: "TransferWithAuthorization",
+      message: { from: payer.address, to, value: 250000n, validAfter: 0n, validBefore: 99999999999n, nonce },
+    });
+
+    const verdict = await verify({
+      network: "eip155:4663",
+      // No `network` here — exactly what the documented body produces.
+      quote: { asset: USDG, payTo: to, amount: "250000", extra: { assetTransferMethod: "eip3009" } },
+      payload: {
+        signature,
+        authorization: {
+          from: payer.address, to, value: "250000",
+          validAfter: "0", validBefore: "99999999999", nonce,
+        },
+      },
+    } as never, ctx());
+
+    expect(verdict.decision).toBe("allow");
+  });
+
+  it("does not overwrite a network the quote already carries", async () => {
+    // A quote naming a DIFFERENT chain must not silently adopt the request's.
+    // The lane's own chain check is what should catch the contradiction.
+    const verdict = await verify({
+      network: "eip155:4663",
+      quote: {
+        network: "eip155:8453",
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        payTo: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        amount: "250000",
+      },
+      payload: { signature: "0x" + "11".repeat(65), authorization: {} },
+    } as never, ctx());
+    expect(verdict.decision).not.toBe("allow");
+  });
+});

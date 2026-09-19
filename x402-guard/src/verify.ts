@@ -153,8 +153,27 @@ export async function verify(
         (req.options ?? {}) as InspectOptions,
       );
     } else {
+      /* THE QUOTE INHERITS THE REQUEST'S NETWORK WHEN IT HAS NONE OF ITS OWN.
+       *
+       * `verify()` resolves the rail from the top-level `network`, but the EVM
+       * lane looks the EIP-712 domain up by the quote's OWN network — so a
+       * caller who sent `network` exactly where the docs say to, and nowhere
+       * else, got an abstain reading "quote network (undefined) could not be
+       * resolved". Two fields, one of them undocumented, and the failure
+       * looked like an unsupported chain rather than a missing field.
+       *
+       * The request's network is the merchant's 402 network, which is what the
+       * quote's network means, so carrying it across is the same fact and not
+       * a guess. A quote that DOES carry its own network keeps it: if the two
+       * disagree that is a real contradiction, and the lane's own chain check
+       * must be the thing that catches it. */
+      const quote = req.quote as EvmPaymentQuote | undefined;
+      const evmQuote =
+        quote && typeof quote === "object" && typeof quote.network !== "string"
+          ? ({ ...quote, network: req.network } as EvmPaymentQuote)
+          : (quote as EvmPaymentQuote);
       laneVerdict = await inspectAuthorization(
-        req.quote as EvmPaymentQuote,
+        evmQuote,
         req.payload as EvmPayload | unknown,
         (req.options ?? {}) as object,
       );

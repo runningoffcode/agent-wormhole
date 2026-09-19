@@ -1,5 +1,24 @@
 # Changelog
 
+## wormhole-x402 0.8.6 — 2026-09-19
+
+**The documented request body now works.** `verify()` resolves the rail from
+the top-level `network`, but the EVM lane looked its EIP-712 domain up by the
+QUOTE's own network — so a caller who sent `network` exactly where the docs
+say to, and nowhere else, got an abstain reading *"quote network (undefined)
+could not be resolved to a chainId"*. Two fields, one of them undocumented,
+and a failure that read as an unsupported chain rather than a missing field.
+
+The quote now inherits the request's network when it carries none of its own.
+That is the same fact rather than a guess: the request's network IS the
+merchant's 402 network, which is what the quote's network means. A quote that
+already names a network keeps it, so a genuine disagreement between the two
+still reaches the lane's own chain check instead of being silently papered
+over — a test pins both halves.
+
+Found while verifying Robinhood Chain USDG end to end against the hosted API,
+by sending the body our own documentation specifies.
+
 ## wormhole-x402 0.8.5 — 2026-09-18
 
 **Robinhood Chain USDG, both networks.** `4663:0x5fc5360d…` and

@@ -25,3 +25,9 @@ node_modules/
 examples/**/package-lock.json
 x402-guard/dist/
 x402-guard/*.tgz
+
+# Environment files carry keys. A committed .env is a leaked key, however
+# well-labelled as testnet, and this repo is public.
+.env
+.env.*
+!.env.example

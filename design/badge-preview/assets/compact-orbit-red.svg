@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="70" height="70" viewBox="0 0 70 70" role="img" aria-label="AgentWormhole red compact logo">
+  <style>
+    .orbit { transform-origin:32px 32px; animation:orbit 6s linear infinite; }
+
+    @keyframes orbit { to { transform:rotate(360deg); } }
+    @keyframes counter { to { transform:rotate(-720deg); } }
+    @media (prefers-reduced-motion:reduce) { .orbit,.drift { animation:none; } }
+  </style><g transform="translate(3 3)" color="#E45464" stroke="currentColor" fill="none"><circle cx="32" cy="32" r="30" stroke-width="3.3"/>
+    <g class="orbit">
+      <circle cx="35.18" cy="35.18" r="18.5" stroke-width="3"/>
+      <g class="drift">
+        <circle cx="38.72" cy="38.72" r="8.5" stroke-width="2.6"/>
+        <circle cx="41.02" cy="41.02" r="2.8" fill="currentColor" stroke="none"/>
+      </g>
+    </g></g></svg>

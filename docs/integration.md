@@ -141,3 +141,31 @@ Expiry is exactly 24 hours from issuance, with no grace period. A valid historic
 - Schedule settlement retries and launch ingestion; monitor pending rows and failed jobs. A failed factory log/metadata RPC read leaves the ingestion window uncommitted, so retry it. Unsupported candidates remain unobserved. Oversize metadata fails the window closed and may require operator investigation; it is never silently certified.
 - EVM recovery without a stored hash searches approximately 24 hours of Base logs. Older external submissions need operator reconciliation. A webhook delivery failure after a committed payment cannot undo credit.
 - Validate locally with `npm test`, `npm run typecheck`, `npm run build`, and dashboard `npm run test:postgres`. The last command requires local PostgreSQL tools, creates a disposable cluster on loopback, and destroys it afterward; it never uses deployment credentials. Chain transport is simulated in tests—no live payment smoke test or deployment is included.
+
+### Compact Drift badge and refresh
+
+Embed the live logo beside the token and link it to its attestation:
+
+```html
+<a href="https://dashboard.agentwormhole.com/t/4663/TOKEN_ADDRESS">
+  <img src="https://dashboard.agentwormhole.com/api/badge/token/4663/TOKEN_ADDRESS"
+       width="28" height="28" alt="AgentWormhole attestation">
+</a>
+```
+
+The transparent SVG has no visible text. Green represents current evidence with no
+findings, amber a recorded metadata change, red findings, and grey unavailable
+current evidence. Recorded findings stay red after expiry. The linked page explains
+the state; agents must use the JSON endpoint and verify evidence instead of trusting
+a color. Animation respects reduced-motion preferences; add `?motion=off` for a
+static image.
+
+An observed token's badge, verdict or attestation-page read requests background
+refresh after 20 hours. Scheduled ingestion prioritizes scans older than 16 hours
+with observed activity in the previous 24 hours. Both are best-effort: limits,
+10-minute claim backoff and chain availability can defer work. The triggering
+response still contains the existing evidence; no renewal before expiry is promised.
+Grey badges cache for 60 seconds; other states up to 300 seconds, with green and
+amber capped at attestation expiry. Use a paid on-demand scan for a synchronous
+fresh observation. With a funded API key, send the bearer key alone for subsequent
+scans; attaching another payment also deposits that payment as credit.

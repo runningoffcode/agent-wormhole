@@ -36,18 +36,35 @@ runs:
       run: |
         set -o pipefail   # `tee` must not swallow a nonzero scan exit code
 
-        # The scanner lives in the action's own checkout; the tree being
-        # scanned is the caller's workspace. Keep those separate, or the
-        # action scans itself and passes on everything.
-        export PYTHONPATH="${{ github.action_path }}:${PYTHONPATH:-}"
+        # AW-30. The scanner lives in the action's own checkout; the tree
+        # being scanned is the caller's workspace. Keeping those separate is
+        # the whole game, and the previous approach did not.
+        #
+        # `python3 -m wormhole` inserts the CWD at sys.path[0], AHEAD of every
+        # PYTHONPATH entry. With working-directory set to the caller's
+        # workspace, a `wormhole/` package or a `wormhole.py` file at the
+        # scanned repo's root won the import and its top-level code ran — as
+        # the runner user, in every consumer's CI, from one file in an
+        # unreviewed pull request. The stub then exits 0, so the security gate
+        # reports GREEN on the very PR carrying the payload. Reproduced.
+        #
+        # Two changes, either of which alone would close it:
+        #   1. run from the ACTION's directory, not the caller's, so sys.path[0]
+        #      is ours;
+        #   2. invoke the module by its file path rather than by -m, so the
+        #      import is not resolved by name at all.
+        # The target is passed as an argument, which is all it ever needed to be.
         TARGET="$(cd "$GITHUB_WORKSPACE" && cd "${{ inputs.path }}" && pwd)"
 
         ARGS="$TARGET --fail-on ${{ inputs.fail-on }} --no-color"
         [ "${{ inputs.local-only }}" = "true" ] && ARGS="$ARGS --local-only"
         [ "${{ inputs.blast-radius }}" = "true" ] && ARGS="$ARGS --blast-radius"
 
+        # Run from the ACTION's own directory, so the CWD that python puts at
+        # sys.path[0] is ours and not the caller's. `-m` is kept because the
+        # package uses relative imports and cannot be invoked by file path.
         python3 -m wormhole scan $ARGS 2>&1 | tee "$RUNNER_TEMP/wormhole.txt"
-      working-directory: ${{ github.workspace }}
+      working-directory: ${{ github.action_path }}
 
     - name: Summary
       if: always()

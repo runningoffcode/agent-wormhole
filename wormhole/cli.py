@@ -61,12 +61,25 @@ def gather(root: Path, include_global: bool = True, *,
     # it -- nothing is being injected, the framework is obeying its config.
     findings.extend(autostart.scan(root))
 
+    # AW-31. The SCANNED REPOSITORY'S OWN .claude files used to sit inside the
+    # `include_global` block, so `--local-only` — the action's DEFAULT, and
+    # described as skipping "global settings/MCP/skill checks" — also skipped
+    # the repo's committed config. A repository granting Bash(*) scanned clean
+    # and exited 0, while --blast-radius still printed "no unrestricted
+    # execution grant found": a capability verdict computed with the
+    # capability checks disabled.
+    #
+    # The repo's own config is exactly what CI is for, so it is always
+    # scanned. Only the user's HOME directory is gated by the flag.
+    for settings in (root / ".claude/settings.json",
+                     root / ".claude/settings.local.json"):
+        if settings.is_file():
+            findings.extend(check_permissions(settings))
+
     if include_global:
         home = Path.home()
         for settings in (home / ".claude/settings.json",
-                         home / ".claude/settings.local.json",
-                         root / ".claude/settings.json",
-                         root / ".claude/settings.local.json"):
+                         home / ".claude/settings.local.json"):
             if settings.is_file():
                 findings.extend(check_permissions(settings))
         cj = home / ".claude.json"

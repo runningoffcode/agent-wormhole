@@ -1035,3 +1035,81 @@ describe("ATA creates are checked, not counted (AW-12)", () => {
     expect(v.findings.some((f) => f.code === "X402-007")).toBe(true);
   });
 });
+
+/**
+ * AW-67. `check` serialised the caller's object and the wallet was then
+ * invoked with THAT OBJECT, so nothing bound the inspected bytes to the signed
+ * ones. A `serialize()` or `message` getter returning clean content on the
+ * guard's read and hostile content on the wallet's read is signed unchecked.
+ *
+ * Reproduced: the guard allowed a 1 USDC payment to the merchant while the
+ * wallet signed 999 USDC to the attacker's ATA.
+ */
+describe("guardSigner signs the bytes it inspected (AW-67)", () => {
+  const evilTx = () =>
+    VersionedTransaction.deserialize(build([payment(attackerAta, 999_000_000n)]));
+  const goodTx = () =>
+    VersionedTransaction.deserialize(build([payment(merchantAta, 1_000_000n)]));
+
+  it("a transaction that changes between reads is signed as inspected", () => {
+    const good = goodTx();
+    const evil = evilTx();
+    let reads = 0;
+    const trojan = {
+      serialize() {
+        reads += 1;
+        return reads === 1 ? good.serialize() : evil.serialize();
+      },
+      signatures: [],
+    };
+
+    let signed: Uint8Array | null = null;
+    const wallet = {
+      signTransaction: async (t: any) => {
+        signed = t.serialize();
+        return t;
+      },
+    };
+    const guarded = guardSigner(wallet as any, () => quote) as any;
+    return guarded.signTransaction(trojan).then(() => {
+      // The wallet must have received the checked transaction, not the
+      // second read.
+      expect(Buffer.from(signed!).equals(Buffer.from(good.serialize()))).toBe(true);
+    });
+  });
+
+  it("an honest caller's transaction reaches the wallet byte-identical", async () => {
+    const tx = goodTx();
+    let seen: any = null;
+    const wallet = { signTransaction: async (t: any) => ((seen = t), t) };
+    await (guardSigner(wallet as any, () => quote) as any).signTransaction(tx);
+    expect(
+      Buffer.from(seen.serialize()).equals(Buffer.from(tx.serialize())),
+    ).toBe(true);
+  });
+
+  it("a partially signed transaction keeps its existing signature", async () => {
+    // The regression this fix could plausibly cause: rebuilding from bytes
+    // must not discard a co-signer's work.
+    const tx = goodTx();
+    tx.sign([payer]);
+    const before = Buffer.from(tx.signatures[0]).toString("hex");
+    let seen: any = null;
+    const wallet = { signTransaction: async (t: any) => ((seen = t), t) };
+    await (guardSigner(wallet as any, () => quote) as any).signTransaction(tx);
+    expect(Buffer.from(seen.signatures[0]).toString("hex")).toBe(before);
+  });
+
+  it("the batch path rebuilds every transaction", async () => {
+    let received: any[] = [];
+    const wallet = {
+      signAllTransactions: async (txs: any[]) => ((received = txs), txs),
+    };
+    await (guardSigner(wallet as any, () => quote) as any).signAllTransactions([
+      goodTx(),
+      goodTx(),
+    ]);
+    expect(received).toHaveLength(2);
+    expect(received.every((t) => t instanceof VersionedTransaction)).toBe(true);
+  });
+});

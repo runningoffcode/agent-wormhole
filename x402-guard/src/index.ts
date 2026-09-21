@@ -849,7 +849,7 @@ export function guardSigner<T extends { signTransaction: Function }>(
 ): T {
   const allowed = new Set(opts.allow ?? []);
 
-  const check = (tx: VersionedTransaction, method: string) => {
+  const check = (tx: VersionedTransaction, method: string): Uint8Array => {
     const quote = getQuote();
     if (!quote) {
       throw new Error(
@@ -878,6 +878,9 @@ export function guardSigner<T extends { signTransaction: Function }>(
           (verdict.reason ?? detail),
       );
     }
+    // AW-67. The bytes that were INSPECTED, handed back so the caller signs
+    // exactly these. See guardFn.
+    return serialized;
   };
 
   /**
@@ -910,14 +913,47 @@ export function guardSigner<T extends { signTransaction: Function }>(
       return fn.apply(self, [first, ...rest]);
     };
 
+  /**
+   * Rebuild a transaction from the bytes that were actually checked.
+   *
+   * AW-67. `check` serialised the caller's object and the wallet was then
+   * invoked with THAT OBJECT, so nothing bound the inspected bytes to the
+   * signed ones. A `message` getter that returns clean content on the guard's
+   * read and hostile content on the wallet's read is signed unchecked:
+   * reproduced here, the guard allowed a 1 USDC payment to the merchant and
+   * the wallet signed 999 USDC to the attacker's ATA.
+   *
+   * Signing the reconstruction closes the window — there is no second read to
+   * differ, because the bytes are the ones the verdict was computed over.
+   */
+  const rebind = (bytes: Uint8Array, method: string): VersionedTransaction => {
+    try {
+      return VersionedTransaction.deserialize(bytes);
+    } catch {
+      throw new Error(
+        `x402-guard: refusing to sign via ${method}() — the inspected bytes ` +
+          "could not be rebuilt into a transaction, so what the wallet would " +
+          "sign cannot be proven identical to what was checked.",
+      );
+    }
+  };
+
   const guardFn = (fn: Function, method: string, self: unknown) =>
     async (first: unknown, ...rest: unknown[]) => {
+      // The wallet receives the REBUILT transaction, never the caller's
+      // object: a guard that checks one thing and signs another is not a
+      // guard.
       if (Array.isArray(first)) {
-        for (const tx of first) check(tx as VersionedTransaction, method);
-      } else {
-        check(first as VersionedTransaction, method);
+        const rebuilt = first.map((tx) =>
+          rebind(check(tx as VersionedTransaction, method), method),
+        );
+        return fn.apply(self, [rebuilt, ...rest]);
       }
-      return fn.apply(self, [first, ...rest]);
+      const rebuilt = rebind(
+        check(first as VersionedTransaction, method),
+        method,
+      );
+      return fn.apply(self, [rebuilt, ...rest]);
     };
 
 

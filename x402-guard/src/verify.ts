@@ -140,6 +140,32 @@ export async function verify(
       // against a quote we already do not trust.
       return finalize("refuse", textVerdict.findings, req, ctx, null, null);
     }
+    if (textVerdict.decision === "abstain") {
+      // AW-33. This used to fall through, and `verify()` then minted and
+      // SIGNED a receipt attesting `allow` on a field the scanner had just
+      // said it could not read. Measured: 65,600 characters of filler ahead of
+      // an injection payload gave `inspectQuoteText: abstain`, `verify():
+      // allow`, receipt issued with codes ["X402-210"].
+      //
+      // `quotetext.ts` abstains there deliberately — its own comment records
+      // that padding a field ahead of the payload "was a working bypass that
+      // returned a green light on a field the scanner knew it had not read".
+      // Converting that into a signed allow is the same bypass one layer up,
+      // and the receipt makes it durable: a third party replaying it sees an
+      // attestation, not a gap.
+      //
+      // An abstain is not an allow anywhere else in this package, and it is
+      // not one here.
+      return {
+        decision: "abstain",
+        findings: [...findings, ...textVerdict.findings],
+        reason:
+          textVerdict.reason ??
+          "the quote text could not be fully scanned, so the quote is not " +
+            "something this verifier can attest — refusing to mint a receipt " +
+            "for a field it did not read",
+      };
+    }
     findings.push(...textVerdict.findings);
   }
 

@@ -84,6 +84,12 @@ credentials-adjacent configuration, and the contents of files your agent treats
 as instructions. So it sends none of it anywhere.
 
 - No account, no API token, no network call at any point.
+- No subprocess, either. An earlier version shelled out to `git status` inside
+  the tree being scanned, and `git status` honours that repository's own
+  `.git/config` — which made a file in a scanned repo able to run commands as
+  the operator. The git signal now comes from reading `.git/index` directly.
+  The grep below covers `subprocess` for that reason; it did not, which is how
+  the exec went unnoticed.
 - No dependencies beyond the Python standard library, so nothing is pulled in
   that could change this later.
 - The baseline and capture stores live in `~/.wormhole`, on your machine.
@@ -100,7 +106,7 @@ dependency-free Python:
 
 ```bash
 # No network client is imported anywhere. This prints nothing.
-grep -rnE "^\s*(import|from)\s+(socket|urllib|http|requests|aiohttp)" wormhole/
+grep -rnE "^\s*(import|from)\s+(socket|urllib|http|requests|aiohttp|subprocess|ctypes)" wormhole/
 ```
 
 ---

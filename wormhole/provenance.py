@@ -27,7 +27,6 @@ aware of *when* it happened so an unexpected one stands out.
 
 import json
 import os
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -131,17 +130,51 @@ def _attribute(path: Path, windows: list):
     return None
 
 
+def _git_dir(path: Path) -> Path | None:
+    """The .git directory governing `path`, or None if it is not in a repo."""
+    for parent in [path.parent, *path.parent.parents]:
+        candidate = parent / ".git"
+        if candidate.is_dir():
+            return candidate
+        if candidate.is_file():
+            # A worktree or submodule points elsewhere. Not worth following
+            # for a cosmetic signal; treat it as "no answer".
+            return None
+    return None
+
+
 def _git_unstaged(path: Path) -> bool:
-    """True when the file is tracked and modified but not staged."""
+    """True when the file looks modified more recently than git's index.
+
+    AW-28. This used to shell out to `git status --porcelain` with `cwd` inside
+    the SCANNED TREE, and `git status` honours that repository's own
+    `.git/config`. `core.fsmonitor` is a hook command git runs on every status
+    and it accepts a bare shell string, so a `.git/config` in any tree this
+    tool was pointed at achieved arbitrary code execution as the operator —
+    triggered by the exact command the remediation text tells them to run
+    ("Then run `wormhole verify` to confirm no config was written").
+
+    `.git/config` is the one file neither hashed by `baseline` nor chmodded by
+    `harden`, so an agent that can only write files got command execution as
+    the human. Reproduced: `core.fsmonitor` set to a marker-writing command
+    ran on the next describe().
+
+    So this no longer executes git at all. It compares the file's mtime to the
+    index's, which is a weaker signal and an honest one: it answers "has this
+    been touched since git last recorded it?" rather than "is it dirty?". The
+    result decorates one sentence of finding text, and a cosmetic signal is
+    not worth an exec against attacker-authored config.
+    """
     try:
-        out = subprocess.run(
-            ["git", "status", "--porcelain", "--", str(path)],
-            cwd=str(path.parent), capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
+        git_dir = _git_dir(path)
+        if git_dir is None:
+            return False
+        index = git_dir / "index"
+        if not index.is_file() or not path.is_file():
+            return False
+        return path.stat().st_mtime > index.stat().st_mtime
+    except OSError:
         return False
-    line = (out.stdout or "").strip()
-    # " M path" = modified, unstaged. "?? path" = untracked.
-    return line.startswith(" M") or line.startswith("??")
 
 
 def describe(path: Path, windows=None) -> dict:

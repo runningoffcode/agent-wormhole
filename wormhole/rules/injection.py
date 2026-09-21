@@ -436,7 +436,7 @@ IMPERATIVE_ADDRESS = re.compile(
 )
 
 
-def _is_descriptive(text: str, pos: int, window: int = 320) -> bool:
+def _is_descriptive(text: str, pos: int, window: int = 320, end: int | None = None) -> bool:
     """True when the surrounding prose reads as describing an attack.
 
     Suppression requires one of three things, never a bare keyword:
@@ -461,13 +461,98 @@ def _is_descriptive(text: str, pos: int, window: int = 320) -> bool:
     hi = min(len(text), pos + window)
     frame = text[lo:hi]
 
+    # AW-27. Attribution now has to fall in the SAME SENTENCE as the match.
+    #
+    # The window was +/-320 characters and the attribution was never bound to
+    # the matched clause, so the attacker put the attribution in a neighbouring
+    # decoy sentence and left the payload byte-identical. Six rules consult
+    # this as a hard suppressor rather than a demoter, so one prepended
+    # sentence turned a deny into no output at all -- no findings, no warning,
+    # no log line. Measured against this repo's own corpus: 6 of 17 malicious
+    # fixtures were fully silenced by "Researchers have documented this
+    # pattern." or "This is a test case."
+    #
+    # The docstring above already had the right principle -- "topic vocabulary
+    # alone is not enough... one word an attacker appends" -- and the window
+    # was how the same trick came back in. A frame only describes the text it
+    # is actually attached to. Honest security writing puts the attribution and
+    # the quoted attack in one sentence ("attackers may tell the model to copy
+    # this into every file"); the decoy cannot, because the payload has to stay
+    # operative to work.
+    # A match can SPAN sentences — WORM-001 pairs a self-reference with a
+    # propagation verb that may be a clause away, so the attribution can
+    # legitimately sit in any sentence the match covers. Check all of them,
+    # and only them: this is still the span the rule fired on, not a fixed
+    # window reaching into text the match never touched.
+    span_end = end if (end is not None and end > pos) else pos
+    sentence = text[
+        _sentence_start(text, pos, window) : _sentence_end(text, span_end, window)
+    ]
+
+    # Imperative address still overrides, and still over the wider window: a
+    # command to the reader anywhere nearby means this is not description.
     if IMPERATIVE_ADDRESS.search(frame):
         return False
-    if ATTRIBUTED_FRAME.search(frame):
+    if ATTRIBUTED_FRAME.search(sentence):
         return True
-    if PROHIBITIVE_FRAME.search(frame):
+    if PROHIBITIVE_FRAME.search(sentence):
         return True
-    return bool(TOPIC_VOCAB.search(frame) and DOC_STRUCTURE.search(frame))
+    # Topic vocabulary needs documentation structure to corroborate it, and
+    # that structure is a property of the surrounding document rather than of
+    # one clause -- a fenced block or a docs path legitimately sits outside the
+    # sentence. The vocabulary itself must still be local.
+    return bool(TOPIC_VOCAB.search(sentence) and DOC_STRUCTURE.search(frame))
+
+
+def _sentence_start(text: str, pos: int, window: int = 320) -> int:
+    lo = max(0, pos - window)
+    start = max(
+        text.rfind(". ", lo, pos), text.rfind(".\n", lo, pos),
+        text.rfind("! ", lo, pos), text.rfind("? ", lo, pos),
+        text.rfind("\n\n", lo, pos),
+    )
+    return lo if start < 0 else start + 1
+
+
+def _sentence_end(text: str, pos: int, window: int = 320) -> int:
+    hi = min(len(text), pos + window)
+    ends = [
+        i for i in (
+            text.find(". ", pos, hi), text.find(".\n", pos, hi),
+            text.find("! ", pos, hi), text.find("? ", pos, hi),
+            text.find("\n\n", pos, hi),
+        ) if i >= 0
+    ]
+    return min(ends) + 1 if ends else hi
+
+
+def _sentence_at(text: str, pos: int) -> str:
+    """The sentence containing `pos`.
+
+    Bounded so a document with no terminators does not hand back the whole
+    thing, which would restore the window this exists to replace.
+    """
+    lo = max(0, pos - 320)
+    hi = min(len(text), pos + 320)
+    # A BARE newline is not a sentence boundary: this prose is hard-wrapped, so
+    # splitting on it cut "Attackers try to make an agent\nignore all previous
+    # instructions" in half and lost the attribution that governs the match. A
+    # BLANK line is a boundary, because that is a paragraph.
+    start = max(
+        text.rfind(". ", lo, pos), text.rfind(".\n", lo, pos),
+        text.rfind("! ", lo, pos), text.rfind("? ", lo, pos),
+        text.rfind("\n\n", lo, pos),
+    )
+    start = lo if start < 0 else start + 1
+    ends = [
+        i for i in (
+            text.find(". ", pos, hi), text.find(".\n", pos, hi),
+            text.find("! ", pos, hi), text.find("? ", pos, hi),
+            text.find("\n\n", pos, hi),
+        ) if i >= 0
+    ]
+    end = min(ends) + 1 if ends else hi
+    return text[start:end]
 
 
 def _near(text: str, a: re.Pattern, b: re.Pattern, window: int = 240):
@@ -608,8 +693,20 @@ def scan_text(text: str, path: str = None, *,
     # destination that will be read again = a replication loop.
     for m in _near(text, SELF_REFERENCE, PROPAGATION_VERB, window=160):
         lo, hi = max(0, m.start() - 300), min(len(text), m.end() + 300)
-        if PROPAGATION_TARGET.search(text, lo, hi):
-            if _is_descriptive(text, m.start()):
+        target = PROPAGATION_TARGET.search(text, lo, hi)
+        if target:
+            # Suppression must see the SAME EVIDENCE the rule fired on. The
+            # self-reference, the verb and the target can sit in different
+            # sentences, so scoping suppression to the match alone asked a
+            # narrower question than the rule asked: "This project defends
+            # against prompt injection." matched here while the attribution
+            # governing it sat in the following sentence, and honest security
+            # documentation was refused.
+            if _is_descriptive(
+                text,
+                min(m.start(), target.start()),
+                end=max(m.end(), target.end()),
+            ):
                 continue
             add("WORM-001", "critical",
                 "Self-replicating instruction pattern",

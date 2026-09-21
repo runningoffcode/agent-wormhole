@@ -262,8 +262,65 @@ def restore(entry_id: str) -> dict:
         if not payload.is_file():
             return {"status": "payload_missing", "id": entry_id}
         target = Path(e["source_path"])
+
+        # AW-29. This used to be `shutil.copyfile(payload, target)`, which
+        # opens the destination with open(dst, 'wb') and therefore FOLLOWS a
+        # symlink. A textbook TOCTOU: the path is recorded at capture time and
+        # reopened later, so anything that can replace it with a link in
+        # between gets an arbitrary file overwrite — with fully
+        # attacker-authored content, since the payload IS the quarantined
+        # original, performed by the anti-worm tool's own undo command, which
+        # prints only the project path.
+        #
+        # Demonstrated: restore() replaced ~/.claude/settings.json with a
+        # SessionStart hook running a remote script, wiping the operator's own
+        # deny rules on the way past. That is verbatim the bug class
+        # SECURITY.md asks for — "a way to make the Wormhole write outside its
+        # intended path".
+        #
+        # harden.apply already refuses symlinks for exactly this reason, and
+        # every other writer in the package goes through _write_atomic, which
+        # os.replace()s and so REPLACES a link rather than writing through it.
+        # restore was the one exception. Three checks, cheapest first:
+        if target.is_symlink():
+            return {
+                "status": "refused_symlink",
+                "id": entry_id,
+                "path": str(target),
+                "reason": (
+                    "the recorded path is now a symlink; restoring would write "
+                    "through it to somewhere this tool never captured from"
+                ),
+            }
+        # A parent that is a link is the same hole one level up.
+        try:
+            if target.parent.exists() and target.parent.is_symlink():
+                return {
+                    "status": "refused_symlink",
+                    "id": entry_id,
+                    "path": str(target),
+                    "reason": "a parent of the recorded path is a symlink",
+                }
+        except OSError:
+            return {"status": "refused_symlink", "id": entry_id,
+                    "path": str(target), "reason": "path could not be resolved"}
+
+        # The payload must still be the file that was captured. A quarantined
+        # original is attacker-authored content; if the quarantine store has
+        # been tampered with, restoring is writing something new, not undoing.
+        expected = e.get("original_sha256")
+        if expected and sha256(payload) != expected:
+            return {
+                "status": "payload_tampered",
+                "id": entry_id,
+                "path": str(target),
+                "reason": "the quarantined payload no longer matches its recorded hash",
+            }
+
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(payload, target)
+        # os.replace() under the hood: replaces a link rather than following
+        # one, and lands the file atomically.
+        _write_atomic(target, payload.read_text(encoding="utf-8"))
         e["restored"] = True
         e["restored_at"] = _now()
         _save_index(entries)

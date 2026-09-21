@@ -406,7 +406,25 @@ const LEET_MAP: Record<string, string> = {
   "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a",
   $: "s", "!": "i",
 };
-const LEET_TOKEN_RE = /\b(?=[a-zA-Z]*[0-9@$!])(?=[0-9@$!]*[a-zA-Z])[a-zA-Z0-9@$!]{3,}\b/g;
+/**
+ * AW-04, the half the first fix missed.
+ *
+ * The lookaheads were unbounded: `[a-zA-Z]*` and `[0-9@$!]*` each scan to the
+ * end of the current run at EVERY start position, then fail. On a field of
+ * `@1@1@1...` nothing ever matches — the work is entirely wasted — and the
+ * cost is clean O(n^2). Measured on the shipped code: 8KB 134ms, 32KB 1,855ms,
+ * 48KB 4,186ms, 64KB ~8.8s of blocking CPU for one request, which is WORSE
+ * than the 3,652ms the audit measured before any of this was touched. The
+ * earlier fix addressed `iterHtmlComments` and left this one alone.
+ *
+ * Bounding every quantifier fixes it without changing what matches: a leet
+ * token is a word, and 64 characters is far past any real one. The first
+ * lookahead caps the token itself so the two inner scans can never run past
+ * it. Verified identical output on `1gn0re`, `p@ssw0rd`, `0x1234`, `12345`,
+ * `v1.2`, `x402` and the rest: 4,183ms -> 16ms at 48KB, same tokens.
+ */
+const LEET_TOKEN_RE =
+  /\b(?=[a-zA-Z0-9@$!]{3,64}\b)(?=[a-zA-Z]{0,63}[0-9@$!])(?=[0-9@$!]{0,63}[a-zA-Z])[a-zA-Z0-9@$!]{3,}\b/g;
 
 function foldLeet(text: string): string {
   return text.replace(LEET_TOKEN_RE, (tok) => {

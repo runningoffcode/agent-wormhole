@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { verify, requestDigest } from "../src/verify.js";
+import {
+  Keypair,
+  PublicKey,
+  TransactionMessage,
+  VersionedTransaction,
+  ComputeBudgetProgram,
+} from "@solana/web3.js";
+import {
+  getAssociatedTokenAddressSync,
+  createTransferCheckedInstruction,
+} from "@solana/spl-token";
 
 /**
  * AW-08 and AW-09 — what a caller may change about its own verdict.
@@ -106,5 +117,104 @@ describe("AW-08 — the digest must cover what steered the verdict", () => {
     expect(() =>
       requestDigest({ ...base, options: { maxPriorityFeeLamports: 10n } } as never),
     ).not.toThrow();
+  });
+});
+
+/**
+ * AW-09, the fee half.
+ *
+ * The clock half was fixed and this one was not: the sanitiser validated the
+ * SHAPE of `maxPriorityFeeLamports` and never its VALUE, so a caller could
+ * hand themselves any ceiling they liked. Measured on a real v0 transaction
+ * carrying a 1.4 SOL priority fee: bare → `refuse [X402-010]`, which this
+ * package rates critical, and `{"maxPriorityFeeLamports":"99999999999999"}` →
+ * `allow` with zero findings.
+ *
+ * The fee is the one Solana field that drains the payer while the payment
+ * itself stays perfectly conforming, so the cap is a control rather than a
+ * preference — and a control the request can set is not a control.
+ */
+describe("the priority-fee cap cannot be raised by the request (AW-09)", () => {
+  const USDC = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+  const payer = Keypair.generate();
+  const merchant = Keypair.generate();
+  const ata = (o: any) => getAssociatedTokenAddressSync(USDC, o);
+  const quote = {
+    payTo: merchant.publicKey.toBase58(),
+    asset: USDC.toBase58(),
+    amount: "1000000",
+  };
+  const ctx = {
+    quoteProvenance: "merchant_signed" as const,
+    issuedAt: "2033-05-18T03:33:20.000Z",
+  };
+
+  const txWithFee = (microLamports: bigint) =>
+    Buffer.from(
+      new VersionedTransaction(
+        new TransactionMessage({
+          payerKey: payer.publicKey,
+          recentBlockhash: PublicKey.default.toBase58(),
+          instructions: [
+            ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+            ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+            createTransferCheckedInstruction(
+              ata(payer.publicKey), USDC, ata(merchant.publicKey),
+              payer.publicKey, 1_000_000n, 6,
+            ),
+          ],
+        }).compileToV0Message(),
+      ).serialize(),
+    ).toString("base64");
+
+  // 1.4M CU at 1e9 microLamports = 1.4 SOL.
+  const EXPENSIVE = txWithFee(1_000_000_000n);
+  const NORMAL = txWithFee(1_000n);
+
+  it("refuses a 1.4 SOL priority fee with no options", async () => {
+    const v = await verify(
+      { network: "solana", quote, payload: EXPENSIVE } as never, ctx,
+    );
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-010")).toBe(true);
+  });
+
+  for (const cap of ["99999999999999", "100000001"]) {
+    it(`still refuses when the request raises the cap to ${cap}`, async () => {
+      const v = await verify(
+        {
+          network: "solana", quote, payload: EXPENSIVE,
+          options: { maxPriorityFeeLamports: cap },
+        } as never,
+        ctx,
+      );
+      expect(v.decision).toBe("refuse");
+      // The original finding survives, AND the ignored option is reported.
+      expect(v.findings.some((f) => f.code === "X402-010")).toBe(true);
+      expect(v.findings.some((f) => f.code === "X402-011")).toBe(true);
+    });
+  }
+
+  it("lets a caller TIGHTEN the cap — that is their own money", async () => {
+    const v = await verify(
+      {
+        network: "solana", quote, payload: NORMAL,
+        options: { maxPriorityFeeLamports: "100" },
+      } as never,
+      ctx,
+    );
+    expect(v.decision).toBe("refuse");
+  });
+
+  it("and an in-range cap still allows an ordinary congestion fee", async () => {
+    const v = await verify(
+      {
+        network: "solana", quote, payload: NORMAL,
+        options: { maxPriorityFeeLamports: "50000000" },
+      } as never,
+      ctx,
+    );
+    expect(v.decision).toBe("allow");
+    expect(v.findings).toEqual([]);
   });
 });

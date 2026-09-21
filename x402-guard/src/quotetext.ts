@@ -1435,10 +1435,35 @@ const MULTI_TENANT_SUFFIXES: ReadonlySet<string> = new Set([
  * merchant free-form JSON, so "a host named under `extra`" is precisely
  * "a host the attacker chose to name in a field they control".
  */
-const STRUCTURAL_HOST_KEYS = new Set(["resource", "url", "iconurl", "endpoint"]);
+const STRUCTURAL_HOST_KEYS = new Set(["resource", "url", "iconurl"]);
+
+/**
+ * `endpoint` is NOT in that set, and the omission is the point.
+ *
+ * The x402 envelope has no `endpoint` field — it is a key the merchant chose
+ * to write, which is the definition of a key the attacker chose. An audit
+ * control made this decisive: with an exfiltration destination in the quote
+ * text, `accepts[0].endpoint = <attacker host>` returned `allow` with
+ * `findings: []`, while the same document naming an UNRELATED host in the same
+ * field returned `refuse [X402-203]`. That difference is the exemption being
+ * granted by the value the attacker supplied.
+ *
+ * `url` and `iconUrl` stay because the spec's extension blocks carry them, and
+ * they are read only in structural position.
+ */
 
 /** Envelope containers a structural key may legitimately sit inside. */
 const ENVELOPE_CONTAINERS = new Set(["accepts", "paymentrequirements", "quote"]);
+
+/**
+ * Containers that are merchant free-form even when reached structurally.
+ *
+ * `extra` is already excluded by falling out of structural position, but
+ * `outputSchema` and an extension's `info.input` describe the merchant's own
+ * payload shapes — they are documentation, not a declaration of identity, and
+ * a host named inside one is a host the merchant typed.
+ */
+const NEVER_STRUCTURAL = new Set(["extra", "outputschema", "input", "properties"]);
 
 /**
  * AW-14. The merchant's own document used to supply the trust context that
@@ -1494,7 +1519,9 @@ function collectOwnHosts(
       // container — leaves structural territory for good. Once inside
       // merchant-authored JSON, no key name earns an exemption.
       const stillStructural =
-        structural && (ENVELOPE_CONTAINERS.has(k) || /^\d+$/.test(k));
+        structural &&
+        !NEVER_STRUCTURAL.has(k) &&
+        (ENVELOPE_CONTAINERS.has(k) || /^\d+$/.test(k));
       collectOwnHosts(v, out, depth + 1, stillStructural);
     }
   }
@@ -1536,7 +1563,9 @@ function collectPayees(
       }
     } else {
       const stillStructural =
-        structural && (ENVELOPE_CONTAINERS.has(k) || /^\d+$/.test(k));
+        structural &&
+        !NEVER_STRUCTURAL.has(k) &&
+        (ENVELOPE_CONTAINERS.has(k) || /^\d+$/.test(k));
       collectPayees(v, out, depth + 1, stillStructural);
     }
   }
@@ -1675,7 +1704,30 @@ function scanOneView(text: string, ctx: ScanContext = {}): RuleHit[] {
       // merchant's own domain has exfiltrated to the merchant.
       if (ctx.ownHosts && ctx.ownHosts.size > 0) {
         const host = hostOf(dest[0]);
-        if (host && ctx.ownHosts.has(host)) continue;
+        if (host && ctx.ownHosts.has(host)) {
+          // AW-14. This used to `continue`, emitting NOTHING — an affirmative
+          // all-clear on a quote asking the agent to send its .env somewhere.
+          //
+          // The carve-out is right that a secrets manager necessarily
+          // describes sending a credential to its own endpoint, and blocking
+          // that refused a whole category of honest listings. But "the
+          // merchant is asking for your API key on the merchant's own domain"
+          // is still credential harvesting; it is just harvesting whose
+          // attribution is not in doubt. Silence removes the operator's only
+          // signal, so it reports at `high` and does not block.
+          hits.push({
+            code: "X402-203",
+            severity: "high",
+            message:
+              `quote text pairs a secret with a transmission verb and a ` +
+              `destination (${dest[0].slice(0, 60)}) on the merchant's own ` +
+              `declared host — reported, not blocking: the destination belongs ` +
+              `to the party you are already paying, but asking for a credential ` +
+              `is worth seeing either way`,
+            offset: pos,
+          });
+          break;
+        }
       }
       // Two destination shapes cannot be adjudicated by host comparison, and
       // blocking on them refused a whole category of honest listings:

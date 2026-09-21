@@ -112,6 +112,17 @@ export function laneFor(network: string): { lane: Lane | null; chainId: number |
  * an abstain gets a reason instead, because a receipt for "we could not tell"
  * is exactly the notary trap.
  */
+/**
+ * The most a REQUEST may raise the priority-fee cap to.
+ *
+ * The package default is 0.01 SOL (10,000,000 lamports). This ceiling is
+ * deliberately higher — some legitimate payers do pay real priority fees
+ * during congestion — but bounded, because an unbounded caller-supplied cap is
+ * not a cap at all. An operator who needs more sets it in their own call to
+ * `inspectPayment`, which is trusted code rather than a wire request.
+ */
+const MAX_CALLER_PRIORITY_FEE_LAMPORTS = 100_000_000n; // 0.1 SOL
+
 export async function verify(
   req: VerifyRequest,
   ctx: VerifyContext,
@@ -213,6 +224,34 @@ export async function verify(
           code: "X402-011",
           severity: "medium",
           message: `option ${k} is not a non-negative integer and was ignored`,
+        });
+        continue;
+      }
+      // AW-09, the fee half. The shape was validated and the VALUE never was,
+      // so a caller could hand themselves any ceiling they liked: a real v0
+      // transaction carrying a 1.4 SOL priority fee refuses with X402-010 —
+      // which this package rates critical — and allows with zero findings once
+      // the request carries `maxPriorityFeeLamports: "99999999999999"`.
+      //
+      // That is the same shape as the clock half fixed above: an option the
+      // attacker controls disarming the check it is checked against. The fee
+      // is the one Solana field that drains the payer while the payment itself
+      // stays perfectly conforming, so the cap is a control, not a preference.
+      //
+      // A caller may TIGHTEN the cap — that is their own money and a stricter
+      // answer is always safe. Loosening it past the operator's ceiling is
+      // refused and said out loud, rather than silently clamped, because a
+      // caller who asked for a weaker check and got a stronger one should know
+      // the answer they received is not the one they requested.
+      if (asBig > MAX_CALLER_PRIORITY_FEE_LAMPORTS) {
+        optionFindings.push({
+          code: "X402-011",
+          severity: "medium",
+          message:
+            `option ${k} (${asBig.toString()}) exceeds the ceiling this ` +
+            `verifier will accept from a request ` +
+            `(${MAX_CALLER_PRIORITY_FEE_LAMPORTS.toString()}) and was ignored — ` +
+            `a caller may tighten the priority-fee cap but never loosen it`,
         });
         continue;
       }

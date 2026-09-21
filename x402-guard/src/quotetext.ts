@@ -568,24 +568,59 @@ interface Layer {
  * appears in practice (base64 of base64 of the payload) and stops well short
  * of being weaponizable.
  */
-function peelLayers(text: string, maxDepth: number): Layer[] {
+const PEEL_WINDOW = 16384;
+
+/**
+ * AW-35. The decode window is a real budget — a 64KB field of hex would
+ * produce thousands of candidate tokens — but it used to be SILENT: 16,300
+ * characters of filler ahead of a base64 payload refused, and 16,384
+ * characters returned `allow` with `findings: []`, no truncation code, no
+ * abstain. The operator's only instrument said the field was clean when the
+ * decoder had simply stopped looking.
+ *
+ * The budget stays; the silence goes. `truncated` is set whenever a layer was
+ * longer than the window or hit the candidate cap, and the caller turns that
+ * into the same X402-210 + abstain the field cap already produces. "We did not
+ * look" and "we looked and it was fine" are different answers.
+ */
+function peelLayers(
+  text: string,
+  maxDepth: number,
+): { layers: Layer[]; truncated: boolean } {
   const layers: Layer[] = [];
   const seen = new Set<string>([text]);
   let frontier: Layer[] = [{ text }];
+  let truncated = false;
 
   for (let depth = 0; depth < maxDepth; depth++) {
     const next: Layer[] = [];
     for (const layer of frontier) {
       // Cap the search surface per layer; a 64KB field of hex would otherwise
       // produce thousands of candidate tokens.
-      const candidates: Array<[string, string]> = [];
-      for (const m of layer.text.slice(0, 16384).matchAll(BASE64_RE)) {
-        candidates.push([m[0], "base64"]);
-        if (candidates.length > 24) break;
+      // Only a truncation that actually HID something is a coverage gap.
+      // Ordinary prose past the window carries no decodable candidates, so
+      // reporting it would be noise — and a truncation notice operators learn
+      // to ignore is worse than none, because the real one looks identical.
+      if (layer.text.length > PEEL_WINDOW) {
+        const skipped = layer.text.slice(PEEL_WINDOW);
+        if (BASE64_RE.test(skipped) || HEX_RE.test(skipped)) truncated = true;
+        BASE64_RE.lastIndex = 0;
+        HEX_RE.lastIndex = 0;
       }
-      for (const m of layer.text.slice(0, 16384).matchAll(HEX_RE)) {
+      const candidates: Array<[string, string]> = [];
+      for (const m of layer.text.slice(0, PEEL_WINDOW).matchAll(BASE64_RE)) {
+        candidates.push([m[0], "base64"]);
+        if (candidates.length > 24) {
+          truncated = true;
+          break;
+        }
+      }
+      for (const m of layer.text.slice(0, PEEL_WINDOW).matchAll(HEX_RE)) {
         candidates.push([m[0], "hex"]);
-        if (candidates.length > 48) break;
+        if (candidates.length > 48) {
+          truncated = true;
+          break;
+        }
       }
       for (const [token, kind] of candidates) {
         const decoded = kind === "base64" ? decodeBase64(token) : decodeHex(token);
@@ -600,7 +635,7 @@ function peelLayers(text: string, maxDepth: number): Layer[] {
     if (next.length === 0) break;
     frontier = next;
   }
-  return layers;
+  return { layers, truncated };
 }
 
 // --- ported rule patterns --------------------------------------------------
@@ -2259,7 +2294,25 @@ function scanFields(
     if (despaced !== normalized) views.push({ text: despaced, via: "despaced" });
 
     for (const base of [...views]) {
-      for (const layer of peelLayers(base.text, cfg.maxDecodeDepth)) {
+      const peeled = peelLayers(base.text, cfg.maxDecodeDepth);
+      // AW-35. A decode budget that stopped short used to say nothing at all.
+      // Report it the same way the field cap does, so "we did not look" is
+      // never rendered as "we looked and it was fine".
+      if (peeled.truncated && !truncated) {
+        truncated = true;
+        truncatedFields.push(field.path);
+        push({
+          code: "X402-210",
+          severity: "medium",
+          message:
+            `field is longer than the ${PEEL_WINDOW}-character decode window, ` +
+            `so encoded payloads past that point were not examined`,
+          field: field.path,
+          offset: PEEL_WINDOW,
+          excerpt: "",
+        });
+      }
+      for (const layer of peeled.layers) {
         views.push({
           text: layer.text,
           via: base.via ? `${base.via}+${layer.via}` : layer.via,

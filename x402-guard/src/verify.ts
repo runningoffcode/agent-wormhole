@@ -164,8 +164,26 @@ export async function verify(
   // caller-supplied request they are dropped outright rather than trusted.
   const rawOptions = (req.options ?? {}) as Record<string, unknown>;
   const optionFindings: Finding[] = [];
-  const safeOptions: Record<string, unknown> = {};
+  // A NULL PROTOTYPE, deliberately. My first version of this sanitiser used a
+  // plain object literal, and `safeOptions[k] = v` for k === "__proto__"
+  // invokes the Object.prototype setter rather than creating an own key: the
+  // attacker's object becomes the prototype, and safeOptions.nowSeconds /
+  // .maxPriorityFeeLamports then read back THEIR values through the chain.
+  // Zero findings are emitted, so the bypass is silent and restores exactly
+  // the caller control of the clock and the critical X402-010 fee cap that
+  // this function exists to remove. Verified: 0 findings, nowSeconds
+  // 9999999999, cap "99999999999999".
+  const safeOptions: Record<string, unknown> = Object.create(null);
   for (const [k, v] of Object.entries(rawOptions)) {
+    // Explicit, so the drop is visible rather than merely harmless.
+    if (k === "__proto__" || k === "constructor" || k === "prototype") {
+      optionFindings.push({
+        code: "X402-011",
+        severity: "medium",
+        message: `option ${k} was ignored: it cannot name a verifier option`,
+      });
+      continue;
+    }
     if (k === "nowSeconds" || k === "clockSkewSeconds") {
       // A REQUEST must not be able to move the clock its own verdict is
       // judged against. These remain available to direct callers of

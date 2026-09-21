@@ -264,8 +264,17 @@ function toBigIntOption(v: unknown): bigint | undefined {
 
 /** Shape caller options for the lanes: bigints revived, session nonces added. */
 function shapeOptions(raw: unknown): Record<string, unknown> {
-  const opts: Record<string, unknown> =
-    raw !== null && typeof raw === "object" ? { ...(raw as object) } : {};
+  // Null prototype and own-keys-only, for the same reason as verify.ts: a
+  // spread into a plain object lets a "__proto__" key pollute the prototype
+  // instead of becoming an own key, after which `k in opts` reads the
+  // ATTACKER's value through the chain and the coercion below never runs.
+  const opts: Record<string, unknown> = Object.create(null);
+  if (raw !== null && typeof raw === "object") {
+    for (const [k, v] of Object.entries(raw as object)) {
+      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+      opts[k] = v;
+    }
+  }
   for (const k of ["maxPriorityFeeLamports", "nowSeconds", "clockSkewSeconds"]) {
     if (k in opts) {
       const b = toBigIntOption(opts[k]);

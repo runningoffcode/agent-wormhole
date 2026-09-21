@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .hookcmd import hook_base as _hook_base, fail_closed as _fail_closed
 from . import guard, harden, init, outbound, provenance, readguard
 from .baseline import record, verify, BASELINE_FILE
 from .rules.injection import scan_text, FindingList
@@ -500,9 +501,11 @@ def main(argv=None):
 
     if args.cmd == "init":
         skills = not args.no_skills
-        hook_cmd = "python3 -m wormhole guard --hook"
+        hook_cmd = f"{_hook_base()} guard --hook"
         if args.block:
-            hook_cmd += " --block"
+            # Only the blocking hook is wrapped: a startup failure must deny
+            # rather than present as the silence that means "no objection".
+            hook_cmd = _fail_closed(hook_cmd + " --block")
         hook = {"hooks": {"PreToolUse": [{
             "matcher": "Write|Edit|MultiEdit",
             "hooks": [{"type": "command", "command": hook_cmd}]}]}}
@@ -584,7 +587,7 @@ def main(argv=None):
             return readguard.run_hook(redact_mode=args.redact)
 
         if args.install:
-            post = "python3 -m wormhole readguard --hook"
+            post = f"{_hook_base()} readguard --hook"
             if args.redact:
                 post += " --redact"
             block = {"hooks": {
@@ -593,7 +596,7 @@ def main(argv=None):
                     "hooks": [{"type": "command", "command": post}]}],
                 "InstructionsLoaded": [{
                     "hooks": [{"type": "command",
-                               "command": "python3 -m wormhole readguard "
+                               "command": f"{_hook_base()} readguard "
                                           "--instructions"}]}],
             }}
             mode = "redact" if args.redact else "annotate"
@@ -727,9 +730,9 @@ def main(argv=None):
             return guard.run_hook(block=args.block)
 
         if args.install:
-            cmd = "python3 -m wormhole guard --hook"
+            cmd = f"{_hook_base()} guard --hook"
             if args.block:
-                cmd += " --block"
+                cmd = _fail_closed(cmd + " --block")
             block = {
                 "hooks": {
                     "PreToolUse": [{

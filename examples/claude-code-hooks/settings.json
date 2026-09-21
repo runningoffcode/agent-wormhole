@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m wormhole guard --hook --block"
+            "command": "out=$(wormhole guard --hook --block 2>/dev/null); rc=$?; if [ -n \"$out\" ]; then printf %s \"$out\"; exit $rc; fi; if [ $rc -eq 0 ] || [ $rc -eq 2 ]; then exit $rc; fi; printf %s '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"wormhole-guard could not run (the hook command failed to start). Refusing the tool call rather than allowing it unchecked \\u2014 a guard that cannot run is not a guard that approves. Fix the hook command, or remove the hook if you meant to disable it.\"}}'"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m wormhole outbound --hook"
+            "command": "wormhole outbound --hook"
           }
         ]
       }
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m wormhole readguard --hook"
+            "command": "wormhole readguard --hook"
           }
         ]
       }
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m wormhole readguard --instructions"
+            "command": "wormhole readguard --instructions"
           }
         ]
       }

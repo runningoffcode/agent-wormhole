@@ -47,6 +47,19 @@ rather than printing noise.
 nothing writes it for you — a security tool that edits your agent's
 configuration unprompted is the thing it is supposed to prevent.
 
+The command is the `wormhole` console script, which `pipx install
+wormhole-guard` and `pip install wormhole-guard` both put on PATH. It is
+resolved when you run `--install`, not baked in: an earlier version hardcoded
+`python3 -m wormhole`, which does not work under the documented pipx install
+because pipx deliberately isolates the package from the system interpreter.
+That failed in the worst possible way — the hook exited 1 with empty stdout,
+and empty stdout is the allow signal, so the guard was silently inert.
+
+For the same reason, `--block` wraps the command so that a hook which **cannot
+start** emits a deny rather than nothing. A guard that cannot run is not a
+guard that approves. If you ever see that message, the hook command is wrong —
+fix it, or remove the hook if you meant to turn it off.
+
 `wormhole guard --install --block`:
 
 ```json
@@ -58,7 +71,7 @@ configuration unprompted is the thing it is supposed to prevent.
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m wormhole guard --hook --block"
+            "command": "wormhole guard --hook --block"
           }
         ]
       }
@@ -79,7 +92,7 @@ tools return, and `InstructionsLoaded` for instruction files as they are read:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m wormhole readguard --hook"
+            "command": "wormhole readguard --hook"
           }
         ]
       }
@@ -89,7 +102,7 @@ tools return, and `InstructionsLoaded` for instruction files as they are read:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m wormhole readguard --instructions"
+            "command": "wormhole readguard --instructions"
           }
         ]
       }
@@ -109,7 +122,7 @@ tools return, and `InstructionsLoaded` for instruction files as they are read:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -m wormhole outbound --hook"
+            "command": "wormhole outbound --hook"
           }
         ]
       }

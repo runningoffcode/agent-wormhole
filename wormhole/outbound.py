@@ -30,6 +30,7 @@ import json
 import sys
 from pathlib import Path
 
+from .hookcmd import hook_base
 from .rules.injection import scan_text
 from .scanners.runtime import _looks_like_source_code
 
@@ -155,7 +156,7 @@ def run_hook(stream=None, out=None, warn_only: bool = False) -> int:
 
 def install_block(warn_only: bool = False) -> dict:
     """The settings.json fragment that registers this hook."""
-    cmd = "python3 -m wormhole outbound --hook"
+    cmd = f"{hook_base()} outbound --hook"
     if warn_only:
         cmd += " --warn"
     return {"hooks": {"PreToolUse": [{

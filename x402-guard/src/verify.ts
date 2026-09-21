@@ -358,11 +358,22 @@ export function requestDigest(req: VerifyRequest): string {
   const canonicalOptions = (() => {
     const o = req.options as Record<string, unknown> | undefined;
     if (!o || typeof o !== "object") return null;
-    const keys = Object.keys(o).sort();
-    if (keys.length === 0) return null;
+    // Only the options that can actually STEER the verdict. My first version
+    // hashed the raw object, which had it backwards in both directions: two
+    // byte-identical verdicts got different digests because one carried a
+    // nowSeconds the verifier had already discarded, and a key the verifier
+    // ignores could fork the digest of an otherwise identical request.
+    //
+    // The digest answers "is it this exact request?", so it must cover
+    // exactly what the answer depends on — no more, no less.
+    const STEERING = ["expectedPayer", "maxPriorityFeeLamports"];
     const out: Record<string, unknown> = {};
-    for (const k of keys) out[k] = typeof o[k] === "bigint" ? String(o[k]) : o[k];
-    return out;
+    for (const k of STEERING.slice().sort()) {
+      if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
+      const v = o[k];
+      out[k] = typeof v === "bigint" ? String(v) : v;
+    }
+    return Object.keys(out).length > 0 ? out : null;
   })();
 
   const canonical = JSON.stringify({

@@ -46,6 +46,7 @@
  * pass-through — and the log makes the unmapped shape visible immediately.
  */
 
+import { StringDecoder } from "node:string_decoder";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import {
   McpGuard,
@@ -486,6 +487,12 @@ export function createProxyServer(opts: ProxyOptions): Server {
           // stream — but each SSE `data:` line is now parsed as it passes and
           // the same inspection runs on it.
           res.writeHead(upstream.status, outHeaders);
+          // A StringDecoder, not bytes.toString(): a multi-byte UTF-8
+          // character split across two TCP chunks decodes to replacement
+          // characters if each chunk is converted independently, which
+          // corrupts the JSON and makes the inspection silently miss the
+          // message. The decoder holds the partial sequence across chunks.
+          const sseDecoder = new StringDecoder("utf8");
           let sseBuffer = "";
           const inspectSseLine = (line: string) => {
             if (!line.startsWith("data:")) return;
@@ -508,7 +515,7 @@ export function createProxyServer(opts: ProxyOptions): Server {
               const bytes = Buffer.from(value);
               res.write(bytes);
               // Parse a COPY of the stream; never hold the relay on it.
-              sseBuffer += bytes.toString("utf8");
+              sseBuffer += sseDecoder.write(bytes);
               let nl: number;
               while ((nl = sseBuffer.indexOf("\n")) >= 0) {
                 inspectSseLine(sseBuffer.slice(0, nl).trim());
@@ -518,6 +525,7 @@ export function createProxyServer(opts: ProxyOptions): Server {
               if (sseBuffer.length > 1_000_000) sseBuffer = "";
             }
           }
+          sseBuffer += sseDecoder.end();
           if (sseBuffer.trim()) inspectSseLine(sseBuffer.trim());
           res.end();
           return;

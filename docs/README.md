@@ -12,7 +12,7 @@ Long-form material that used to live in the README. The
 | [Hooks](hooks.md) | `guard` / `readguard` / `outbound` in depth — install JSON, real output, the inbound/outbound asymmetry, `harden` |
 | [Scanning](scanning.md) | `scan`, `memos`, `handoffs`, `corpus`, `capture`, `insights`, baselines, CI and SARIF, the MCP server |
 | [x402](x402.md) | The payment guard: Solana, EVM, quote text, verdicts and what `abstain` does not mean |
-| [Arc](arc.md) | Arc Testnet (verified) and mainnet (explicit only): task-bound payments through a server-side signer, ERC-8004 scans, ERC-8183 funding and release, sealed private delivery, refusal codes |
+| [Arc](arc.md) | **PAUSED** — the hosted Arc signing layer is disabled while the authorization boundary is re-reviewed; Arc payment *verification* is unaffected. Documented shape: task-bound payments through a server-side signer, ERC-8004 scans, ERC-8183 funding and release, sealed private delivery, refusal codes |
 | [Limits](limits.md) | No warranty, no telemetry, what this tool does not do, supported config formats |
 
 ## Runnable examples

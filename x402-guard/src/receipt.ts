@@ -22,7 +22,7 @@
  * Ed25519 because the curve hashes the message internally.
  */
 
-import { verify as edVerify } from "node:crypto";
+import { createPublicKey, verify as edVerify } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import {
   canonicalReceipt,
@@ -30,6 +30,27 @@ import {
   type Receipt,
   type VerifyRequest,
 } from "./verify.js";
+
+/** An ed25519 signature is exactly this long. Anything else is not one. */
+const ED25519_SIGNATURE_BYTES = 64;
+
+/**
+ * The only keys `canonicalReceipt` signs. Anything else on a receipt object is
+ * outside the signature, so a receipt carrying one is not the object that was
+ * signed. Kept in lockstep with `canonicalReceipt` — if that gains a field,
+ * this must gain it too, or genuine receipts start failing.
+ */
+const SIGNED_RECEIPT_KEYS: ReadonlySet<string> = new Set([
+  "v",
+  "decision",
+  "codes",
+  "amount_bucket",
+  "chain_id",
+  "lane",
+  "quote_provenance",
+  "request_digest",
+  "issued_at",
+]);
 
 /** Result of an authenticity check. `reason` is set only when `valid` is false. */
 export interface ReceiptCheck {
@@ -39,6 +60,57 @@ export interface ReceiptCheck {
 
 /** A public key accepted for verification: a PEM string or a node KeyObject. */
 export type PublicKeyInput = string | KeyObject;
+
+/**
+ * Parse the published wire format of a verifier key into a usable KeyObject.
+ *
+ * The hosted verifier publishes its key at `GET <base>/v1/key` as
+ * `{"algorithm":"ed25519","format":"spki-der-base64","public_key":"MCowBQYDK2Vw..."}`.
+ * That is base64 of SPKI DER, NOT PEM, and `createPublicKey` will not take it
+ * directly. Without this helper every consumer hand-writes the PEM armouring,
+ * and the ones who get it wrong reach for the opt-out instead — which is how a
+ * verification control quietly stops being used.
+ *
+ * Throws on anything that is not an ed25519 public key. That is deliberate: a
+ * key that cannot be parsed must fail loudly at configuration time, not turn
+ * into a silent "cannot verify" at payment time.
+ */
+export function publicKeyFromSpkiBase64(base64: string): KeyObject {
+  if (typeof base64 !== "string" || base64.trim().length === 0) {
+    throw new Error("verifier public key is empty");
+  }
+  const der = Buffer.from(base64.trim(), "base64");
+  if (der.length === 0) {
+    throw new Error("verifier public key is not valid base64");
+  }
+  const key = createPublicKey({ key: der, format: "der", type: "spki" });
+  if (key.type !== "public") {
+    throw new Error("verifier key is not a public key");
+  }
+  if (key.asymmetricKeyType !== "ed25519") {
+    throw new Error(
+      `verifier public key is ${String(key.asymmetricKeyType)}, not ed25519 — ` +
+        "this package verifies ed25519 receipt signatures only",
+    );
+  }
+  return key;
+}
+
+/**
+ * Read a PEM string as a key WITHOUT silently deriving a public key from a
+ * private one.
+ *
+ * `createPublicKey` accepts a private PEM and hands back its public half, which
+ * is exactly the behaviour that let a pasted signing key verify. Parsing as a
+ * public key only means a private PEM lands in the catch and is reported as
+ * what it is.
+ */
+function createPublicKeyFromPem(pem: string): KeyObject {
+  if (/PRIVATE KEY/.test(pem)) {
+    throw new Error("a PRIVATE key was supplied where the public key belongs");
+  }
+  return createPublicKey(pem);
+}
 
 /**
  * Verify a receipt's ed25519 signature against a published public key, offline.
@@ -59,24 +131,54 @@ export function verifyReceipt(
   signatureBase64: string,
   publicKey: PublicKeyInput,
 ): ReceiptCheck {
-  if (!receipt || typeof receipt !== "object") {
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    // An Array with the receipt's keys set as properties canonicalises to a
+    // byte-identical string, so it verified. Nothing downstream expects an
+    // array, and a checker that accepts one accepts a shape its callers do not
+    // model.
     return { valid: false, reason: "receipt is not an object" };
   }
   if (receipt.v !== 1) {
     return { valid: false, reason: `unsupported receipt version ${String(receipt.v)}` };
   }
+  // `canonicalReceipt` serialises exactly nine keys, so any OTHER key rides
+  // along entirely unsigned — an attacker staples `policy:{spend_cap_waived:
+  // true}` or `operator_note:"kill switch disabled"` onto a genuine receipt,
+  // the signature still verifies, and a consumer that renders the receipt
+  // shows attacker text beside a verified stamp. "Valid" has to mean THIS
+  // OBJECT was signed, not that nine of its keys were.
+  for (const key of Object.keys(receipt)) {
+    if (!SIGNED_RECEIPT_KEYS.has(key)) {
+      return {
+        valid: false,
+        reason: `receipt carries an unsigned field "${key.slice(0, 40)}" — the ` +
+          "signature covers only the standard receipt fields",
+      };
+    }
+  }
   if (typeof signatureBase64 !== "string" || signatureBase64.length === 0) {
     return { valid: false, reason: "signature is missing or not a base64 string" };
   }
 
-  let signature: Buffer;
-  try {
-    signature = Buffer.from(signatureBase64, "base64");
-  } catch (err) {
-    return { valid: false, reason: `signature is not valid base64: ${message(err)}` };
+  // `Buffer.from(s, "base64")` SILENTLY DISCARDS every character outside the
+  // base64 alphabet, so it never throws and the catch below was dead code:
+  // `sig + "!!!!"`, `sig + "\n\n"` and a base64url-swapped `sig` all decoded to
+  // the same 64 bytes and verified. That makes the signature string a
+  // non-canonical identifier — any cache, dedupe or log keyed on it is
+  // bypassable by appending a newline. Reject the encoding itself, then check
+  // the length ed25519 actually has.
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(signatureBase64)) {
+    return {
+      valid: false,
+      reason: "signature is not canonical base64",
+    };
   }
-  if (signature.length === 0) {
-    return { valid: false, reason: "signature decoded to zero bytes" };
+  const signature = Buffer.from(signatureBase64, "base64");
+  if (signature.length !== ED25519_SIGNATURE_BYTES) {
+    return {
+      valid: false,
+      reason: `signature is ${signature.length} bytes, not ${ED25519_SIGNATURE_BYTES}`,
+    };
   }
 
   let canonical: string;
@@ -86,9 +188,43 @@ export function verifyReceipt(
     return { valid: false, reason: `could not canonicalize receipt: ${message(err)}` };
   }
 
+  // A key of type "private" verifies happily, because node derives the public
+  // half. An operator who pastes the signing key into the verifying slot then
+  // has a working checker and a leaked private key, and nothing tells them.
+  //
+  // My first version of this check guarded on `typeof publicKey === "object"`,
+  // which covered the KeyObject half of `PublicKeyInput` and left the STRING
+  // half — the PEM an operator is most likely to paste — completely
+  // unchecked, while the comment claimed the case was handled. Normalise both
+  // shapes to a KeyObject first, then ask the question once.
+  let key: KeyObject;
+  try {
+    key =
+      typeof publicKey === "string"
+        ? createPublicKeyFromPem(publicKey)
+        : (publicKey as KeyObject);
+  } catch (err) {
+    return { valid: false, reason: `verifying key could not be read: ${message(err)}` };
+  }
+  if (key === null || typeof key !== "object") {
+    return { valid: false, reason: "verifying key is not a key" };
+  }
+  if (key.type !== "public") {
+    return {
+      valid: false,
+      reason: `verifying key is a ${String(key.type)} key, not a public key`,
+    };
+  }
+  if (key.asymmetricKeyType !== "ed25519") {
+    return {
+      valid: false,
+      reason: `verifying key is ${String(key.asymmetricKeyType)}, not ed25519`,
+    };
+  }
+
   try {
     // Ed25519: algorithm MUST be null. createVerify() throws for Ed25519 keys.
-    const ok = edVerify(null, Buffer.from(canonical, "utf8"), publicKey, signature);
+    const ok = edVerify(null, Buffer.from(canonical, "utf8"), key, signature);
     return ok ? { valid: true } : { valid: false, reason: "signature does not verify" };
   } catch (err) {
     // A malformed key or wrong key type lands here — not a valid signature.

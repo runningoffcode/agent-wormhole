@@ -641,3 +641,264 @@ describe("x402 v1 and v2 envelope shapes", () => {
     expect(v.reason).toMatch(/accepted\.scheme/);
   });
 });
+
+/**
+ * AW-11 — the Solana wrapper was a four-name method allowlist over a Proxy.
+ *
+ * `SIGNING_METHODS` held four names and the `get` trap returned everything else
+ * untouched, so `sendTransaction` — the method a wallet-adapter agent reaches
+ * for most, and one that moves money without producing a detached signature —
+ * executed with no quote check at all. The inner `provider` was handed back
+ * whole, so `wallet.provider.signTransaction` was the unguarded original.
+ *
+ * The fixture below deliberately carries the members a real adapter exposes,
+ * not just the modelled ones, because a fixture that defines only what the code
+ * models can only ever confirm what the code already does.
+ */
+describe("guardSigner — default-deny (AW-11)", () => {
+  function adapterShapedWallet() {
+    const seen: string[] = [];
+    return {
+      seen,
+      signTransaction: async (t: any) => (seen.push("signTransaction"), t),
+      signAllTransactions: async (t: any) => (seen.push("signAllTransactions"), t),
+      signAndSendTransaction: async (t: any) => (seen.push("signAndSendTransaction"), t),
+      signAndSendAllTransactions: async (t: any) => t,
+      // Not modelled by the old SIGNING_METHODS set — these were the holes.
+      sendTransaction: async (_t: any) => (seen.push("sendTransaction"), "sig-xyz"),
+      signMessage: async (_m: any) => new Uint8Array([1, 2, 3]),
+      signIn: async () => ({ ok: true }),
+      provider: {
+        signTransaction: async (t: any) => (seen.push("provider.sign"), t),
+      },
+    };
+  }
+
+  it("leaves no function property as a raw passthrough", () => {
+    const wallet = adapterShapedWallet();
+    const guarded = guardSigner(wallet as any, () => quote) as any;
+    const fns = Object.keys(wallet).filter(
+      (k) => typeof (wallet as any)[k] === "function",
+    );
+    expect(fns.filter((k) => guarded[k] === (wallet as any)[k])).toEqual([]);
+  });
+
+  it("does not hand back the inner provider unguarded", () => {
+    const wallet = adapterShapedWallet();
+    const guarded = guardSigner(wallet as any, () => quote) as any;
+    expect(guarded.provider).not.toBe(wallet.provider);
+  });
+
+  it("sendTransaction is checked against the quote, not waved through", async () => {
+    const wallet = adapterShapedWallet();
+    const guarded = guardSigner(wallet as any, () => quote) as any;
+    const tx = VersionedTransaction.deserialize(
+      build([payment(attackerAta, 1_000_000n)]),
+    );
+    await expect(guarded.sendTransaction(tx)).rejects.toThrow(/refusing to sign/);
+    expect(wallet.seen).toEqual([]);
+  });
+
+  it("an unmodelled method is refused rather than passed through", async () => {
+    const wallet = adapterShapedWallet();
+    const guarded = guardSigner(wallet as any, () => quote) as any;
+    await expect(guarded.signMessage(new Uint8Array([9]))).rejects.toThrow(
+      /does not know how to check it/,
+    );
+    await expect(guarded.signIn()).rejects.toThrow(/does not know how to check it/);
+  });
+
+  it("a conforming payment still signs through sendTransaction", async () => {
+    const wallet = adapterShapedWallet();
+    const guarded = guardSigner(wallet as any, () => quote) as any;
+    const tx = VersionedTransaction.deserialize(
+      build([payment(merchantAta, 1_000_000n)]),
+    );
+    await expect(guarded.sendTransaction(tx)).resolves.toBe("sig-xyz");
+    expect(wallet.seen).toEqual(["sendTransaction"]);
+  });
+
+  it("an explicit allow keeps an unmodelled method usable", async () => {
+    const wallet = adapterShapedWallet();
+    const guarded = guardSigner(wallet as any, () => quote, {
+      allow: ["signMessage"],
+    }) as any;
+    await expect(guarded.signMessage(new Uint8Array([9]))).resolves.toBeInstanceOf(
+      Uint8Array,
+    );
+  });
+});
+
+/**
+ * AW-11's named escape routes, each tested against the shape the audit found
+ * it in. These are the ones a real integrator hits, so the fixture is the
+ * library shape rather than a stub built from what the code models.
+ */
+describe("guardSigner — the escape routes AW-11 names", () => {
+  it("refuses to hand back anchor NodeWallet's `payer` (raw Keypair, 64 secret bytes)", () => {
+    // Wrapping this in a Proxy would change nothing: `secretKey` is bytes the
+    // caller simply reads. The only safe answer is not to hand it over.
+    const keypair = { secretKey: new Uint8Array(64).fill(7), publicKey: "PUB" };
+    const nodeWallet = {
+      signTransaction: async (t: any) => t,
+      signAllTransactions: async (t: any) => t,
+      payer: keypair,
+    };
+    const guarded = guardSigner(nodeWallet as any, () => quote) as any;
+    expect(() => guarded.payer).toThrow(/raw key material/);
+  });
+
+  it("an explicit allow still returns it, because the escape hatch has a name", () => {
+    const keypair = { secretKey: new Uint8Array(64).fill(7) };
+    const nodeWallet = { signTransaction: async (t: any) => t, payer: keypair };
+    const guarded = guardSigner(nodeWallet as any, () => quote, {
+      allow: ["payer"],
+    }) as any;
+    expect(guarded.payer).toBe(keypair);
+  });
+
+  it("guards the @solana/kit method names, which the old set did not model", async () => {
+    const kit = {
+      signTransaction: async (t: any) => t,
+      signTransactions: async (t: any) => t,
+      modifyAndSignTransactions: async (t: any) => t,
+      signAndSendTransactions: async () => "sig",
+    };
+    const guarded = guardSigner(kit as any, () => quote) as any;
+    for (const m of [
+      "signTransactions",
+      "modifyAndSignTransactions",
+      "signAndSendTransactions",
+    ]) {
+      await expect(guarded[m]([{ any: "tx" }])).rejects.toThrow(/x402-guard/);
+    }
+  });
+
+  it("signMessage is refused — on Solana it is a transaction-signing oracle", async () => {
+    // A transaction signature IS ed25519 over the serialized message, with no
+    // domain separator, so signMessage signs transactions by another name.
+    const wallet = {
+      signTransaction: async (t: any) => t,
+      signMessage: async () => new Uint8Array(64),
+    };
+    const guarded = guardSigner(wallet as any, () => quote) as any;
+    await expect(guarded.signMessage(new Uint8Array([1, 2, 3]))).rejects.toThrow(
+      /x402-guard/,
+    );
+  });
+
+  it("guards Wallet Standard's nested features signer", async () => {
+    const ws = {
+      signTransaction: async (t: any) => t,
+      features: {
+        "solana:signTransaction": { signTransaction: async (t: any) => t },
+      },
+    };
+    const guarded = guardSigner(ws as any, () => quote) as any;
+    expect(guarded.features).not.toBe(ws.features);
+    await expect(
+      guarded.features["solana:signTransaction"].signTransaction({ any: "tx" }),
+    ).rejects.toThrow(/x402-guard/);
+  });
+
+  it("a cyclic object graph terminates rather than spinning", () => {
+    const cyclic: any = { signTransaction: async (t: any) => t, provider: {} };
+    cyclic.provider.self = cyclic;
+    cyclic.provider.signTransaction = async (t: any) => t;
+    const guarded = guardSigner(cyclic, () => quote) as any;
+    expect(guarded.provider.self).toBeDefined();
+  });
+});
+
+/**
+ * Same inversion on the Solana side: gating nested wrapping on a name check
+ * left anything the set did not model handed back raw, one level down.
+ */
+describe("guardSigner — no object is handed back unwrapped", () => {
+  it("guards a nested method the wrapper does not model by name", async () => {
+    const w = {
+      signTransaction: async (t: any) => t,
+      _inner: { signRaw: async () => "BAD" },
+    };
+    const g = guardSigner(w as any, () => quote) as any;
+    await expect(g._inner.signRaw()).rejects.toThrow(/x402-guard/);
+  });
+
+  it("guards a signer three levels down", async () => {
+    const w = {
+      signTransaction: async (t: any) => t,
+      provider: { inner: { wallet: { signTransaction: async () => "BAD" } } },
+    };
+    const g = guardSigner(w as any, () => quote) as any;
+    await expect(g.provider.inner.wallet.signTransaction({})).rejects.toThrow(
+      /x402-guard/,
+    );
+  });
+
+  it("guards signers inside an array", async () => {
+    const w = {
+      signTransaction: async (t: any) => t,
+      accounts: [{ signTransaction: async () => "BAD" }],
+    };
+    const g = guardSigner(w as any, () => quote) as any;
+    await expect(g.accounts[0].signTransaction({})).rejects.toThrow(/x402-guard/);
+  });
+
+  it("plain data still reads through unchanged", () => {
+    const w = { signTransaction: async (t: any) => t, meta: { cluster: "mainnet" } };
+    const g = guardSigner(w as any, () => quote) as any;
+    expect(g.meta.cluster).toBe("mainnet");
+  });
+});
+
+/**
+ * `allow` is a scoped escape hatch, not a total one.
+ *
+ * Naming `signMessage` in `allow` used to restore the exact AW-11 oracle: on
+ * Solana a transaction signature IS ed25519 over `message.serialize()`, with
+ * no domain separator, so a permitted message signer signs transactions for
+ * anyone who hands it the right bytes. The method is permitted; bytes that
+ * deserialize AS A TRANSACTION are still refused.
+ */
+describe("guardSigner — allow does not re-open the message-signing oracle", () => {
+  const wallet = () => ({
+    signTransaction: async (t: any) => t,
+    signMessage: async (b: Uint8Array) => `RAW_SIG(${b.length})`,
+  });
+  const evilTx = () =>
+    VersionedTransaction.deserialize(build([payment(attackerAta, 999_000_000n)]));
+
+  it("refuses transaction MESSAGE bytes even when signMessage is allowed", async () => {
+    const g = guardSigner(wallet() as any, () => quote, {
+      allow: ["signMessage"],
+    }) as any;
+    await expect(g.signMessage(evilTx().message.serialize())).rejects.toThrow(
+      /deserialize as a Solana transaction/,
+    );
+  });
+
+  it("refuses full TRANSACTION bytes even when signMessage is allowed", async () => {
+    const g = guardSigner(wallet() as any, () => quote, {
+      allow: ["signMessage"],
+    }) as any;
+    await expect(g.signMessage(evilTx().serialize())).rejects.toThrow(
+      /deserialize as a Solana transaction/,
+    );
+  });
+
+  it("still signs a genuine message when allowed — the hatch is usable", async () => {
+    const g = guardSigner(wallet() as any, () => quote, {
+      allow: ["signMessage"],
+    }) as any;
+    await expect(
+      g.signMessage(new TextEncoder().encode("Sign in to Example.com\nNonce: abc123")),
+    ).resolves.toMatch(/^RAW_SIG/);
+  });
+
+  it("without allow, signMessage is refused outright", async () => {
+    const g = guardSigner(wallet() as any, () => quote) as any;
+    await expect(g.signMessage(new TextEncoder().encode("hello"))).rejects.toThrow(
+      /does not know how to check it/,
+    );
+  });
+});

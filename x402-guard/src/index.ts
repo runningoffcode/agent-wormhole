@@ -34,7 +34,12 @@
  * is refused rather than approximated.
  */
 
-import { PublicKey, VersionedTransaction, Transaction } from "@solana/web3.js";
+import {
+  PublicKey,
+  VersionedTransaction,
+  VersionedMessage,
+  Transaction,
+} from "@solana/web3.js";
 import {
   getAssociatedTokenAddressSync,
   TOKEN_PROGRAM_ID,
@@ -668,6 +673,66 @@ const SIGNING_METHODS = new Set([
   "signAllTransactions",
   "signAndSendTransaction",
   "signAndSendAllTransactions",
+  // AW-11. `sendTransaction` is the method a wallet-adapter agent reaches for
+  // most often, and it was handed back raw: money moved with no quote check at
+  // all. It takes a transaction as its first argument like the others, so the
+  // same check applies unchanged.
+  "sendTransaction",
+  "sendAllTransactions",
+]);
+
+
+/**
+ * Methods that sign arbitrary bytes rather than a transaction.
+ *
+ * These stay dangerous even when the caller names them in `allow`, because on
+ * Solana the two are the same operation: a transaction signature is ed25519
+ * over `message.serialize()`, with no domain separator to tell them apart.
+ */
+const MESSAGE_SIGNING_METHODS = new Set(["signMessage", "signMessages", "signIn"]);
+
+/** Decode base64 without throwing; null when it is not base64. */
+function tryDecodeBase64(s: string): Uint8Array | null {
+  try {
+    const b = Buffer.from(s, "base64");
+    return b.length > 0 ? new Uint8Array(b) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Do these bytes parse as a Solana transaction message?
+ *
+ * Deliberately tries BOTH the bare message and the full transaction: an
+ * attacker hands over whichever shape the victim's signer accepts, and the
+ * signature is valid over the message bytes either way.
+ */
+function looksLikeTransaction(bytes: Uint8Array): boolean {
+  if (bytes.length === 0 || bytes.length > MAX_TX_BYTES) return false;
+  try {
+    VersionedTransaction.deserialize(bytes);
+    return true;
+  } catch {
+    /* not a full transaction — try the message alone */
+  }
+  try {
+    VersionedMessage.deserialize(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Reads that cannot move funds. Every name here is a decision. */
+const SOLANA_SAFE_READS = new Set([
+  "getAccounts",
+  "getPublicKey",
+  "connect",
+  "disconnect",
+  "on",
+  "off",
+  "removeListener",
 ]);
 
 /**
@@ -681,17 +746,38 @@ const SIGNING_METHODS = new Set([
 export function guardSigner<T extends { signTransaction: Function }>(
   wallet: T,
   getQuote: () => PaymentQuote | null,
-  opts: InspectOptions = {},
+  opts: InspectOptions & {
+    /**
+     * Members to leave UNGUARDED, named explicitly. Under default-deny this is
+     * the only way anything reaches the wallet unchecked, so each entry is a
+     * decision with a name on it. A nested member can be named with a dotted
+     * path, e.g. `"provider.connect"`.
+     */
+    allow?: readonly string[];
+  } = {},
 ): T {
-  const check = (tx: VersionedTransaction) => {
+  const allowed = new Set(opts.allow ?? []);
+
+  const check = (tx: VersionedTransaction, method: string) => {
     const quote = getQuote();
     if (!quote) {
       throw new Error(
-        "x402-guard: refusing to sign — no payment quote was supplied, " +
-          "so there is nothing to check this transaction against.",
+        `x402-guard: refusing to sign via ${method}() — no payment quote was ` +
+          "supplied, so there is nothing to check this transaction against.",
       );
     }
-    const verdict = inspectPayment(tx.serialize(), quote, opts);
+    let serialized: Uint8Array;
+    try {
+      serialized = tx.serialize();
+    } catch {
+      // An argument that does not serialise is not a transaction this wrapper
+      // can check, and an uncheckable signing request is refused.
+      throw new Error(
+        `x402-guard: refusing to sign via ${method}() — the argument is not a ` +
+          "serializable transaction, so it cannot be checked against the quote.",
+      );
+    }
+    const verdict = inspectPayment(serialized, quote, opts);
     if (verdict.decision !== "allow") {
       const detail = verdict.findings
         .map((f) => `${f.code}: ${f.message}`)
@@ -703,27 +789,120 @@ export function guardSigner<T extends { signTransaction: Function }>(
     }
   };
 
-  return new Proxy(wallet, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (
-        typeof prop !== "string" ||
-        !SIGNING_METHODS.has(prop) ||
-        typeof value !== "function"
-      ) {
-        return value;
+  /**
+   * Permit a message-signing method, but never let it sign a TRANSACTION.
+   *
+   * On Solana a transaction signature is ed25519 over `message.serialize()`
+   * with no domain separator, so a message signer is a transaction signer for
+   * anyone who passes it the right bytes. This is the check the audit asked
+   * for: discriminate on whether the bytes deserialize, rather than refusing
+   * the method outright (which makes it useless) or allowing it outright
+   * (which re-opens the oracle).
+   */
+  const signMessageGuard = (fn: Function, method: string, self: unknown) =>
+    async (first: unknown, ...rest: unknown[]) => {
+      const bytes =
+        first instanceof Uint8Array
+          ? first
+          : typeof first === "string"
+            ? tryDecodeBase64(first)
+            : null;
+      if (bytes !== null && looksLikeTransaction(bytes)) {
+        throw new Error(
+          `x402-guard: refusing ${method}() — the bytes handed to it deserialize ` +
+            "as a Solana transaction message, and a transaction signature IS " +
+            "ed25519 over exactly those bytes. Signing them as a 'message' " +
+            "produces a valid transaction signature that no quote was ever " +
+            "checked against.",
+        );
       }
-      const original = value.bind(target);
-      return async (first: unknown, ...rest: unknown[]) => {
-        if (Array.isArray(first)) {
-          for (const tx of first) check(tx as VersionedTransaction);
-        } else {
-          check(first as VersionedTransaction);
+      return fn.apply(self, [first, ...rest]);
+    };
+
+  const guardFn = (fn: Function, method: string, self: unknown) =>
+    async (first: unknown, ...rest: unknown[]) => {
+      if (Array.isArray(first)) {
+        for (const tx of first) check(tx as VersionedTransaction, method);
+      } else {
+        check(first as VersionedTransaction, method);
+      }
+      return fn.apply(self, [first, ...rest]);
+    };
+
+
+  const wrap = <O extends object>(obj: O, path: string, depth = 0): O =>
+    new Proxy(obj, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof prop !== "string") return value;
+        const qualified = path ? `${path}.${prop}` : prop;
+        if (allowed.has(prop) || allowed.has(qualified)) {
+          // `allow` names a method the caller says cannot move funds. On
+          // Solana that claim is not the caller's alone to make for
+          // message-signing: a transaction signature IS ed25519 over the
+          // serialized message, with no domain separator, so
+          // `signMessage(tx.message.serialize())` produces a signature that
+          // validates on a real transaction. Allowing the method wholesale
+          // restored the exact oracle this wrapper exists to close.
+          //
+          // So the escape hatch is scoped rather than total: the method is
+          // permitted, but bytes that deserialize AS A TRANSACTION are still
+          // refused. A caller signing genuine messages is unaffected.
+          if (MESSAGE_SIGNING_METHODS.has(prop) && typeof value === "function") {
+            return signMessageGuard(value as Function, qualified, target);
+          }
+          return value;
         }
-        return original(first, ...rest);
-      };
-    },
-  }) as T;
+
+        if (typeof value === "function") {
+          // DEFAULT DENY. `sendTransaction` was the loud half of AW-11: it is
+          // the method a wallet-adapter agent reaches for most, it moves money
+          // without producing a detached signature, and it was handed back raw.
+          if (SIGNING_METHODS.has(prop)) {
+            return guardFn(value as Function, qualified, target);
+          }
+          if (SOLANA_SAFE_READS.has(prop)) return value.bind(target);
+          return async () => {
+            throw new Error(
+              `x402-guard: refusing ${qualified}() — this wrapper does not know ` +
+                `how to check it, and passing through an unmodelled method on a ` +
+                `wallet is how a guard becomes a formality. If ${qualified} ` +
+                `cannot move funds, name it in \`allow\` to pass it through.`,
+            );
+          };
+        }
+
+        // The inner `provider` / `adapter` was handed back whole, so
+        // `wallet.provider.signTransaction` was the unguarded original.
+        // EVERY object is wrapped, arrays included. Asking "does this object
+        // look like a signer?" was a name allowlist one level down — the same
+        // enumerate-instead-of-refuse inversion this wrapper exists to fix. A
+        // nested `signDigest`, a signer at depth 3, or `accounts[0]` all
+        // executed unguarded because none matched the modelled names.
+        if (value !== null && typeof value === "object") {
+          const v = value as Record<string, unknown>;
+          // RAW KEY MATERIAL is not wrappable. anchor's NodeWallet exposes the
+          // Keypair on `payer`; returning a Proxy over it changes nothing,
+          // because `secretKey` is 64 bytes the caller simply reads. The only
+          // safe answer is not to hand it over.
+          if (v["secretKey"] !== undefined || v["_keypair"] !== undefined) {
+            throw new Error(
+              `x402-guard: refusing to expose ${qualified} — it carries raw key ` +
+                `material, and a guard that hands back the secret key is not a ` +
+                `guard. If you need the unwrapped object, name it in \`allow\`.`,
+            );
+          }
+          // No depth cap and no shape test. Wrapping is lazy — the Proxy only
+          // materialises on property access — so an arbitrarily deep or cyclic
+          // graph costs nothing until something actually reaches into it, and
+          // reaching in is exactly when the guard must be present.
+          return wrap(value as object, qualified, depth + 1);
+        }
+        return value;
+      },
+    }) as O;
+
+  return wrap(wallet, "", 0) as T;
 }
 
 // --- facilitator flow -------------------------------------------------------

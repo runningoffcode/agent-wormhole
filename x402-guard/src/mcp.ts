@@ -30,7 +30,14 @@
 
 import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
-import type { VerifyRequest } from "./verify.js";
+import type { VerifyRequest, Receipt } from "./verify.js";
+import {
+  verifyReceipt,
+  replayMatches,
+  publicKeyFromSpkiBase64,
+  type PublicKeyInput,
+} from "./receipt.js";
+import { isLoopback } from "./client.js";
 import { inspectQuoteText } from "./quotetext.js";
 import { checkPayeeProvenance, loadAddressLedger } from "./provenance.js";
 import { inspectDelivery } from "./delivery.js";
@@ -299,14 +306,243 @@ function shapeOptions(raw: unknown): Record<string, unknown> {
  * switch — at exactly the moment an attacker would prefer it bypassed. An
  * unreachable hosted verifier is an abstain that says so.
  */
-function hostedConfig(): { url: string; apiKey: string } | null {
+function hostedConfig(): { url: string; apiKey: string; insecure?: string } | null {
   const apiKey = process.env.WORMHOLE_API_KEY;
   if (apiKey === undefined || apiKey.length === 0) return null;
+  const url =
+    process.env.WORMHOLE_VERIFY_URL ??
+    "https://dashboard.agentwormhole.com/api/v1/verify";
+  // Checked HERE so all three credential-attaching sites inherit it. The
+  // config is still returned — returning null would fall back to the local
+  // core, which silently bypasses the operator's spend policy, exactly what
+  // this file refuses to do elsewhere. `insecure` makes callers abstain
+  // instead, saying why.
+  const insecure = insecureCredentialHop(url);
+  return insecure === null ? { url, apiKey } : { url, apiKey, insecure };
+}
+
+/**
+ * Refuse to put the operator's API key on a plaintext hop to a host on a
+ * network.
+ *
+ * `WORMHOLE_VERIFY_URL` is operator-settable, and three sites here attach
+ * `Bearer <apiKey>` to whatever it names. The SDK's own transport got this
+ * check; the path that actually HOLDS the secret did not. The request would
+ * succeed, so a misconfigured (or redirected) URL discloses a live credential
+ * with nothing to surface it.
+ *
+ * Returns an error string to abstain with, or null when the hop is safe.
+ * Loopback is exempt: there is no path to be on.
+ */
+function insecureCredentialHop(url: string): string | null {
+  if (process.env.WORMHOLE_ALLOW_INSECURE_AUTH === "1") return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `the configured verifier URL is not a valid URL (${String(url).slice(0, 60)})`;
+  }
+  if (parsed.protocol === "https:" || isLoopback(parsed.hostname)) return null;
+  return (
+    `refusing to send your API key over ${parsed.protocol}// to ${parsed.hostname} — ` +
+    "a credential on a plaintext hop is a credential anyone on the path keeps, " +
+    "and the request would succeed so nothing would tell you. Use https:, or " +
+    "set WORMHOLE_ALLOW_INSECURE_AUTH=1 if this hop is genuinely private."
+  );
+}
+
+/**
+ * The verifier public key this server checks hosted `allow` verdicts against.
+ *
+ * `WORMHOLE_VERIFY_PUBKEY` takes the base64 SPKI DER the hosted verifier
+ * publishes at `GET <base>/v1/key`, or a PEM block. Absent, a hosted `allow`
+ * cannot be checked and is downgraded to abstain unless the operator has
+ * explicitly accepted that with `WORMHOLE_ALLOW_UNSIGNED_HOSTED=1`.
+ */
+function hostedVerifyKey(): PublicKeyInput | null {
+  const raw = process.env.WORMHOLE_VERIFY_PUBKEY?.trim();
+  if (raw === undefined || raw.length === 0) return null;
+  if (raw.includes("-----BEGIN")) return raw;
+  try {
+    return publicKeyFromSpkiBase64(raw);
+  } catch {
+    // A key that will not parse is a configuration error. Returning null here
+    // sends us down the no_verifying_key path, which refuses to clear rather
+    // than clearing unchecked.
+    return null;
+  }
+}
+
+/**
+ * Gate a hosted 200 body: an `allow` must be proven, everything else passes
+ * through.
+ *
+ * Only `allow` is a clearance, so only `allow` is gated. `refuse`, `abstain`,
+ * and the hosted policy states (`needs_approval`, `blocked`) all reach the
+ * model unchanged — none of them authorises a payment, and rewriting them
+ * would drop the operator's policy block for no security gain.
+ */
+function gateHostedVerdict(parsed: unknown, sentRequest: unknown): unknown {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      decision: "abstain",
+      findings: [],
+      reason:
+        "hosted verifier answered 200 with a body that is not an object — " +
+        "treat as do-not-sign",
+    };
+  }
+  const body = parsed as Record<string, unknown>;
+
+  // The verifier speaks for itself about integrity; the wire does not. A body
+  // arriving with its own `wormhole_integrity` is an attacker forging the
+  // stamp this function exists to apply, so it is stripped before anything
+  // else looks at it.
+  if ("wormhole_integrity" in body) delete body["wormhole_integrity"];
+
+  const claimed = body["decision"];
+  if (typeof claimed !== "string") {
+    return {
+      decision: "abstain",
+      findings: [],
+      reason:
+        "hosted verifier answered 200 with no string `decision` — treat as do-not-sign",
+    };
+  }
+
+  // Strip case and the invisibles a lookalike hides behind before comparing.
+  // A bare `!== "allow"` let `"ALLOW"`, `"Allow"`, `"allow "` and
+  // `"allow​"` skip the gate entirely and reach the model — the same
+  // string-comparison trap the client path narrows against.
+  const normalised = claimed
+    .normalize("NFKC")
+    .replace(/[\s\p{Cf}]+/gu, "")
+    .toLowerCase();
+
+  if (normalised !== "allow") {
+    // The hosted policy states, relayed verbatim: none of them authorises a
+    // payment, and they are the operator's own answer.
+    if (
+      normalised === "refuse" ||
+      normalised === "abstain" ||
+      normalised === "needs_approval" ||
+      normalised === "blocked"
+    ) {
+      return body;
+    }
+    // Not a decision this package recognises. Not a clearance, not a policy
+    // answer, and it must not reach the model wearing a verdict's clothes.
+    return {
+      decision: "abstain",
+      findings: Array.isArray(body["findings"]) ? body["findings"] : [],
+      ...(body["policy"] !== undefined ? { policy: body["policy"] } : {}),
+      reason:
+        `hosted verifier answered 200 with an unrecognised decision ` +
+        `${JSON.stringify(claimed)?.slice(0, 40)} — treat as do-not-sign`,
+      wormhole_integrity: {
+        verified: false,
+        failure: "malformed_verdict",
+        claimed_decision: claimed.slice(0, 40),
+      },
+    };
+  }
+  // Past here the decision IS an allow, however it was spelled, and it has to
+  // prove itself. Canonicalise so no downstream reader sees a variant.
+  body["decision"] = "allow";
+
+  const downgrade = (failure: string, detail: string): unknown => ({
+    decision: "abstain",
+    findings: Array.isArray(body["findings"]) ? body["findings"] : [],
+    // The operator's policy block survives the downgrade — it is advice they
+    // configured, and it is still true.
+    ...(body["policy"] !== undefined ? { policy: body["policy"] } : {}),
+    reason: `hosted verifier claimed "allow" but ${detail} — treat as do-not-sign`,
+    wormhole_integrity: { verified: false, failure, claimed_decision: "allow" },
+  });
+
+  const key = hostedVerifyKey();
+  if (key === null) {
+    if (process.env.WORMHOLE_ALLOW_UNSIGNED_HOSTED === "1") {
+      return {
+        ...body,
+        wormhole_integrity: { verified: false, mode: "unsigned_opt_out" },
+      };
+    }
+    return downgrade(
+      "no_verifying_key",
+      "this server has no key to check it against. Set WORMHOLE_VERIFY_PUBKEY " +
+        "(fetch it from the verifier's /v1/key), or — only if you accept an " +
+        "unverifiable allow — set WORMHOLE_ALLOW_UNSIGNED_HOSTED=1",
+    );
+  }
+
+  const receipt = body["receipt"];
+  if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) {
+    return downgrade("no_receipt", "it carried no receipt to verify");
+  }
+  const signature = body["signature"];
+  if (typeof signature !== "string" || signature.length === 0) {
+    return downgrade("no_signature", "the receipt is unsigned");
+  }
+  const check = verifyReceipt(receipt as Receipt, signature, key);
+  if (!check.valid) {
+    return downgrade(
+      "signature_invalid",
+      `the receipt signature did not verify (${check.reason ?? "unknown"})`,
+    );
+  }
+  if (!replayMatches(receipt as Receipt, sentRequest as VerifyRequest)) {
+    return downgrade(
+      "digest_mismatch",
+      "the signed receipt attests a DIFFERENT request than the one sent",
+    );
+  }
+  if ((receipt as Receipt).decision !== "allow") {
+    // A genuine signed refuse receipt, replayed inside an allow envelope:
+    // signature verifies, digest binds, and only the unsigned envelope claims
+    // otherwise. The envelope is not evidence.
+    return downgrade(
+      "envelope_mismatch",
+      `the signed receipt attests "${String((receipt as Receipt).decision)}"`,
+    );
+  }
+  // The receipt is what was signed; the rest of the body is not. Spreading the
+  // whole wire object under a `verified: true` stamp meant an attacker's
+  // `policy` block rode along on a cryptographically verified allow — and a
+  // `needs_approval` the operator configured could be flipped to `pass`,
+  // defeating the human-approval gate this tool's own description tells the
+  // model to relay. Return the attested fields, and say what was checked.
+  const attestedCodes = Array.isArray((receipt as Receipt).codes)
+    ? (receipt as Receipt).codes
+    : [];
+  const wireFindings = Array.isArray(body["findings"]) ? body["findings"] : [];
   return {
-    url:
-      process.env.WORMHOLE_VERIFY_URL ??
-      "https://dashboard.agentwormhole.com/api/v1/verify",
-    apiKey,
+    decision: "allow",
+    findings: wireFindings.filter(
+      (f) =>
+        f !== null &&
+        typeof f === "object" &&
+        attestedCodes.includes((f as { code?: string }).code as string),
+    ),
+    receipt: body["receipt"],
+    signature: body["signature"],
+    wormhole_integrity: {
+      verified: true,
+      mode: "required",
+      // Named so a reader knows the scope of the claim: the DECISION is
+      // attested, not every field that arrived with it.
+      attests: "decision, request binding, and the receipt's own codes",
+      ...(wireFindings.length !==
+      wireFindings.filter(
+        (f) =>
+          f !== null &&
+          typeof f === "object" &&
+          attestedCodes.includes((f as { code?: string }).code as string),
+      ).length
+        ? { dropped_unattested_findings: true }
+        : {}),
+      ...(body["policy"] !== undefined ? { dropped_unsigned_policy: true } : {}),
+    },
   };
 }
 
@@ -319,6 +555,17 @@ async function callHosted(
     args.options !== null && typeof args.options === "object"
       ? { ...(args.options as object) }
       : undefined;
+  // Built ONCE and reused for both the body and the digest check below. The
+  // `network` here is coerced with String(), so re-deriving the request from
+  // `args` for the replay comparison would hash a different value than was
+  // sent — a numeric network would fork the digest and fail every honest
+  // verdict closed while reporting it as a replayed receipt.
+  const sentRequest = {
+    network: String(args.network ?? ""),
+    quote: args.quote,
+    payload: args.payload,
+    ...(options !== undefined ? { options } : {}),
+  };
   let res: Response;
   let text: string;
   try {
@@ -328,12 +575,7 @@ async function callHosted(
         authorization: `Bearer ${cfg.apiKey}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        network: String(args.network ?? ""),
-        quote: args.quote,
-        payload: args.payload,
-        ...(options !== undefined ? { options } : {}),
-      }),
+      body: JSON.stringify(sentRequest),
     });
     text = await res.text();
   } catch (err) {
@@ -369,9 +611,13 @@ async function callHosted(
         "treat as do-not-sign",
     };
   }
-  // The hosted body verbatim: decision, findings, receipt/signature, and any
-  // `policy` block (pass / needs_approval with approve_url / blocked).
-  return parsed;
+  // AW-07. This used to `return parsed` — the hosted body verbatim, whatever
+  // it was. A 200 saying `{"decision":"allow"}` with no receipt and no
+  // signature became a clearance, which made the attacker anyone who can
+  // answer as the verifier: a TLS-terminating proxy, a DNS hijack, a
+  // compromised hosted service. An `allow` is the only field here that
+  // authorises spending, so it is the only one that has to be proven.
+  return gateHostedVerdict(parsed, sentRequest);
 }
 
 /**
@@ -402,6 +648,16 @@ function withProvenance(result: unknown, args: Record<string, unknown>): unknown
 
 async function callVerifyPayment(args: Record<string, unknown>): Promise<unknown> {
   const hosted = hostedConfig();
+  if (hosted !== null && hosted.insecure !== undefined) {
+    // Abstain rather than fall back to the local core: the operator set a key
+    // to get THEIR spend policy applied, and silently running without it is
+    // the bypass this file refuses everywhere else.
+    return {
+      decision: "abstain",
+      findings: [],
+      reason: `${hosted.insecure} Treat as do-not-sign.`,
+    };
+  }
   if (hosted !== null) return withProvenance(await callHosted(args, hosted), args);
 
   let verify: typeof import("./verify.js")["verify"];
@@ -551,6 +807,16 @@ export async function handleMessage(msg: RpcMessage): Promise<object | null> {
         const url = typeof args.url === "string" ? args.url.trim() : "";
         const content = typeof args.content === "string" ? args.content : "";
         const hosted = hostedConfig();
+        if (hosted !== null && hosted.insecure !== undefined) {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: toolResult({
+              verdict: "unchecked",
+              reason: `${hosted.insecure} Nothing was checked.`,
+            }),
+          };
+        }
 
         if (hosted !== null) {
           // The hosted service fetches (SSRF-guarded, from its own network),
@@ -686,6 +952,16 @@ export async function handleMessage(msg: RpcMessage): Promise<object | null> {
           // Not observed. With a key, observe it now — the on-demand scan
           // reads, attests and stores, and the result IS the answer.
           const hosted = hostedConfig();
+          if (hosted !== null && hosted.insecure !== undefined) {
+            return {
+              jsonrpc: "2.0",
+              id,
+              result: toolResult({
+                verdict: "unchecked",
+                reason: `${hosted.insecure} Nothing was scanned.`,
+              }),
+            };
+          }
           if (res.status === 404 && hosted !== null) {
             const scanRes = await fetch(`${apiBase}/scan`, {
               method: "POST",

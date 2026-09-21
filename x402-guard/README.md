@@ -92,6 +92,48 @@ function of its request and replays identically later.
 `guardedPay` takes the transport as an argument rather than a URL, so the same
 call runs against the local verifier or a remote one and the two cannot drift.
 
+### A verdict off a socket is a claim, not an answer
+
+`guardedPay` and `guardedFetch` require an `integrity` option. It has no
+default, because every default here is either a silent downgrade of your
+security or a surprise change to your behaviour:
+
+```ts
+import { guardedPay } from "wormhole-x402/client";
+import { publicKeyFromSpkiBase64 } from "wormhole-x402/receipt";
+
+// The verifier publishes its key at GET <base>/v1/key
+const publicKey = publicKeyFromSpkiBase64(publishedKeyBase64);
+
+const res = await guardedPay({
+  network, quote, payload, transport,
+  integrity: { mode: "required", publicKey },
+});
+if (res.allow) await sign(payload);
+```
+
+Under `mode: "required"` a decisive verdict clears only if a receipt is present,
+its signature verifies against your key, the receipt is bound by digest to the
+request you actually sent, and the receipt's own decision agrees with the
+envelope's. Anything else becomes an **abstain** — never an allow, and never a
+refuse — with `integrityFailure` naming which check failed. `res.verified` tells
+you whether the cryptography actually ran.
+
+For an in-process transport that never crosses a network, say so explicitly:
+
+```ts
+integrity: { mode: "trusted_transport", reason: "in-process verify(), no socket" }
+```
+
+`verified` is then `false`, because nothing was checked. A verifier running
+without a signing key produces abstains under `required`, which is the honest
+answer: an unsigned verdict is one nobody can check.
+
+The MCP server applies the same rule to hosted verdicts. Set
+`WORMHOLE_VERIFY_PUBKEY` to the published key; without it a hosted `allow` is
+downgraded to abstain unless you explicitly accept an unverifiable one with
+`WORMHOLE_ALLOW_UNSIGNED_HOSTED=1`.
+
 ### Receipts
 
 A decisive verdict carries a receipt: the decision, the rule codes, a coarse
@@ -185,22 +227,29 @@ import { guardEvmSigner } from "wormhole-x402/evm";
 
 const signer = guardEvmSigner(myWalletClient, () => currentQuote);
 
-// Every signing route is wrapped, not just this one: signTypedData,
-// _signTypedData, signTypedData_v4, signMessage, signTransaction and
-// sendTransaction all go through the check. A guard on one method is a door
-// with a doorman standing beside it — an agent told to "just sign this"
-// reaches for whichever method the wallet happens to expose.
-await signer.signTypedData(payload);
+// The pre-signing shape viem and ethers actually send — this is the call that
+// CREATES the signature, so there is nothing to recover from yet. The wrapper
+// checks the domain against the trusted table for (chainId, asset), requires
+// primaryType TransferWithAuthorization, and compares to/value to the quote.
+await signer.signTypedData({ domain, types, primaryType, message });
 ```
 
-Both wrappers **fail closed**. No quote is a refusal, not a pass — every optional
-security parameter with a permissive default ends up unset in production, and
-then the guard reports green on all traffic and nobody notices. On EVM a signing
-request whose arguments cannot be read as an x402 payment is *also* refused
-rather than passed through; if a method is not a payment path, name it in
-`allow`. That makes an unmodelled method unusable rather than unchecked, which is
-the trade worth making: "we did not recognise the call so we allowed it" is how
-every bypass is written up afterwards.
+Both wrappers are **default-deny**. Every function property is wrapped, not a
+named subset: the ones the wrapper knows how to check are checked, and
+everything else is *refused* rather than handed back. Object properties that
+expose signing methods — viem's `account`, a wallet adapter's inner `provider` —
+are wrapped too, because handing back the raw object is the same hole one level
+down.
+
+That means an unmodelled method is unusable rather than unchecked, which is the
+trade worth making: "we did not recognise the call so we allowed it" is how
+every bypass is written up afterwards. If a method cannot move funds, name it in
+`allow` — an escape hatch with a name on it. Dotted paths work for nested
+members (`allow: ["account.sign"]`).
+
+No quote is a refusal, not a pass. Every optional security parameter with a
+permissive default ends up unset in production, and then the guard reports green
+on all traffic and nobody notices.
 
 Or inspect without wrapping:
 

@@ -1055,19 +1055,27 @@ export function evmQuoteFromRequirements(
 }
 
 /**
- * Every method through which an EVM signer can authorise a payment.
+ * The methods this wrapper knows how to CHECK.
  *
- * The Solana guard's reasoning applies unchanged: wrapping one method and
- * leaving the others bare is a door with a doorman standing beside it. An x402
- * payment on EVM is an EIP-712 signature, so `signTypedData` is the method that
- * matters — but the same wallet object usually also offers raw message and
- * transaction signing, and an agent told to "just sign this" reaches for
- * whichever one is available.
- *
- * `sendTransaction` is included deliberately even though it is not a signature:
- * a wallet that can send can move value without ever producing a detached
- * authorisation, and a firewall that permits it is not a firewall.
+ * Membership here does not decide what is guarded — under default-deny
+ * everything is guarded. It decides what can be checked and then allowed
+ * through; anything else is refused, because "we did not recognise the call so
+ * we allowed it" is how every bypass is written up afterwards.
  */
+
+/**
+ * Reads that cannot move funds, allowed through so the wrapped object stays
+ * usable. Kept short and explicit: every name here is a decision.
+ */
+const SAFE_READ_METHODS = new Set([
+  "getAddress",
+  "getAddresses",
+  "getChainId",
+  "getBalance",
+  "getTransactionCount",
+  "getBlockNumber",
+]);
+
 const EVM_SIGNING_METHODS = new Set([
   "signTypedData",
   "signTypedData_v4",
@@ -1076,6 +1084,166 @@ const EVM_SIGNING_METHODS = new Set([
   "signTransaction",
   "sendTransaction",
 ]);
+
+/**
+ * Check an EIP-712 typed-data request BEFORE a signature exists.
+ *
+ * ═══ WHY THIS IS SEPARATE FROM `inspectAuthorization` ═══
+ *
+ * `inspectAuthorization` checks a payload that has already been signed: its
+ * central move is recovering the signer from the signature and proving it
+ * equals `authorization.from`. A `signTypedData({domain, types, primaryType,
+ * message})` call is the request to CREATE that signature — there is nothing
+ * to recover from, and recovery is meaningless.
+ *
+ * `guardEvmSigner` used to paper over this by rebuilding a payload and copying
+ * a `signature` key across that neither viem nor ethers ever sends. The result
+ * was `normalizeSignature(undefined) → null → abstain`, so the wrapper refused
+ * EVERY correct payment on the four methods it intercepted. The comment above
+ * that code predicted exactly this failure and claimed the code avoided it.
+ *
+ * So this checks what can actually be checked before signing: that the domain
+ * is the trusted one for (chainId, asset), that the struct being signed is a
+ * TransferWithAuthorization and not a Permit or anything else, and that the
+ * destination and amount match the quote. Everything except the signature —
+ * which is the point, because the signature does not exist yet.
+ */
+export function inspectTypedDataRequest(
+  quote: EvmPaymentQuote,
+  request: unknown,
+  opts: InspectAuthorizationOptions = {},
+): Verdict {
+  const findings: Finding[] = [];
+  if (typeof quote !== "object" || quote === null) {
+    return abstain("quote is not an object — nothing to check against");
+  }
+  const chainId = parseNetwork(quote.network);
+  if (chainId === null) {
+    return abstain(
+      `quote network (${String(quote.network)}) could not be resolved to a chainId`,
+    );
+  }
+  const quoteAsset = normAddress(quote.asset);
+  if (quoteAsset === null) return abstain("quote asset is not a valid address");
+  const quotePayTo = normAddress(quote.payTo);
+  if (quotePayTo === null) return abstain("quote payTo is not a valid address");
+  const quotedValue = toBig(quote.amount);
+  if (quotedValue === null) {
+    return abstain(`quote amount is not an integer (${String(quote.amount)})`);
+  }
+
+  if (typeof request !== "object" || request === null) {
+    return abstain("typed-data request is not an object");
+  }
+  const r = request as Record<string, unknown>;
+
+  // The struct being signed decides what authority is granted. A Permit is a
+  // standing allowance; TransferWithAuthorization is a single transfer. This
+  // wrapper only knows how to vouch for the latter.
+  const primaryType = r["primaryType"];
+  if (typeof primaryType !== "string" || primaryType.trim() !== EIP3009.PRIMARY_TYPE) {
+    return abstain(
+      `primaryType is ${JSON.stringify(primaryType)?.slice(0, 60)}, not ` +
+        `${EIP3009.PRIMARY_TYPE} — this wrapper vouches for single transfers only`,
+    );
+  }
+
+  // The domain binds the signature to a contract and a chain. It must be the
+  // one we trust for this (chainId, asset), never one the caller supplied.
+  const key = `${chainId}:${quoteAsset.toLowerCase()}`;
+  const trusted = TRUSTED_DOMAINS[key];
+  if (!trusted) {
+    return abstain(
+      `no trusted EIP-712 domain for (chainId ${chainId}, asset ${quoteAsset})`,
+    );
+  }
+  if (!trusted.verified) {
+    return abstain(
+      `trusted-domain entry for (chainId ${chainId}, asset ${quoteAsset}) is unverified`,
+    );
+  }
+  const domain = r["domain"];
+  if (typeof domain !== "object" || domain === null) {
+    return abstain("typed-data request carries no domain object");
+  }
+  const d = domain as Record<string, unknown>;
+  const dChain = toBig(d["chainId"]);
+  if (dChain === null || dChain !== BigInt(chainId)) {
+    return abstain(
+      `domain.chainId (${String(d["chainId"])}) is not the quote's chain ${chainId}`,
+    );
+  }
+  const dContract = normAddress(d["verifyingContract"]);
+  if (dContract === null || dContract.toLowerCase() !== quoteAsset.toLowerCase()) {
+    return abstain(
+      `domain.verifyingContract (${String(d["verifyingContract"])}) is not the ` +
+        `quoted asset ${quoteAsset}`,
+    );
+  }
+  if (typeof trusted.name === "string" && d["name"] !== trusted.name) {
+    return abstain(
+      `domain.name (${String(d["name"])}) is not the trusted name for this asset`,
+    );
+  }
+  if (typeof trusted.version === "string" && d["version"] !== trusted.version) {
+    return abstain(
+      `domain.version (${String(d["version"])}) is not the trusted version for this asset`,
+    );
+  }
+
+  const message = r["message"];
+  if (typeof message !== "object" || message === null) {
+    return abstain("typed-data request carries no message object");
+  }
+  const m = message as Record<string, unknown>;
+  const to = normAddress(m["to"]);
+  if (to === null) return abstain("message.to is not a valid address");
+  const value = toBig(m["value"]);
+  if (value === null) return abstain("message.value is not an integer");
+
+  // Same two comparisons the signed path makes, and the same codes, so an
+  // operator reading a finding does not have to know which lane produced it.
+  if (to.toLowerCase() !== quotePayTo.toLowerCase()) {
+    findings.push({
+      code: "X402-101",
+      severity: "critical",
+      message:
+        "the payment about to be signed pays an address that is not the quoted merchant",
+      expected: quotePayTo,
+      actual: to,
+    });
+  }
+  if (value !== quotedValue) {
+    findings.push({
+      code: "X402-102",
+      severity: "critical",
+      message: "the amount about to be signed does not equal the quoted amount",
+      expected: quotedValue.toString(),
+      actual: value.toString(),
+    });
+  }
+  const expectedPayer =
+    opts.expectedPayer !== undefined ? normAddress(opts.expectedPayer) : null;
+  if (opts.expectedPayer !== undefined && expectedPayer === null) {
+    return abstain("options.expectedPayer is not a valid address");
+  }
+  if (expectedPayer !== null) {
+    const from = normAddress(m["from"]);
+    if (from === null) return abstain("message.from is not a valid address");
+    if (from.toLowerCase() !== expectedPayer.toLowerCase()) {
+      findings.push({
+        code: "X402-108",
+        severity: "critical",
+        message: "the payment moves a wallet's funds other than the expected payer's",
+        expected: expectedPayer,
+        actual: from,
+      });
+    }
+  }
+
+  const blocking = findings.some((f) => f.severity === "critical");
+  return { decision: blocking ? "refuse" : "allow", findings };
+}
 
 /**
  * Wrap an EVM signer so nothing is authorised unless it matches the quote.
@@ -1118,80 +1286,143 @@ export function guardEvmSigner<T extends object>(
     allow?: readonly string[];
   } = {},
 ): T {
-  const allow = new Set(opts.allow ?? []);
+  const allowed = new Set(opts.allow ?? []);
 
   /**
-   * Pull the x402 payload out of a signing call's arguments.
+   * Pull an ALREADY-SIGNED x402 payload out of a signing call's arguments.
    *
-   * Returns `undefined` when the shape is not recognised, which the caller turns
-   * into a refusal. It does NOT guess: an EIP-712 payload has an
-   * `authorization` (EIP-3009) or a `permit`, and anything else is a signing
-   * request this wrapper has no basis to approve.
+   * Returns undefined when no such payload is present — which now means "try
+   * the pre-signing shape", not "refuse". It does NOT guess: a signed EIP-712
+   * payload has an `authorization` (EIP-3009) or a `permit`.
    */
-  const payloadFrom = (args: unknown[]): EvmPayload | undefined => {
+  const signedPayloadFrom = (args: unknown[]): EvmPayload | undefined => {
     for (const a of args) {
       if (typeof a !== "object" || a === null) continue;
       const o = a as Record<string, unknown>;
       if ("authorization" in o || "permit" in o) return o as EvmPayload;
-      // viem/ethers style: { domain, types, primaryType, message }
-      const msg = o["message"];
-      if (typeof msg === "object" && msg !== null) {
-        const m = msg as Record<string, unknown>;
-        if ("from" in m && "to" in m && "value" in m) {
-          // The signature must be carried across. Rebuilding the payload without
-          // it makes every viem/ethers-shaped call abstain on "signature is
-          // malformed" — which fails closed, so it is safe, but it refuses
-          // CORRECT payments and an operator would reasonably turn the guard off.
-          return {
-            authorization: m as unknown as EvmAuthorization,
-            primaryType: o["primaryType"],
-            signature: o["signature"] ?? m["signature"],
-          };
-        }
-      }
     }
     return undefined;
   };
 
-  return new Proxy(signer, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (
-        typeof prop !== "string" ||
-        allow.has(prop) ||
-        !EVM_SIGNING_METHODS.has(prop) ||
-        typeof value !== "function"
-      ) {
-        return value;
-      }
+  /**
+   * Pull a PRE-SIGNING typed-data request out of the arguments.
+   *
+   * This is the shape viem and ethers actually send to `signTypedData`:
+   * `{domain, types, primaryType, message}`. The old code tried to rebuild an
+   * EvmPayload from it and carry a `signature` across that does not exist yet,
+   * which is why every correct payment was refused.
+   */
+  const typedDataFrom = (args: unknown[]): unknown | undefined => {
+    for (const a of args) {
+      if (typeof a !== "object" || a === null) continue;
+      const o = a as Record<string, unknown>;
+      if ("domain" in o && "message" in o) return o;
+    }
+    return undefined;
+  };
 
-      return async (...args: unknown[]) => {
-        const quote = getQuote();
-        if (!quote) {
-          throw new Error(
-            "x402-guard: refusing to authorise — no payment quote was supplied, " +
-              "so there is nothing to check this against.",
-          );
+  const refuse = (verdict: Verdict, method: string): never => {
+    const detail = verdict.findings.map((f) => `${f.code}: ${f.message}`).join("; ");
+    throw new Error(
+      `x402-guard: refusing to authorise ${method}() (${verdict.decision}). ` +
+        (verdict.reason ?? detail),
+    );
+  };
+
+  /** Wrap one function so it cannot be called without passing the check. */
+  const guardFn = (fn: Function, method: string, self: unknown) =>
+    async (...args: unknown[]) => {
+      const quote = getQuote();
+      if (!quote) {
+        throw new Error(
+          `x402-guard: refusing to authorise ${method}() — no payment quote was ` +
+            "supplied, so there is nothing to check this against.",
+        );
+      }
+      // A signed payload takes the signed path; a pre-signing typed-data
+      // request takes the pre-signing one. Both are real caller shapes.
+      const signed = signedPayloadFrom(args);
+      if (signed !== undefined) {
+        const v = await inspectAuthorization(quote, signed, opts);
+        if (v.decision !== "allow") refuse(v, method);
+        return fn.apply(self, args);
+      }
+      const typed = typedDataFrom(args);
+      if (typed !== undefined) {
+        const v = inspectTypedDataRequest(quote, typed, opts);
+        if (v.decision !== "allow") refuse(v, method);
+        return fn.apply(self, args);
+      }
+      throw new Error(
+        `x402-guard: refusing to authorise — could not read an x402 payment ` +
+          `from the arguments to ${method}(). This wrapper fails closed: a ` +
+          `signing request it cannot check is refused, not passed through. ` +
+          `If ${method} is not a payment path, name it in \`allow\`.`,
+      );
+    };
+
+
+  const wrap = <O extends object>(obj: O, path: string, depth = 0): O =>
+    new Proxy(obj, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof prop !== "string") return value;
+        const qualified = path ? `${path}.${prop}` : prop;
+
+        // Named by the caller as not a payment path. A decision with a name on it.
+        if (allowed.has(prop) || allowed.has(qualified)) return value;
+
+        if (typeof value === "function") {
+          // DEFAULT DENY. Every function is guarded. The ones this wrapper
+          // knows how to check get checked; the rest are refused, because a
+          // method we cannot model is a method we cannot vouch for.
+          if (EVM_SIGNING_METHODS.has(prop)) {
+            return guardFn(value as Function, qualified, target);
+          }
+          if (SAFE_READ_METHODS.has(prop)) return value.bind(target);
+          return async () => {
+            throw new Error(
+              `x402-guard: refusing ${qualified}() — this wrapper does not know ` +
+                `how to check it, and passing through an unmodelled method on a ` +
+                `signer is how a guard becomes a formality. If ${qualified} ` +
+                `cannot move funds, name it in \`allow\` to pass it through.`,
+            );
+          };
         }
-        const payload = payloadFrom(args);
-        if (payload === undefined) {
-          throw new Error(
-            `x402-guard: refusing to authorise — could not read an x402 payment ` +
-              `payload from the arguments to ${prop}(). This wrapper fails closed: ` +
-              `an unrecognised signing request is refused, not passed through. ` +
-              `If ${prop} is not a payment path, name it in \`allow\`.`,
-          );
+
+        // An object that can sign is wrapped, not handed back. Depth is bounded
+        // at one level below the signer: a nested provider gets wrapped, and
+        // anything it returns is refused rather than wrapped recursively, so a
+        // cyclic object graph cannot spin here.
+        // EVERY object is wrapped, arrays included. Asking "does this object
+        // look like a signer?" was a name allowlist one level down — the same
+        // enumerate-instead-of-refuse inversion this wrapper exists to fix. A
+        // nested `signDigest`, a signer at depth 3, or `accounts[0]` all
+        // executed unguarded because none matched the modelled names.
+        if (value !== null && typeof value === "object") {
+          const v = value as Record<string, unknown>;
+          // RAW KEY MATERIAL is not wrappable: a Proxy over a private key
+          // changes nothing, because the caller just reads the bytes.
+          if (
+            v["privateKey"] !== undefined ||
+            v["secretKey"] !== undefined ||
+            v["_signingKey"] !== undefined
+          ) {
+            throw new Error(
+              `x402-guard: refusing to expose ${qualified} — it carries raw key ` +
+                `material, and a guard that hands back the private key is not a ` +
+                `guard. If you need the unwrapped object, name it in \`allow\`.`,
+            );
+          }
+          // No depth cap and no shape test. Wrapping is lazy — the Proxy only
+          // materialises on property access — so an arbitrarily deep or cyclic
+          // graph costs nothing until something actually reaches into it, and
+          // reaching in is exactly when the guard must be present.
+          return wrap(value as object, qualified, depth + 1);
         }
-        const verdict = await inspectAuthorization(quote, payload, opts);
-        if (verdict.decision !== "allow") {
-          const detail = verdict.findings.map((f) => `${f.code}: ${f.message}`).join("; ");
-          throw new Error(
-            `x402-guard: refusing to authorise (${verdict.decision}). ` +
-              (verdict.reason ?? detail),
-          );
-        }
-        return (value as Function).apply(target, args);
-      };
-    },
-  }) as T;
+        return value;
+      },
+    }) as O;
+
+  return wrap(signer, "", 0) as T;
 }

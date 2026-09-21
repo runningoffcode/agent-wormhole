@@ -1,5 +1,181 @@
 # Changelog
 
+## wormhole-x402 0.9.0 — 2026-09-21
+
+**BREAKING: `guardedPay` and `guardedFetch` now require an `integrity` option.**
+
+A verdict arriving over a socket was believed verbatim. A stub answering
+`{"decision":"allow"}` with HTTP 200 — no receipt, no signature — cleared a
+payment redirected to an attacker; a garbage signature and a `request_digest`
+of `"deadbeef"` cleared one too. `verifyReceipt` and `replayMatches` had
+shipped since 0.6 and had zero callers in the client path. That made the
+attacker anyone who can answer as the verifier: a TLS-terminating proxy, a DNS
+hijack, a compromised hosted service — not just someone who already owns the
+config.
+
+Pass `{mode: "required", publicKey}` and a decisive verdict clears only when a
+receipt is present, its signature verifies, `replayMatches` binds it to the
+request actually sent, and the receipt's own decision agrees with the
+envelope's. Anything else is an **abstain** — never an allow, never a refuse —
+and `integrityFailure` names which check failed. `result.verified` reports
+whether the cryptography ran.
+
+That fourth check is not optional. A MITM who keeps a genuine, validly-signed
+*refuse* receipt and flips only the envelope's `decision` passes signature and
+digest verification with bytes the honest server emitted. Without the envelope
+comparison the guard clears a payment its own verifier refused.
+
+In-process callers pass `{mode: "trusted_transport", reason}` and keep working;
+`verified` is then `false`, because nothing was checked. A verifier running with
+no signing key produces abstains under `required` — an unsigned verdict is one
+nobody can check.
+
+**The request digest now covers what steers the verdict.** `quote.network`
+resolves the chainId that keys the trusted EIP-712 domain table, and
+`payload.primaryType` / `payload.permit` gate the standing-authority path. None
+were hashed, so a receipt genuinely signed for a Base transfer replayed onto
+Polygon, or onto a payload that also carried an unlimited Permit, still matched.
+
+**BigInt no longer throws the digest.** Every real EVM authorization carries
+bigint `value` / `validAfter` / `validBefore`; `JSON.stringify` throws on them
+and `replayMatches` swallowed it as `false`. Wiring the digest check in without
+fixing this would have failed every genuine EVM payment closed and reported it
+to the operator as a replayed receipt. Values with a `toJSON` are collapsed to
+their wire form for the same reason: otherwise the client hashes the live
+object while the server hashed what crossed the socket.
+
+**`verifyReceipt` hardening.** It accepted a *private* key where a public one
+belongs (node derives the public half, so an operator who pasted the signing
+key got a working checker and a leaked key, silently). It accepted
+array-shaped receipts, which canonicalise identically to the object form. And
+`Buffer.from(s, "base64")` silently discards non-alphabet characters, so
+`sig + "!!!!"`, `sig + "\n\n"` and a base64url-swapped signature all verified —
+making the signature string a non-canonical identifier that any cache or
+dedupe keyed on it could be walked past. Signatures are now length-checked at
+64 bytes and rejected unless canonically encoded.
+
+**The MCP hosted path is gated too.** `callHosted` returned the 200 body
+verbatim. Set `WORMHOLE_VERIFY_PUBKEY` (the key published at `/v1/key`) and a
+hosted `allow` must prove itself the same way; without it the allow is
+downgraded unless `WORMHOLE_ALLOW_UNSIGNED_HOSTED=1` says otherwise. `refuse`,
+`abstain` and the policy states pass through untouched — none of them
+authorises a payment.
+
+**The digest binds what steers the verdict, not a subset of it.** The
+canonicalizers were an allowlist of fields to bind while the verdict logic read
+fields outside it — the same enumerate-instead-of-refuse shape as the guard
+wrappers. `verify()` refuses on an injected quote, but none of the five text
+fields it scans were hashed, so a MITM could submit a clean quote, keep the
+genuine signed allow, and return it for a poisoned twin. `assetTransferMethod`
+routes to a permit2/erc7710 abstain on both sides and was hashed on neither.
+Both are now bound; the quote text as a digest, so a receipt still carries no
+plaintext.
+
+Raw byte payloads collapsed to null in the object branch, so EVERY
+`Uint8Array` digested identically and a receipt minted for one Solana
+transaction bound to any other. Bytes now normalise to base64, which also makes
+the same transaction hash the same in-process and on the wire. And because
+`toBig` accepts `10000`, `"10000"`, `"0x2710"` and `10000n` as one amount,
+hashing the spelling gave one payment four digests — they now agree.
+
+`makeHttpTransport` threw on every real EVM authorization: `JSON.stringify`
+does not serialise BigInt, so the only exported HTTP transport rejected the
+documented viem shape before the request left the process.
+
+**A verified verdict carries only what was verified.** `findings` and `reason`
+are unsigned wire fields, and the receipt's `codes` is the signed list; nothing
+forced them to agree, so a genuine signed allow could be returned with its
+findings stripped and a reassuring `reason`, stamped `verified: true`. Findings
+are now reconciled against the signed codes and unsigned free text is dropped.
+On the MCP path the whole wire body was spread under that stamp, letting an
+attacker flip a `needs_approval` policy block to `pass` on a verified allow.
+
+**`verifyReceipt` hardening, continued.** A receipt carrying any field outside
+the nine `canonicalReceipt` signs now fails: an attacker could staple
+`policy: {spend_cap_waived: true}` onto a genuine receipt and have it verify,
+then be rendered beside a verified stamp. The private-key check now covers PEM
+strings as well as KeyObjects — the first version guarded only the object half,
+which left the form an operator is most likely to paste.
+
+**BREAKING: both signer wrappers are now default-deny.**
+
+`guardEvmSigner` measured against a real viem `WalletClient`: 30 function
+properties, 4 wrapped, 26 handed back as the unguarded originals, and
+`g.account === wc.account`. The four it did intercept rejected EVERY correct
+payment, because `payloadFrom` rebuilt the payload and tried to carry a
+`signature` across that does not exist yet — `signTypedData` is the call that
+CREATES the signature. So `g.sendTransaction` threw and made the firewall look
+like it was working, while `g.account.signTypedData` signed an unbounded Permit
+to an attacker spender with no error, no log and no abstain, and
+`g.writeContract` — the ordinary ERC-20 transfer path — was identity-equal to
+the original. `guardSigner` on Solana had the same shape: a four-name method
+allowlist, with `sendTransaction` and the inner `provider` handed back raw.
+
+Both now wrap every function property and refuse the ones they cannot check,
+and recursively wrap object properties that expose signing methods. A method
+that cannot move funds is named in `allow` — an escape hatch with a name on
+it, dotted paths included. `inspectTypedDataRequest` is new and checks what can
+be checked before a signature exists: the domain against the trusted table for
+(chainId, asset), `primaryType`, and destination and amount against the quote.
+Correct payments now sign; they never did before.
+
+The README claimed "Every signing route is wrapped" and "Both wrappers fail
+closed". Both were measurably false, and the prose described an allowlist while
+the implementation was a denylist. The docs now describe the code.
+
+**A credential no longer crosses a plaintext hop.** `makeHttpTransport` now
+throws at construction when an `Authorization`, `x-api-key` or `Cookie` header
+would go over `http:` to a non-loopback host. Checked when the transport is
+built rather than per-request, because the request would otherwise succeed and
+nothing would ever tell the operator their key was on the wire in clear.
+`allowInsecureAuth: true` is the named opt-out; loopback is exempt.
+
+**The wrappers refuse raw key material outright.** anchor's `NodeWallet` keeps
+the `Keypair` on a public `payer`, and a Proxy over it changes nothing —
+`secretKey` is 64 bytes the caller simply reads, which is total wallet loss.
+Objects carrying key material are refused rather than wrapped, and nested
+signers are wrapped two levels deep so Wallet Standard's
+`features["solana:signTransaction"]` is covered. The depth bound also means a
+cyclic object graph terminates. On Solana `signMessage` is refused outright: a
+transaction signature IS ed25519 over the serialized message with no domain
+separator, so it signs transactions by another name. The `@solana/kit` method
+names are guarded too.
+
+**The MCP server no longer puts your API key on a plaintext hop.** Three sites
+attached `Bearer <apiKey>` to whatever `WORMHOLE_VERIFY_URL` named, with no
+scheme check — the SDK's own transport got that check and the path that
+actually holds the secret did not. All three now abstain, saying why, rather
+than fall back to the local core (which would silently bypass the operator's
+spend policy). `WORMHOLE_ALLOW_INSECURE_AUTH=1` is the named opt-out; loopback
+is exempt.
+
+**`allow` is a scoped escape hatch, not a total one.** Naming `signMessage` in
+`allow` restored the exact oracle the wrapper exists to close: on Solana a
+transaction signature IS ed25519 over `message.serialize()`, with no domain
+separator, so a permitted message signer signs transactions for anyone who
+hands it the right bytes. The method is now permitted while bytes that
+deserialize as a transaction are still refused — the discrimination the audit
+asked for, rather than refusing the method outright (useless) or allowing it
+outright (an oracle).
+
+**Every object is wrapped, not objects that look like signers.** The first
+default-deny pass gated nested wrapping on a name check, which was the same
+enumerate-instead-of-refuse inversion one level down: a nested method named
+`signDigest`, a signer at depth 3, and `accounts[0]` — a real viem shape — all
+executed unguarded. Wrapping is lazy, so there is no cost to dropping the shape
+test and the depth cap; cyclic graphs still terminate and plain data still
+reads through.
+
+**Upgrade note — ORDER MATTERS.** Receipts issued before this version carry
+digests computed the old way and will not `replayMatch` against this one.
+Deploy the verifier on this version FIRST, then publish the client; the reverse
+order makes every honest EVM payment abstain with "the receipt attests a
+DIFFERENT request". Old clients are unaffected either way, because they do not
+check digests at all — that is the defect this release fixes. The digest also
+keys billing idempotency, so a request spanning the upgrade may be charged
+again rather than deduplicated.
+
+
 ## wormhole-x402 0.8.6 — 2026-09-19
 
 **The documented request body now works.** `verify()` resolves the rail from

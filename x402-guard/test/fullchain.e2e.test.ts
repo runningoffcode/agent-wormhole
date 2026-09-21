@@ -167,6 +167,11 @@ const ISSUED_AT = "2033-05-18T03:33:20.000Z";
 const { publicKey: RECEIPT_PUBKEY, privateKey: RECEIPT_PRIVKEY } =
   generateKeyPairSync("ed25519");
 
+// The full chain now proves the integrity gate too: every guardedPay below
+// verifies the receipt signature against this key and binds it by digest to
+// the request, so a passing test means the crypto path actually ran.
+const REQUIRED = { mode: "required", publicKey: RECEIPT_PUBKEY } as const;
+
 /**
  * The transport an agent injects into guardedPay. In production this POSTs to
  * the hosted /v1/verify; here it calls the SAME `verify` core in-process, with a
@@ -211,6 +216,7 @@ describe("EVM full chain — a conforming payment is ALLOWED, and its receipt re
       network: req.network,
       quote: req.quote,
       payload: req.payload,
+      integrity: REQUIRED,
       transport: inProcessTransport("merchant_signed"),
     });
 
@@ -275,6 +281,7 @@ describe("EVM full chain — a conforming payment is ALLOWED, and its receipt re
       network: req.network,
       quote: req.quote,
       payload: req.payload,
+      integrity: REQUIRED,
       transport: inProcessTransport("merchant_signed"),
     });
     expect(res.decision).toBe("allow");
@@ -309,6 +316,7 @@ describe("EVM full chain — a redirected payment is REFUSED, and a fleet of ref
       network: evmQuote.network,
       quote: evmQuote,
       payload,
+      integrity: REQUIRED,
       transport: inProcessTransport("merchant_signed"),
     });
 
@@ -336,7 +344,8 @@ describe("EVM full chain — a redirected payment is REFUSED, and a fleet of ref
         network: evmQuote.network,
         quote: evmQuote,
         payload: await signAuth({ to: ATTACKER }),
-        transport: inProcessTransport("merchant_signed"),
+        integrity: REQUIRED,
+      transport: inProcessTransport("merchant_signed"),
       });
       expect(res.decision).toBe("refuse");
       // Per-target digest divergence: mutate the recorded digest per agent so no
@@ -406,6 +415,7 @@ describe("EVM full chain — abstain is never an allow and carries no receipt", 
       network: "dogechain-mainnet-???",
       quote: evmQuote,
       payload: await signAuth(),
+      integrity: REQUIRED,
       transport: inProcessTransport("merchant_signed"),
     });
     expect(res.allow).toBe(false);
@@ -429,6 +439,7 @@ describe("SVM full chain — a real Solana transaction verifies, and its receipt
       network: req.network,
       quote: req.quote,
       payload: req.payload,
+      integrity: REQUIRED,
       transport: inProcessTransport("merchant_signed"),
     });
 
@@ -476,6 +487,7 @@ describe("SVM full chain — a real Solana transaction verifies, and its receipt
       network: req.network,
       quote: req.quote,
       payload: req.payload,
+      integrity: REQUIRED,
       transport: inProcessTransport("merchant_signed"),
     });
 
@@ -495,6 +507,7 @@ describe("SVM full chain — a real Solana transaction verifies, and its receipt
       network: "solana",
       quote: svmQuote,
       payload: junk,
+      integrity: REQUIRED,
       transport: inProcessTransport("merchant_signed"),
     });
     expect(res.allow).toBe(false);

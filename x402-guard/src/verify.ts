@@ -425,14 +425,137 @@ function readAmount(quote: unknown): unknown {
   return null;
 }
 
+/**
+ * Make a value safe to hash, without changing what it means.
+ *
+ * `JSON.stringify` THROWS on a BigInt, and every real EVM authorization carries
+ * them (`value`, `validAfter`, `validBefore` are all bigint in the documented
+ * shape). `replayMatches` catches that throw and returns false, so before this
+ * existed, wiring the digest check into the client path would have failed every
+ * genuine EVM payment closed and reported it as `digest_mismatch` — a
+ * serialisation bug misdiagnosed to the operator as a replay attack.
+ *
+ * A `toJSON()` method is the same hazard from the other side: the client hashes
+ * the live object while the server hashed whatever `JSON.stringify` produced on
+ * the wire, so an honest request forks into two digests. Reading the primitive
+ * out here means both sides hash the same bytes.
+ */
+/**
+ * Hash a value the verifier reads as an INTEGER by its numeric value, not its
+ * spelling.
+ *
+ * `toBig` in the EVM lane accepts `10000`, `"10000"` and `"0x2710"` as the same
+ * amount and allows all three. Hashing the spelling instead gave one payment
+ * three digests: an agent that verified in-process with a bigint and replayed
+ * on the wire as a decimal string got `digest_mismatch` on its own honest
+ * request. Mirrors toBig deliberately — if that widens, this must widen with
+ * it, or the two disagree about what "the same request" means.
+ */
+function hashableAmount(v: unknown): unknown {
+  if (typeof v === "bigint") return v.toString();
+  if (typeof v === "number") {
+    return Number.isSafeInteger(v) && v >= 0 ? BigInt(v).toString() : hashable(v);
+  }
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (/^0x[0-9a-fA-F]+$/.test(t) || /^[0-9]+$/.test(t)) {
+      try {
+        return BigInt(t).toString();
+      } catch {
+        return hashable(v);
+      }
+    }
+  }
+  return hashable(v);
+}
+
+function hashable(v: unknown): unknown {
+  if (typeof v === "bigint") return v.toString();
+  if (v === null || v === undefined) return null;
+  if (typeof v === "object") {
+    // Dates, class instances and anything with toJSON serialise differently
+    // depending on whether they crossed a socket. Collapse to the wire form.
+    const j = (v as { toJSON?: () => unknown }).toJSON;
+    if (typeof j === "function") {
+      try {
+        return hashable(j.call(v));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+    return v;
+  }
+  // Functions, symbols: not data, and not hashable. Never silently skipped.
+  return null;
+}
+
 function canonicalizeQuote(quote: unknown): unknown {
   if (!quote || typeof quote !== "object") return quote ?? null;
   const q = quote as Record<string, unknown>;
   // Only verdict-determining fields; free text is excluded on purpose.
+  //
+  // `network` is here because it STEERS THE VERDICT: verifyEvm reads it to
+  // resolve the chainId, and the chainId keys the trusted EIP-712 domain
+  // table. Without it, a receipt genuinely signed for a Base payment replayed
+  // as `network: "polygon"` still matched — a signed, digest-bound allow for a
+  // payment on a different chain.
   return {
-    payTo: q.payTo ?? null,
-    asset: q.asset ?? null,
-    amount: q.amount ?? null,
+    network: hashable(q.network),
+    payTo: hashable(q.payTo),
+    asset: hashable(q.asset),
+    amount: hashableAmount(q.amount),
+    // THE TEXT IS NOT DECORATION. `verify()` runs `inspectQuoteText` over
+    // exactly these five fields and a hit is a hard, early refuse. Leaving
+    // them out of the digest meant a clean quote and a prompt-injected one
+    // shared a digest, so a MITM could submit the clean twin, keep the
+    // genuinely signed allow, and return it for the poisoned request —
+    // `verified: true` on a quote the verifier would have refused.
+    //
+    // Hashed rather than inlined so the request digest still carries no quote
+    // plaintext; that property is why a receipt can be published at all.
+    text: textDigest(q),
+    // Routes the EVM lane to a permit2 / erc7710 abstain or an X402-103
+    // refuse. Decisive, therefore in the digest.
+    assetTransferMethod: hashable(
+      (q.extra as Record<string, unknown> | undefined)?.["assetTransferMethod"],
+    ),
+  };
+}
+
+/**
+ * SHA-256 over the quote's free-text fields, or null when it carries none.
+ *
+ * Reads the SAME five keys `extractQuoteText` feeds to the injection scanner,
+ * so the digest covers precisely what can flip the verdict. If that list ever
+ * widens, this must widen with it — a field the scanner refuses on but the
+ * digest ignores is a receipt that binds to the wrong request.
+ */
+function textDigest(q: Record<string, unknown>): string | null {
+  const parts: string[] = [];
+  for (const k of ["description", "memo", "note", "resource", "extra"]) {
+    const v = q[k];
+    if (typeof v === "string") parts.push(`${k}=${v}`);
+  }
+  if (parts.length === 0) return null;
+  return createHash("sha256").update(parts.join("\u0000")).digest("hex");
+}
+
+/**
+ * A permit grants standing authority, so its presence and its limit both
+ * change what a verdict means. Hashed field-by-field rather than whole so a
+ * BigInt `value` — the normal shape — cannot throw the digest.
+ */
+function canonicalizePermit(permit: unknown): unknown {
+  if (!permit || typeof permit !== "object") return hashable(permit);
+  const p = permit as Record<string, unknown>;
+  return {
+    spender: hashable(p.spender),
+    value: hashableAmount(p.value ?? p.amount),
+    deadline: hashableAmount(p.deadline),
+    nonce: hashable(p.nonce),
   };
 }
 
@@ -441,6 +564,23 @@ function canonicalizePayload(payload: unknown): unknown {
     // Bytes/base64 — hash-stable as-is (the SVM lane; the signed transaction
     // bytes already bind every field including the destination).
     return payload;
+  }
+  // The SVM lane also accepts raw bytes, and they used to fall into the object
+  // branch below where every field collapsed to null — so ALL Uint8Array
+  // payloads digested identically and a receipt minted for one transaction
+  // replay-matched a completely different one. Normalising to base64 also
+  // makes the same transaction hash the same whether it arrived as bytes or as
+  // the base64 the wire carries.
+  if (ArrayBuffer.isView(payload) || payload instanceof ArrayBuffer) {
+    const view =
+      payload instanceof ArrayBuffer
+        ? new Uint8Array(payload)
+        : new Uint8Array(
+            (payload as ArrayBufferView).buffer,
+            (payload as ArrayBufferView).byteOffset,
+            (payload as ArrayBufferView).byteLength,
+          );
+    return Buffer.from(view).toString("base64");
   }
   if (payload && typeof payload === "object") {
     const p = payload as Record<string, unknown>;
@@ -451,28 +591,42 @@ function canonicalizePayload(payload: unknown): unknown {
     // hashed identically, so a receipt for a legitimate payment could be
     // replay-bound to a redirected one. Prefer the authorization + signature,
     // which uniquely determine where the money goes.
+    // `primaryType` and `permit` steer the verdict too: inspectAuthorization
+    // gates on primaryType, and `permit` is the standing-authority-grant path.
+    // Omitting them let a signed allow for an EIP-3009 transfer be replayed
+    // onto a payload that also carried an unlimited Permit.
+    const steering = {
+      primaryType: hashable(p.primaryType),
+      permit: canonicalizePermit(p.permit),
+      asset: hashable(p.asset),
+      // Routes to the permit2 / erc7710 abstains and the X402-103 refuse.
+      assetTransferMethod: hashable(p.assetTransferMethod),
+    };
+
     const auth = p.authorization as Record<string, unknown> | undefined;
     if (auth && typeof auth === "object") {
       return {
         // The signature alone binds the whole authorization; include it plus
         // the human-legible fields so the digest changes on any of them.
-        signature: p.signature ?? null,
-        to: auth.to ?? null,
-        from: auth.from ?? null,
-        value: auth.value ?? null,
-        validAfter: auth.validAfter ?? null,
-        validBefore: auth.validBefore ?? null,
-        nonce: auth.nonce ?? null,
+        signature: hashable(p.signature),
+        to: hashable(auth.to),
+        from: hashable(auth.from),
+        value: hashableAmount(auth.value),
+        validAfter: hashableAmount(auth.validAfter),
+        validBefore: hashableAmount(auth.validBefore),
+        nonce: hashable(auth.nonce),
+        ...steering,
       };
     }
 
     // Fallback for a flat payload shape: bind top-level fields, and the
     // signature if one is present.
     return {
-      signature: p.signature ?? null,
-      to: p.to ?? null,
-      value: p.value ?? p.amount ?? null,
-      from: p.from ?? null,
+      signature: hashable(p.signature),
+      to: hashable(p.to),
+      value: hashableAmount(p.value ?? p.amount),
+      from: hashable(p.from),
+      ...steering,
     };
   }
   return payload ?? null;

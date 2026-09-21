@@ -800,7 +800,7 @@ describe("guardEvmSigner — the firewall", () => {
     const s = fakeSigner();
     const guarded = guardEvmSigner(s, () => quote);
     await expect(guarded.signTypedData({ nonsense: true } as any)).rejects.toThrow(
-      /could not read an x402 payment payload/,
+      /could not read an x402 payment/,
     );
     expect(s.calls).toEqual([]);
   });
@@ -821,20 +821,249 @@ describe("guardEvmSigner — the firewall", () => {
     expect(s.calls).toEqual(["signMessage"]);
   });
 
-  it("accepts a viem/ethers-shaped typed-data call", async () => {
-    // { domain, types, primaryType, message } is what viem and ethers hand a
-    // signer, so the wrapper has to read the payload out of that shape too or
-    // every real caller trips the unrecognised-request refusal.
-    const signed = await signAuth();
+  it("accepts a REAL viem/ethers pre-signing typed-data call (AW-10)", async () => {
+    // AW-10. The old fixture here passed { primaryType, message, signature } —
+    // a shape no viem or ethers caller produces, because `signTypedData` is the
+    // call that CREATES the signature. The wrapper tried to carry a
+    // `signature` across that never exists, so `normalizeSignature(undefined)`
+    // abstained and EVERY correct payment was refused, on all four methods it
+    // intercepted. Measured against a real createWalletClient: 4 wrapped, 26
+    // raw, and `g.account === wc.account`.
+    //
+    // This is the shape viem actually sends. It must pass.
     const s = fakeSigner();
     const guarded = guardEvmSigner(s, () => quote);
     await expect(
       guarded.signTypedData({
-        primaryType: "TransferWithAuthorization",
-        message: signed.authorization,
-        signature: signed.signature,
+        domain: {
+          name: "USD Coin",
+          version: "2",
+          chainId: 8453,
+          verifyingContract: BASE_USDC,
+        },
+        types: EIP3009.TYPES,
+        primaryType: EIP3009.PRIMARY_TYPE,
+        message: {
+          from: SIGNER,
+          to: MERCHANT,
+          value: 1_000_000n,
+          validAfter: 0n,
+          validBefore: 0n,
+          nonce: NONCE_A,
+        },
       } as any),
     ).resolves.toBe("0xsigned");
     expect(s.calls).toEqual(["signTypedData"]);
+  });
+
+  it("refuses the same pre-signing call when it pays someone else", async () => {
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(
+      guarded.signTypedData({
+        domain: {
+          name: "USD Coin",
+          version: "2",
+          chainId: 8453,
+          verifyingContract: BASE_USDC,
+        },
+        types: EIP3009.TYPES,
+        primaryType: EIP3009.PRIMARY_TYPE,
+        message: {
+          from: SIGNER,
+          to: ATTACKER,
+          value: 1_000_000n,
+          validAfter: 0n,
+          validBefore: 0n,
+          nonce: NONCE_A,
+        },
+      } as any),
+    ).rejects.toThrow(/X402-101/);
+    expect(s.calls).toEqual([]);
+  });
+
+  it("refuses an unbounded Permit dressed as a typed-data call", async () => {
+    // Base USDC implements both EIP-3009 and EIP-2612 against the IDENTICAL
+    // domain, so the primaryType is the only offline discriminator.
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(
+      guarded.signTypedData({
+        domain: {
+          name: "USD Coin",
+          version: "2",
+          chainId: 8453,
+          verifyingContract: BASE_USDC,
+        },
+        types: { Permit: [] },
+        primaryType: "Permit",
+        message: {
+          owner: SIGNER,
+          spender: ATTACKER,
+          value: 2n ** 256n - 1n,
+          nonce: 0n,
+          deadline: 2n ** 256n - 1n,
+        },
+      } as any),
+    ).rejects.toThrow(/not TransferWithAuthorization/);
+    expect(s.calls).toEqual([]);
+  });
+});
+
+/**
+ * AW-10, the structural half — pinned against a REAL viem WalletClient.
+ *
+ * The old suite could not see this defect because `fakeSigner()` defines
+ * exactly the six modelled names, so "guards EVERY signing route" iterated the
+ * guarded set and asserted the guarded set was guarded. Measured against a real
+ * `createWalletClient`: 30 functions, 4 wrapped, 26 raw passthrough, and
+ * `g.account === wc.account` — so `g.account.signTypedData` signed an unbounded
+ * Permit to an attacker spender with no error, no log and no abstain, while
+ * `g.sendTransaction` threw and made the firewall look like it was working.
+ *
+ * These build the fixture from viem itself, so it cannot drift from what
+ * callers actually pass.
+ */
+describe("guardEvmSigner — default-deny against a real viem client (AW-10)", () => {
+  async function realClient() {
+    const { createWalletClient, http } = await import("viem");
+    const { base } = await import("viem/chains");
+    const wc = createWalletClient({
+      account,
+      chain: base,
+      transport: http("http://127.0.0.1:1"),
+    });
+    return wc as unknown as Record<string, unknown>;
+  }
+
+  it("wraps EVERY function property — no raw passthrough at all", async () => {
+    const wc = await realClient();
+    const g = guardEvmSigner(wc, () => quote) as Record<string, unknown>;
+    const fns: string[] = [];
+    for (const k in wc) if (typeof wc[k] === "function") fns.push(k);
+    // Sanity: the fixture is the real thing, not a stub with six names.
+    expect(fns.length).toBeGreaterThan(20);
+    const raw = fns.filter((k) => g[k] === wc[k]);
+    expect(raw).toEqual([]);
+  });
+
+  it("does not hand back the raw `account`, whose signing methods were unguarded", async () => {
+    const wc = await realClient();
+    const g = guardEvmSigner(wc, () => quote) as Record<string, unknown>;
+    expect(g.account).not.toBe(wc.account);
+  });
+
+  it("refuses an unbounded Permit through the account object", async () => {
+    const wc = await realClient();
+    const g = guardEvmSigner(wc, () => quote) as any;
+    await expect(
+      g.account.signTypedData({
+        domain: {
+          name: "USD Coin",
+          version: "2",
+          chainId: 8453,
+          verifyingContract: BASE_USDC,
+        },
+        types: { Permit: [] },
+        primaryType: "Permit",
+        message: {
+          owner: SIGNER,
+          spender: ATTACKER,
+          value: 2n ** 256n - 1n,
+          nonce: 0n,
+          deadline: 2n ** 256n - 1n,
+        },
+      }),
+    ).rejects.toThrow(/x402-guard/);
+  });
+
+  it("refuses writeContract and signAuthorization, which were identity-equal originals", async () => {
+    const wc = await realClient();
+    const g = guardEvmSigner(wc, () => quote) as any;
+    // writeContract is the ordinary ERC-20 transfer path; signAuthorization
+    // signs an EIP-7702 delegation of the whole EOA.
+    await expect(g.writeContract({})).rejects.toThrow(/x402-guard/);
+    await expect(g.signAuthorization({})).rejects.toThrow(/x402-guard/);
+  });
+
+  it("a correct payment still signs — the guard is not a brick", async () => {
+    const wc = await realClient();
+    const g = guardEvmSigner(wc, () => quote) as any;
+    const sig = await g.signTypedData({
+      account,
+      domain: {
+        name: "USD Coin",
+        version: "2",
+        chainId: 8453,
+        verifyingContract: BASE_USDC,
+      },
+      types: EIP3009.TYPES,
+      primaryType: EIP3009.PRIMARY_TYPE,
+      message: {
+        from: SIGNER,
+        to: MERCHANT,
+        value: 1_000_000n,
+        validAfter: 0n,
+        validBefore: 99999999999n,
+        nonce: NONCE_A,
+      },
+    });
+    expect(typeof sig).toBe("string");
+    expect(sig.startsWith("0x")).toBe(true);
+  });
+});
+
+/**
+ * The wrapper wraps EVERY object, not objects that look like signers.
+ *
+ * The first default-deny pass gated nested wrapping on an `exposesSigning`
+ * name check — which was the AW-10 inversion surviving one level down: a
+ * nested method named `signDigest`, a signer at depth 3, and `accounts[0]`
+ * were all handed back raw because none matched the modelled names. Wrapping
+ * is lazy (a Proxy materialises only on access), so there is no cost to
+ * dropping the shape test and the depth cap.
+ */
+describe("guardEvmSigner — no object is handed back unwrapped", () => {
+  it("guards a nested method the wrapper does not model by name", async () => {
+    const s = { signTypedData: async () => "0x", _signer: { signDigest: async () => "0xBAD" } };
+    const g = guardEvmSigner(s, () => quote) as any;
+    await expect(g._signer.signDigest()).rejects.toThrow(/x402-guard/);
+  });
+
+  it("guards a signer three levels down", async () => {
+    const s = {
+      signTypedData: async () => "0x",
+      provider: { signer: { wallet: { sign: async () => "0xBAD" } } },
+    };
+    const g = guardEvmSigner(s, () => quote) as any;
+    await expect(g.provider.signer.wallet.sign()).rejects.toThrow(/x402-guard/);
+  });
+
+  it("guards signers inside an array — `accounts` is a real viem shape", async () => {
+    const s = {
+      signTypedData: async () => "0x",
+      accounts: [{ signTypedData: async () => "0xBAD" }],
+    };
+    const g = guardEvmSigner(s, () => quote) as any;
+    await expect(g.accounts[0].signTypedData()).rejects.toThrow(/x402-guard/);
+  });
+
+  it("a cyclic object graph is traversable and does not hang", () => {
+    const cyclic: any = { signTypedData: async () => "0x", p: {} };
+    cyclic.p.self = cyclic;
+    const g = guardEvmSigner(cyclic, () => quote) as any;
+    expect(g.p.self.p).toBeDefined();
+  });
+
+  it("plain data still reads through unchanged", () => {
+    const s = {
+      signTypedData: async () => "0x",
+      chain: { id: 8453, name: "Base" },
+      uid: "abc",
+    };
+    const g = guardEvmSigner(s, () => quote) as any;
+    expect(g.chain.id).toBe(8453);
+    expect(g.chain.name).toBe("Base");
+    expect(g.uid).toBe("abc");
   });
 });

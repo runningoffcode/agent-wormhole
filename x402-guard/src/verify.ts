@@ -142,6 +142,68 @@ export async function verify(
     };
   }
 
+  // 1b. SANITISE CALLER OPTIONS (AW-09).
+  //
+  // Three option keys are the ONLY thing behind three checks, one of which
+  // this package rates critical:
+  //   maxPriorityFeeLamports -> X402-010 (critical)
+  //   nowSeconds, clockSkewSeconds -> X402-105
+  //
+  // On the HTTP path there is no BigInt revival, and that is worse rather
+  // than better in two ways. Relational comparison between a BigInt and a
+  // JSON number is legal, so `feeLamports > cap` silently honours an
+  // un-revived number and the fee cap becomes caller-settable over plain
+  // HTTP. And with a STRING operand `now + skew` is string concatenation:
+  // 1780000000n + "0" === "17800000000", pushing the expiry bound to roughly
+  // the year 2534. Measured: an authorization that expired an hour ago
+  // refuses bare and allows with `{"clockSkewSeconds":"0"}`.
+  //
+  // The rule this package already applies to `assetTransferMethod` and
+  // `expectedPayer` is: a value we cannot read is an abstain, never a pass.
+  // The clock keys are test seams — the transport stamps time — so on a
+  // caller-supplied request they are dropped outright rather than trusted.
+  const rawOptions = (req.options ?? {}) as Record<string, unknown>;
+  const optionFindings: Finding[] = [];
+  const safeOptions: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rawOptions)) {
+    if (k === "nowSeconds" || k === "clockSkewSeconds") {
+      // A REQUEST must not be able to move the clock its own verdict is
+      // judged against. These remain available to direct callers of
+      // inspectAuthorization/inspectPayment, which is what a test seam is
+      // for; they are not something a wire request may carry. Dropping is
+      // safe because both default to real time and zero skew.
+      optionFindings.push({
+        code: "X402-011",
+        severity: "medium",
+        message: `caller-supplied ${k} was ignored: the clock is stamped by the transport, not the request`,
+      });
+      continue;
+    }
+    if (k === "maxPriorityFeeLamports") {
+      // Only a real integer may weaken a check. A string, float or NaN is a
+      // value we cannot read, so the option is dropped and said out loud.
+      let asBig: bigint | null = null;
+      try {
+        if (typeof v === "bigint") asBig = v;
+        else if (typeof v === "number" && Number.isSafeInteger(v)) asBig = BigInt(v);
+        else if (typeof v === "string" && /^-?[0-9]+$/.test(v.trim())) asBig = BigInt(v.trim());
+      } catch {
+        asBig = null;
+      }
+      if (asBig === null || asBig < 0n) {
+        optionFindings.push({
+          code: "X402-011",
+          severity: "medium",
+          message: `option ${k} is not a non-negative integer and was ignored`,
+        });
+        continue;
+      }
+      safeOptions[k] = asBig;
+      continue;
+    }
+    safeOptions[k] = v;
+  }
+
   // 2. Dispatch to the lane that owns the payment shape. Both return the same
   //    Verdict, so the merge below is uniform.
   let laneVerdict: Verdict;
@@ -150,7 +212,7 @@ export async function verify(
       laneVerdict = inspectPayment(
         req.payload as Uint8Array | string,
         req.quote as PaymentQuote,
-        (req.options ?? {}) as InspectOptions,
+        safeOptions as InspectOptions,
       );
     } else {
       /* THE QUOTE INHERITS THE REQUEST'S NETWORK WHEN IT HAS NONE OF ITS OWN.
@@ -175,7 +237,7 @@ export async function verify(
       laneVerdict = await inspectAuthorization(
         evmQuote,
         req.payload as EvmPayload | unknown,
-        (req.options ?? {}) as object,
+        safeOptions as object,
       );
     }
   } catch (err) {
@@ -192,12 +254,12 @@ export async function verify(
   if (laneVerdict.decision === "abstain") {
     return {
       decision: "abstain",
-      findings: [...findings, ...laneVerdict.findings],
+      findings: [...findings, ...optionFindings, ...laneVerdict.findings],
       reason: laneVerdict.reason ?? `${lane} lane abstained`,
     };
   }
 
-  const merged = [...findings, ...laneVerdict.findings];
+  const merged = [...findings, ...optionFindings, ...laneVerdict.findings];
   // Any refuse finding makes the whole verdict a refuse; the quote-text guard
   // above can only add warnings by this point (a refuse there returned early).
   const decision: Verdict["decision"] =
@@ -263,10 +325,33 @@ function buildReceipt(
  * shared export so the replayer and the issuer cannot drift.
  */
 export function requestDigest(req: VerifyRequest): string {
+  // AW-08. The digest used to hash three things, so inputs that MOVE THE
+  // VERDICT sat outside it: `options` was never hashed at all, yet
+  // expectedPayer (X402-108), the clock keys (X402-105) and
+  // maxPriorityFeeLamports (X402-010) each flip the answer. Measured: an
+  // identical request plus `options.expectedPayer` refused where the bare one
+  // allowed, at the SAME digest, and `replayMatches` returned true for both.
+  //
+  // A digest that omits a verdict-determining input makes `replayMatches` —
+  // documented as "is it this exact request?" — answer yes to a different
+  // question. Options are canonicalised by sorted key so ordering cannot
+  // fork the digest, and BigInt is stringified because JSON.stringify throws
+  // on it.
+  const canonicalOptions = (() => {
+    const o = req.options as Record<string, unknown> | undefined;
+    if (!o || typeof o !== "object") return null;
+    const keys = Object.keys(o).sort();
+    if (keys.length === 0) return null;
+    const out: Record<string, unknown> = {};
+    for (const k of keys) out[k] = typeof o[k] === "bigint" ? String(o[k]) : o[k];
+    return out;
+  })();
+
   const canonical = JSON.stringify({
     network: req.network,
     quote: canonicalizeQuote(req.quote),
     payload: canonicalizePayload(req.payload),
+    options: canonicalOptions,
   });
   return createHash("sha256").update(canonical).digest("hex");
 }

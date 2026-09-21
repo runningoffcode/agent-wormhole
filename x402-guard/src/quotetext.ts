@@ -998,8 +998,22 @@ function iterHtmlComments(text: string): Array<{ start: number; body: string }> 
       out.push({ start: openAt, body: text.slice(bodyAt, closeAt) });
       pos = closeAt + COMMENT_CLOSE.length;
     } else {
-      // Over-long body: skip past this opener, never re-walk the region.
-      pos = bodyAt;
+      // AW-04. This comment stated the invariant and the code did the
+      // opposite: advancing to `bodyAt` moves four bytes, so each of the n/4
+      // openers re-ran indexOf across the whole tail — and because an
+      // over-long body is never pushed, the `out.length < 64` guard never
+      // trips either. The docstring above ("indexOf walks the document at
+      // most twice") was the specification this line violated.
+      //
+      // Measured on the published 0.8.6 dist: 32KB 582ms, 40KB 906ms,
+      // 48KB 1,321ms — clean O(n²), and Node is single-threaded, so the
+      // stall is global to the process and hits every other tenant.
+      //
+      // Skipping past the CLOSER is what "never re-walk the region" means:
+      // the region between this opener and the closer cannot contain a
+      // scannable comment, because any nested opener shares this same closer
+      // and would be over-long too.
+      pos = closeAt + COMMENT_CLOSE.length;
     }
   }
   return out;

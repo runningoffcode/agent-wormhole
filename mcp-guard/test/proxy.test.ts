@@ -334,3 +334,52 @@ describe("AW-03 — the cap must not be checked against a number the caller chos
     ).toBe(true);
   });
 });
+
+describe("AW-15 — the daily cap must be a bound in both directions", () => {
+  it("REGRESSION: a negative notional cannot poison the spend window", () => {
+    // Measured: one order recorded at -$1,000,000 drove the 24-hour window
+    // negative and every later cap test passed — 200 of 200 orders allowed,
+    // $20,000 through a $500/day cap, console still printing "per-day $500".
+    const g = guard();
+    const poison = guardRequest(
+      orderCall({ symbol: "AAPL", side: "buy", notional: -1_000_000 }),
+      g,
+    );
+    expect("respond" in poison).toBe(true);
+
+    // The window must be untouched, so the cap still bites afterwards.
+    let allowed = 0;
+    for (let i = 0; i < 20; i++) {
+      const r = guardRequest(orderCall({ symbol: "AAPL", side: "buy", notional: 100 }), g);
+      if ("forward" in r) allowed++;
+    }
+    // maxDailyUsd is 1000 in this fixture, so 10 at $100 and no more.
+    expect(allowed).toBeLessThanOrEqual(10);
+  });
+
+  it("refuses the string form of a negative notional identically", () => {
+    expect(
+      "respond" in guardRequest(orderCall({ symbol: "AAPL", side: "buy", notional: "-1000000" }), guard()),
+    ).toBe(true);
+  });
+
+  it("refuses zero, NaN and Infinity — none of them is an order size", () => {
+    for (const v of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        "respond" in guardRequest(orderCall({ symbol: "AAPL", side: "buy", notional: v }), guard()),
+      ).toBe(true);
+    }
+  });
+
+  it("the ledger itself refuses a poisonous record, not just the guard", async () => {
+    // Defence in depth: the ledger is the thing whose invariant broke, and it
+    // is reachable from any other caller of the class.
+    const { MemorySpendLedger } = await import("../src/index.js");
+    const led = new MemorySpendLedger();
+    led.record(-1_000_000, 1_000);
+    led.record(Number.NaN, 1_000);
+    expect(led.spentInWindow(1_000)).toBe(0);
+    led.record(100, 1_000);
+    expect(led.spentInWindow(1_000)).toBe(100);
+  });
+});

@@ -188,6 +188,10 @@ export const CODES = {
   BATCH_NOT_SUPPORTED: "MCP-008",
   /** A body the guard could not parse. A parser differential is a bypass. */
   UNPARSEABLE_BODY: "MCP-009",
+  /** An SSE upstream, where this guard cannot read the response. */
+  UNSUPPORTED_UPSTREAM: "MCP-010-SSE",
+  /** The guard itself failed. It answers and stays up rather than dying. */
+  GUARD_ERROR: "MCP-011",
   READ_INJECTION: "MCP-010",
 } as const;
 
@@ -299,6 +303,12 @@ export class MemorySpendLedger implements SpendLedger {
     return this.orders.reduce((n, o) => n + o.usd, 0);
   }
   record(usd: number, at: number): void {
+    // Defence in depth for AW-15. guardOrder now refuses a non-positive
+    // notional, but the ledger is the thing whose invariant was actually
+    // broken: a single negative record made every later cap test pass, and it
+    // is reachable from any other caller of this class. A spend ledger that
+    // can be driven negative is not a ledger, so clamping happens here too.
+    if (!Number.isFinite(usd) || usd <= 0) return;
     this.orders.push({ at, usd });
   }
 }
@@ -426,6 +436,25 @@ export class McpGuard {
         };
       }
       return { action: "allow" };
+    }
+
+    // AW-15. There was no positivity check anywhere, and firstNumber accepts a
+    // negative number or numeric string. spentInWindow is a plain reduce, so
+    // ONE order recorded at -$1,000,000 drove the 24-hour window negative and
+    // every later cap test passed: measured at 200 of 200 orders allowed and
+    // $20,000 through a $500/day cap, with the console still printing
+    // "per-day $500". guardResponse never touches the ledger, so the broker
+    // rejecting the bogus ticket does not unwind the poisoning either.
+    //
+    // Only upper bounds were checked. A cap is a bound in BOTH directions:
+    // an order whose size is not a positive, finite number of dollars is not
+    // an order this guard can size at all.
+    if (!Number.isFinite(order.notionalUsd) || order.notionalUsd <= 0) {
+      return {
+        action: "refuse",
+        code: CODES.AMBIGUOUS_ORDER,
+        reason: `order size $${order.notionalUsd} is not a positive dollar amount`,
+      };
     }
 
     if (order.notionalUsd > p.maxOrderUsd) {

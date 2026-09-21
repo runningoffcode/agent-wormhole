@@ -346,9 +346,42 @@ export function createProxyServer(opts: ProxyOptions): Server {
       res.writeHead(405).end();
       return;
     }
+    // AW-17. The body was accumulated with NO cap and stringified inside an
+    // async listener whose rejection nobody handled. A body past V8's maximum
+    // string length throws ERR_STRING_TOO_LONG out of an unhandled promise
+    // rejection and Node's default terminates the process — measured fatal at
+    // 520MB in 435ms, non-zero exit, nothing restarts it. Memory amplification
+    // arrives sooner: one 100MB body drove peak RSS to 766MB, so a 1GB
+    // container OOM-kills at roughly 130-200MB of wire traffic. The oversized
+    // body was also relayed IN FULL to the broker before the crash, making the
+    // proxy an amplifier pointed at the upstream.
+    //
+    // A killed proxy is the product's thesis inverted: "the agent has no other
+    // path to the tool" becomes "there are no caps at all".
+    const MAX_BODY_BYTES = 4 * 1024 * 1024; // generous for JSON-RPC; far under the string limit
     const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", async () => {
+    let received = 0;
+    let overflowed = false;
+    req.on("data", (c) => {
+      received += c.length;
+      if (received > MAX_BODY_BYTES) {
+        if (!overflowed) {
+          overflowed = true;
+          res.writeHead(413, { "content-type": "application/json" }).end(
+            JSON.stringify(refusalResult(null, "request body exceeds the guard's limit")),
+          );
+          req.destroy();
+        }
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      if (overflowed) return;
+      // The listener is async and nobody awaits it, so ANY rejection inside is
+      // an unhandled rejection and Node's default terminates the process. The
+      // guard must outlive a bad request: a dead proxy means no caps at all.
+      void (async () => {
       const raw = Buffer.concat(chunks).toString("utf8");
       let msg: unknown;
       try {
@@ -385,6 +418,25 @@ export function createProxyServer(opts: ProxyOptions): Server {
         return;
       }
       forwardRaw(JSON.stringify(guarded.forward));
+      })().catch((err) => {
+        // Answer, log, stay alive. Never a stack trace to the caller.
+        try {
+          opts.onEvent?.({
+            at: now(),
+            direction: "request",
+            tool: "",
+            decision: "refuse",
+            code: "MCP-011",
+          });
+          if (!res.headersSent)
+            res
+              .writeHead(500, { "content-type": "application/json" })
+              .end(JSON.stringify(refusalResult(null, "guard error; request was not forwarded")));
+        } catch {
+          /* the response is already gone; the point is that the process is not */
+        }
+        console.error("[mcp-guard] request handler error:", err instanceof Error ? err.message : err);
+      });
 
       async function forwardRaw(bodyToSend: string) {
         // Copy the request headers the transport needs (session id, accept),
@@ -417,18 +469,56 @@ export function createProxyServer(opts: ProxyOptions): Server {
         }
 
         if (ct.includes("text/event-stream")) {
-          // A streamed response. Forward the bytes as-is: we do not need to parse
-          // a stream we are only relaying, and a read-scan on a streamed tool
-          // result is a later refinement, not a correctness requirement.
+          // AW-16. Everything below this branch used to be skipped, including
+          // inspectToolList + onToolList — the `!! UNGUARDED TOOLS` fail-stop
+          // that is 0.2.0's headline feature and exits rather than "run as a
+          // guard that guards nothing". It never fired against a stock server.
+          //
+          // This is not an edge case, it is the PROTOCOL DEFAULT: the official
+          // SDK sets enableJsonResponse=false, so a POST response carries
+          // text/event-stream, and the proxy copies the agent's Accept header
+          // through verbatim so it cannot steer the upstream to JSON.
+          //
+          // Measured consequence: a broker executed a $50,000 market order
+          // while the console displayed "per-order $100 / per-day $500".
+          //
+          // The bytes are still relayed verbatim — a guard must not corrupt a
+          // stream — but each SSE `data:` line is now parsed as it passes and
+          // the same inspection runs on it.
           res.writeHead(upstream.status, outHeaders);
+          let sseBuffer = "";
+          const inspectSseLine = (line: string) => {
+            if (!line.startsWith("data:")) return;
+            const payload = line.slice(5).trim();
+            if (!payload) return;
+            try {
+              const parsed = JSON.parse(payload);
+              const report = inspectToolList(parsed, opts.guard);
+              if (report) opts.onToolList?.(report);
+              guardResponse(parsed, opts.guard, opts.onEvent, now);
+            } catch {
+              /* a fragment that is not a whole JSON message; the next flush may complete it */
+            }
+          };
           if (upstream.body) {
             const reader = upstream.body.getReader();
             for (;;) {
               const { done, value } = await reader.read();
               if (done) break;
-              res.write(Buffer.from(value));
+              const bytes = Buffer.from(value);
+              res.write(bytes);
+              // Parse a COPY of the stream; never hold the relay on it.
+              sseBuffer += bytes.toString("utf8");
+              let nl: number;
+              while ((nl = sseBuffer.indexOf("\n")) >= 0) {
+                inspectSseLine(sseBuffer.slice(0, nl).trim());
+                sseBuffer = sseBuffer.slice(nl + 1);
+              }
+              // Bound the carry so a stream with no newlines cannot grow it.
+              if (sseBuffer.length > 1_000_000) sseBuffer = "";
             }
           }
+          if (sseBuffer.trim()) inspectSseLine(sseBuffer.trim());
           res.end();
           return;
         }

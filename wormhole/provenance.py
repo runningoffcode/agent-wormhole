@@ -29,6 +29,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from .rules.injection import Finding
 
@@ -130,7 +131,7 @@ def _attribute(path: Path, windows: list):
     return None
 
 
-def _git_dir(path: Path) -> Path | None:
+def _git_dir(path: Path) -> Optional[Path]:
     """The .git directory governing `path`, or None if it is not in a repo."""
     for parent in [path.parent, *path.parent.parents]:
         candidate = parent / ".git"

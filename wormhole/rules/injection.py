@@ -436,7 +436,7 @@ IMPERATIVE_ADDRESS = re.compile(
 )
 
 
-def _is_descriptive(text: str, pos: int, window: int = 320, end: int | None = None) -> bool:
+def _is_descriptive(text: str, pos: int, window: int = 320, end: Optional[int] = None) -> bool:
     """True when the surrounding prose reads as describing an attack.
 
     Suppression requires one of three things, never a bare keyword:

@@ -1009,11 +1009,22 @@ function iterHtmlComments(text: string): Array<{ start: number; body: string }> 
       // 48KB 1,321ms — clean O(n²), and Node is single-threaded, so the
       // stall is global to the process and hits every other tenant.
       //
-      // Skipping past the CLOSER is what "never re-walk the region" means:
-      // the region between this opener and the closer cannot contain a
-      // scannable comment, because any nested opener shares this same closer
-      // and would be over-long too.
-      pos = closeAt + COMMENT_CLOSE.length;
+      // CORRECTION, found by re-reviewing this fix. Skipping past the CLOSER
+      // is fast but LOSES A COMMENT the old code found: when an over-long
+      // body contains a NESTED opener sharing this same closer, the inner
+      // comment is scannable (its own body is short) and jumping past the
+      // closer discards it. Verified by running both variants side by side:
+      //   "<!--" + 9000*A + "<!-- SECRET -->"
+      //   old -> [" SECRET "]   skip-past-closer -> []
+      // My first claim that "any nested opener would be over-long too" was
+      // simply wrong: the nested one starts later, so its body is shorter.
+      //
+      // Resume from the LAST opener before the closer instead. That keeps the
+      // inner comment visible while still advancing past the padding in one
+      // step, so the quadratic re-walk does not return: each iteration moves
+      // strictly forward past everything except the final opener.
+      const lastOpen = text.lastIndexOf(COMMENT_OPEN, closeAt);
+      pos = lastOpen > openAt ? lastOpen : closeAt + COMMENT_CLOSE.length;
     }
   }
   return out;

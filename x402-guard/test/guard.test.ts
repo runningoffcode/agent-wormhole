@@ -15,6 +15,7 @@ import {
 } from "@solana/web3.js";
 import {
   createAssociatedTokenAccountInstruction,
+  createAssociatedTokenAccountIdempotentInstruction,
   createBurnCheckedInstruction,
   createTransferCheckedInstruction,
   createApproveInstruction,
@@ -900,5 +901,137 @@ describe("guardSigner — allow does not re-open the message-signing oracle", ()
     await expect(g.signMessage(new TextEncoder().encode("hello"))).rejects.toThrow(
       /does not know how to check it/,
     );
+  });
+});
+
+/**
+ * AW-12 — ATA Create/CreateIdempotent riders were waved through on the
+ * discriminant alone.
+ *
+ * Both CPI into `SystemProgram::CreateAccount`, moving rent-exempt lamports
+ * out of the funder — exactly what X402-007 exists to stop, one layer up
+ * through a CPI the walk did not model. The control is what makes it a bypass
+ * rather than a scope gap: a 1-lamport `SystemProgram.transfer` rider refuses,
+ * while 11 ATA riders drained 0.0164 SOL (~$1.82, about 1.6x the priority-fee
+ * ceiling this guard rates critical) and returned `allow` with zero findings.
+ * The attacker owns the created accounts and can CloseAccount the rent back.
+ */
+describe("ATA creates are checked, not counted (AW-12)", () => {
+  const opts = { expectedPayer: payer.publicKey.toBase58() };
+  const freshMint = () => Keypair.generate().publicKey;
+  const ataFor = (owner: PublicKey, mint = USDC) =>
+    getAssociatedTokenAddressSync(mint, owner);
+
+  it("still allows creating the MERCHANT's ATA — with and without expectedPayer", () => {
+    const create = createAssociatedTokenAccountIdempotentInstruction(
+      payer.publicKey,
+      merchantAta,
+      merchant.publicKey,
+      USDC,
+    );
+    const tx = build([create, payment(merchantAta, 1_000_000n)]);
+    expect(inspectPayment(tx, quote, opts).decision).toBe("allow");
+    expect(inspectPayment(tx, quote).decision).toBe("allow");
+  });
+
+  it("refuses an attacker-owned ATA on a fresh mint, funded by the payer", () => {
+    const mint = freshMint();
+    const rider = createAssociatedTokenAccountIdempotentInstruction(
+      payer.publicKey,
+      ataFor(attacker.publicKey, mint),
+      attacker.publicKey,
+      mint,
+    );
+    const v = inspectPayment(
+      build([payment(merchantAta, 1_000_000n), rider]),
+      quote,
+      opts,
+    );
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-007")).toBe(true);
+  });
+
+  it("refuses an attacker-owned ATA even on the QUOTED mint", () => {
+    const rider = createAssociatedTokenAccountIdempotentInstruction(
+      payer.publicKey,
+      attackerAta,
+      attacker.publicKey,
+      USDC,
+    );
+    const v = inspectPayment(
+      build([payment(merchantAta, 1_000_000n), rider]),
+      quote,
+      opts,
+    );
+    expect(v.decision).toBe("refuse");
+  });
+
+  it("refuses max-packed riders — the measured 11-rider drain", () => {
+    const riders = Array.from({ length: 11 }, () => {
+      const mint = freshMint();
+      return createAssociatedTokenAccountIdempotentInstruction(
+        payer.publicKey,
+        ataFor(attacker.publicKey, mint),
+        attacker.publicKey,
+        mint,
+      );
+    });
+    const v = inspectPayment(
+      build([payment(merchantAta, 1_000_000n), ...riders]),
+      quote,
+      opts,
+    );
+    expect(v.decision).toBe("refuse");
+  });
+
+  it("refuses a create funded by someone other than the expected payer", () => {
+    // "Did MY wallet fund this?" is the question expectedPayer asks.
+    const create = createAssociatedTokenAccountIdempotentInstruction(
+      attacker.publicKey,
+      merchantAta,
+      merchant.publicKey,
+      USDC,
+    );
+    const v = inspectPayment(
+      build([create, payment(merchantAta, 1_000_000n)]),
+      quote,
+      opts,
+    );
+    expect(v.decision).toBe("refuse");
+  });
+
+  it("refuses the merchant's own ATA created twice — one create, one rent", () => {
+    const create = () =>
+      createAssociatedTokenAccountIdempotentInstruction(
+        payer.publicKey,
+        merchantAta,
+        merchant.publicKey,
+        USDC,
+      );
+    const v = inspectPayment(
+      build([create(), create(), payment(merchantAta, 1_000_000n)]),
+      quote,
+      opts,
+    );
+    expect(v.decision).toBe("refuse");
+  });
+
+  it("CONTROL: the semantically identical lamport transfer already refused", () => {
+    // If this ever stops refusing, the comparison that makes AW-12 a bypass
+    // rather than a scope gap has gone with it.
+    const v = inspectPayment(
+      build([
+        payment(merchantAta, 1_000_000n),
+        SystemProgram.transfer({
+          fromPubkey: payer.publicKey,
+          toPubkey: attacker.publicKey,
+          lamports: 1,
+        }),
+      ]),
+      quote,
+      opts,
+    );
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-007")).toBe(true);
   });
 });

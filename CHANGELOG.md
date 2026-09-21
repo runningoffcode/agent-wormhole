@@ -166,6 +166,22 @@ executed unguarded. Wrapping is lazy, so there is no cost to dropping the shape
 test and the depth cap; cyclic graphs still terminate and plain data still
 reads through.
 
+**AW-12: ATA creates are checked, not counted.** `Create` and
+`CreateIdempotent` were waved through on the discriminant alone, with no look
+at which account was being created or who paid for it. Both CPI into
+`SystemProgram::CreateAccount`, moving rent-exempt lamports out of the funder —
+exactly what X402-007 exists to stop, one layer up through a CPI the walk did
+not model. The control is what made it a bypass rather than a scope gap: a
+**1-lamport** `SystemProgram.transfer` rider refused, while **11 ATA riders
+drained 0.0164 SOL** (~$1.82, about 1.6x the priority-fee ceiling this guard
+rates critical) and returned `allow` with zero findings — and the attacker owns
+the created accounts, so they can `CloseAccount` the rent straight back out.
+
+A create must now name the quoted merchant's own token account for the quoted
+asset, and be funded by `expectedPayer` when one is given; more than one create
+refuses regardless. Creating the merchant's ATA — the case the scheme actually
+needs — still allows, with and without `expectedPayer`.
+
 **Upgrade note — ORDER MATTERS.** Receipts issued before this version carry
 digests computed the old way and will not `replayMatch` against this one.
 Deploy the verifier on this version FIRST, then publish the client; the reverse

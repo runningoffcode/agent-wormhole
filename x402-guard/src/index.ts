@@ -324,6 +324,10 @@ export function inspectPayment(
   let sawTransferToExpected = false;
   let transferredAmount: bigint | null = null;
   const memos: string[] = [];
+  // AW-12. A conforming payment creates at most the merchant's own token
+  // account. More than one create is rent leaving the funder for accounts the
+  // quote never named, whoever owns them.
+  let ataCreates = 0;
   let cuLimit: bigint | null = null;
   let cuPrice: bigint | null = null;
 
@@ -541,6 +545,75 @@ export function inspectPayment(
           message: "unrecognized associated-token-program instruction in a payment",
           actual: `discriminant ${disc}`,
         });
+      } else {
+        // AW-12. Create (0) and CreateIdempotent (1) used to be waved through
+        // on the discriminant alone, with no look at WHICH account is being
+        // created or WHO pays for it. Both CPI into
+        // SystemProgram::CreateAccount, moving rent-exempt lamports out of the
+        // funder — exactly the movement X402-007 exists to stop, one layer up
+        // through a CPI this walk did not model.
+        //
+        // Measured: a 1-lamport SystemProgram.transfer rider refuses with
+        // X402-007, while 11 ATA riders drain 0.0164 SOL (~$1.82, about 1.6x
+        // the priority-fee ceiling the guard itself rates critical) and return
+        // `allow` with zero findings. The attacker owns the created accounts
+        // and can CloseAccount the rent back out to themselves.
+        //
+        // Account layout for both: [0] funder, [1] associatedAccount,
+        // [2] owner, [3] mint. False-positive-free because a transaction using
+        // address lookup tables has already abstained above, so every key here
+        // is static.
+        const idx = ix.accountKeyIndexes;
+        if (idx.length < 4) {
+          findings.push({
+            code: "X402-009",
+            severity: "critical",
+            message:
+              "associated-token-program create instruction has too few accounts to check",
+            actual: `${idx.length} accounts`,
+          });
+        } else {
+          ataCreates += 1;
+          const created = keys[idx[1]];
+          const owner = keys[idx[2]];
+          const mint = keys[idx[3]];
+          const funder = keys[idx[0]];
+
+          // The only account a payment has any business creating is the
+          // merchant's own token account for the quoted asset.
+          const createdIsQuoted =
+            (created === expectedAta || created === expectedAta2022) &&
+            owner === quote.payTo &&
+            mint === quote.asset;
+
+          if (!createdIsQuoted) {
+            findings.push({
+              code: "X402-007",
+              severity: "critical",
+              message:
+                "payment funds the creation of a token account that is not the " +
+                "quoted merchant's: rent-exempt lamports leave the funder for an " +
+                "account the quote never mentioned",
+              expected: `${expectedAta} (owner ${quote.payTo}, mint ${quote.asset})`,
+              actual: `${created} (owner ${owner}, mint ${mint})`,
+            });
+          }
+
+          // When the caller named a payer, they are asking "did MY wallet fund
+          // this?" — so a create funded by anyone else is not something to
+          // report as checked.
+          if (expectedAuthority !== null && funder !== expectedAuthority) {
+            findings.push({
+              code: "X402-007",
+              severity: "critical",
+              message:
+                "token-account creation is funded by an account other than the " +
+                "expected payer",
+              expected: expectedAuthority,
+              actual: funder,
+            });
+          }
+        }
       }
     }
 
@@ -575,6 +648,24 @@ export function inspectPayment(
         actual: `${feeLamports.toString()} lamports`,
       });
     }
+  }
+
+  // AW-12. Even when every create names the quoted merchant, more than one is
+  // not a payment shape: a conforming transaction creates the merchant's token
+  // account if it does not exist, and that is one account. Capping here is the
+  // belt to the per-instruction braces above — it bounds the rent a payment
+  // can move even if some future create passes the per-account checks.
+  if (ataCreates > 1) {
+    findings.push({
+      code: "X402-007",
+      severity: "critical",
+      message:
+        "payment creates more than one token account: rent-exempt lamports " +
+        "leave the funder once per create, and a conforming payment needs at " +
+        "most the merchant's own account",
+      expected: "at most 1",
+      actual: `${ataCreates} creates`,
+    });
   }
 
   // --- 3. the payment must actually be present ----------------------------

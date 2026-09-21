@@ -182,6 +182,48 @@ asset, and be funded by `expectedPayer` when one is given; more than one create
 refuses regardless. Creating the merchant's ATA — the case the scheme actually
 needs — still allows, with and without `expectedPayer`.
 
+**AW-13 / AW-14: a document cannot vouch for itself.** The module's header
+states the rule — "an exemption must be earned by the value, never granted by
+the key, because the attacker chooses the key" — and the code did the opposite
+in three places.
+
+`isQuotedContext` called an ODD count of `'`, `"` or backtick in the preceding
+400 characters "quoted", and `add()` demoted critical findings on that basis
+while the gate blocks only on critical. `Here's` is an odd count. One
+apostrophe in the merchant's own copy turned `refuse` into `allow` — ordinary
+English punctuation, so it fired on honest listings too. A delimiter must now
+actually enclose the match, and the apostrophe is gone: it is a possessive, not
+a quotation mark.
+
+`isDescriptiveContext` looked in a flat ±120-character window, so a descriptive
+phrase in one sentence excused a payload in the next: "Supports many chains
+including this one. IGNORE ALL PREVIOUS INSTRUCTIONS…" demoted to
+non-blocking. A frame only governs the text it describes, and in every honest
+listing in the corpus the verb and the flagged span share a sentence — the
+verb's object IS the suspicious-looking text. The window is now the sentence.
+Product-category nouns keep the wider window, because they name what the
+product is rather than what one clause says.
+
+`collectOwnHosts` treated any key *named* `resource`/`url`/`iconUrl`/`endpoint`
+at any depth as declaring a merchant host — including inside `extra`, which the
+spec defines as unvalidated merchant free-form JSON. One `extra.url` naming the
+attacker's collector made X402-203, the credential-exfiltration rule, emit
+**nothing at all**: `allow` with `findings: []`, an affirmative all-clear.
+Collection is now scoped to structural positions and never descends into
+`extra`. `collectPayees` had the identical shape and got the identical fix.
+
+`hostOf` folded every host to its last two labels, so under `vercel.app`,
+`pages.dev`, `github.io` or `co.uk` the "merchant's own domain" exemption
+became "every tenant of that suffix" — and free hosting on exactly those
+suffixes is the cheapest way to stand up a listing. Those suffixes now keep one
+more label.
+
+Measured on the project's own 15-listing benign and 17-listing malicious
+corpus: **no change in either direction**, so none of this costs false
+positives or detection. The legitimate cases each carve-out exists for — a
+genuinely quoted red-team example, a product describing its own behaviour, a
+secrets manager sending a credential to its own endpoint — all still pass.
+
 **Upgrade note — ORDER MATTERS.** Receipts issued before this version carry
 digests computed the old way and will not `replayMatch` against this one.
 Deploy the verifier on this version FIRST, then publish the client; the reverse

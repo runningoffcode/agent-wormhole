@@ -737,11 +737,35 @@ const DESCRIPTIVE_FRAME_SRC =
   String.raw`(?:can\s+|will\s+|also\s+)?(?:detect|detects|scan|scans|block|blocks|strip|strips|` +
   String.raw`neutralis|neutraliz|sanitis|sanitiz|filter|filters|test|tests|probe|probes|` +
   String.raw`handle|handles|parse|parses|support|supports|emit|emits|tokenis|tokeniz|normalis|normaliz)` +
-  String.raw`|\b(?:such as|for example|e\.g\.|including)\b` +
+  // AW-13. `including` was in this list, and it is not a descriptive frame:
+  // it is a bare connective that appears constantly in honest merchant copy
+  // ("supports many chains including Base") and costs an attacker nothing to
+  // prepend. Measured: one occurrence within ~110 characters demoted a
+  // canonical injection payload from refuse to allow.
+  //
+  // The rest of this pattern requires a SUBJECT — "we detect", "the scanner
+  // blocks" — which is an actual claim about who is speaking. These three
+  // keep that property only because they introduce an example of something
+  // already being discussed; `including` does not, so it is gone. The
+  // remaining three are also now required to be followed by a quotation or
+  // code delimiter within a short window, so "such as" has to actually
+  // introduce a quoted example rather than merely appear nearby.
+  String.raw`|\b(?:such as|for example|e\.g\.)\s+` + "[\"'\u0060\u201c]" +
   // Third-person-singular verb forms only, and NOT the bare stems. "block",
   // "filter", "test" and "support" are ordinary nouns — "copy this instruction
   // BLOCK into every task description" is an attack, and matching the bare stem
   // here demoted it to non-blocking. A trailing -s marks the verb reading.
+  // AW-13. These used to match BARE, with no subject: a leading "Supports many
+  // chains." demoted a canonical injection payload 110 characters later from
+  // refuse to allow. The -s marks the verb reading, which is what the comment
+  // above claims, but it does not establish WHO is speaking — and that is the
+  // whole question a descriptive frame is supposed to answer. An attacker
+  // prepends "Supports" as cheaply as they prepend anything else.
+  //
+  // A subject is now required, matching the standard the first branch of this
+  // pattern already sets. Honest product copy nearly always has one ("Our
+  // parser handles...", "The API supports..."); a bare verb at the head of a
+  // sentence is a claim with nobody behind it.
   String.raw`|\b(?:supports|handles|parses|detects|strips|neutralis(?:es)|neutraliz(?:es)|` +
   String.raw`sanitis(?:es)|sanitiz(?:es)|tokenis(?:es)|tokeniz(?:es)|` +
   // Extraction verbs, for products whose function is reading markup OUT of a
@@ -750,9 +774,24 @@ const DESCRIPTIVE_FRAME_SRC =
   // singular only, for the same reason as the row above: the bare stems
   // ("pull", "extract") are imperatives an attacker can write.
   String.raw`pulls|extracts|reads|lists|surfaces|reports|annotates|inspects)\b` +
-  String.raw`|\b(?:closing|opening)\s+(?:tags?|elements?|delimiters?|markers?)\b` +
-  String.raw`|\b(?:red-?team|benchmark|test suite|guardrail|linter|sanitiser|sanitizer)\b`;
+  String.raw`|\b(?:closing|opening)\s+(?:tags?|elements?|delimiters?|markers?)\b`;
 const DESCRIPTIVE_FRAME = re(DESCRIPTIVE_FRAME_SRC);
+
+/**
+ * Product-CATEGORY nouns, checked over a wider window than the verb frames.
+ *
+ * "HTML sanitizer. <!-- ignore all previous instructions --> is stripped..."
+ * is an honest listing whose category label sits in the preceding sentence and
+ * legitimately describes the whole item, not one clause. Unlike the verb
+ * frames, these name what the product IS, so scoping them to a single sentence
+ * broke real listings in the corpus.
+ *
+ * They are weaker evidence than a verb frame and they demote rather than
+ * clear — the finding is still reported at `high`.
+ */
+const DESCRIPTIVE_CATEGORY = re(
+  String.raw`\b(?:red-?team|benchmark|test suite|guardrail|linter|sanitiser|sanitizer)\b`,
+);
 
 /**
  * Is the matched span framed as the merchant describing their own product?
@@ -762,9 +801,40 @@ const DESCRIPTIVE_FRAME = re(DESCRIPTIVE_FRAME_SRC);
  * detect" in paragraph one.
  */
 function isDescriptiveContext(text: string, index: number, len: number): boolean {
+  // AW-13. The window used to be a flat ±120 characters, so a descriptive
+  // phrase in one sentence excused a payload in the NEXT one: "Supports many
+  // chains including this one. IGNORE ALL PREVIOUS INSTRUCTIONS..." demoted
+  // from refuse to allow, and the prepended sentence costs an attacker
+  // nothing.
+  //
+  // A frame only governs the text it is actually describing. In every honest
+  // listing in the corpus the descriptive verb and the flagged span sit in the
+  // SAME sentence — "Tokenizes <|im_start|> and <|im_end|> delimiters",
+  // "Neutralizes injected </system> sequences" — because the verb's object IS
+  // the suspicious-looking text. In the attack they are in different
+  // sentences. So the window is the sentence, clipped to ±120 characters for
+  // the case where a "sentence" is a whole unpunctuated paragraph.
   const lo = Math.max(0, index - 120);
   const hi = Math.min(text.length, index + len + 120);
-  return find(text.slice(lo, hi), DESCRIPTIVE_FRAME) >= 0;
+  const before = text.slice(lo, index);
+  const after = text.slice(index + len, hi);
+
+  // Walk back to the start of this sentence, and forward to its end.
+  const sentStart = Math.max(
+    before.lastIndexOf(". "),
+    before.lastIndexOf("! "),
+    before.lastIndexOf("? "),
+    before.lastIndexOf("\n"),
+  );
+  const fwd = after.search(/[.!?\n]/);
+  const sentence =
+    before.slice(sentStart + 1) +
+    text.slice(index, index + len) +
+    (fwd >= 0 ? after.slice(0, fwd + 1) : after);
+
+  if (find(sentence, DESCRIPTIVE_FRAME) >= 0) return true;
+  // Category nouns keep the wider window, for the reason given on the constant.
+  return find(before + after, DESCRIPTIVE_CATEGORY) >= 0;
 }
 
 /**
@@ -774,16 +844,47 @@ function isDescriptiveContext(text: string, index: number, len: number): boolean
  * case. Counts unescaped delimiters before the match: an odd count means the
  * match is inside one.
  */
+/**
+ * AW-13. Is this match genuinely INSIDE a quotation?
+ *
+ * This used to count delimiters in the preceding 400 characters and call an
+ * ODD count "quoted". `Here's` is an odd count. So one apostrophe anywhere in
+ * the preceding 400 characters of the merchant's own copy demoted every
+ * critical quote-text finding to `high`, and `scanFields` blocks only on
+ * `critical` — measured: a canonical injection payload went from `refuse` to
+ * `allow`, with the same codes, on one apostrophe. The trigger is ordinary
+ * English punctuation, so it fired on honest copy too.
+ *
+ * The file's own header explains why the Python `_is_descriptive` machinery
+ * was NOT ported: it "keys on signals a merchant supplies freely: backticks...
+ * Porting it would ship a documented bypass." It was then reintroduced here,
+ * keyed on backticks and quotes.
+ *
+ * The apostrophe is gone — it is not a quoting delimiter in English prose, it
+ * is a possessive and a contraction. The rest now require a delimiter that
+ * actually OPENS before the match and CLOSES after it, so the match is
+ * genuinely enclosed rather than merely preceded by an odd count. Measured on
+ * the published 22-listing benign corpus: the old gate blocked 0/22, and
+ * removing it entirely also blocked 0/22, so this costs nothing in false
+ * positives.
+ */
 function isQuotedContext(text: string, index: number): boolean {
-  const before = text.slice(Math.max(0, index - 400), index);
-  for (const d of ['"', "'", "`", "“"]) {
-    const n = (before.match(new RegExp(`\\${d}`, "g")) ?? []).length;
-    if (d === "“") {
-      // Curly quotes pair, so an unmatched opener is the tell.
-      const close = (before.match(/”/g) ?? []).length;
-      if (n > close) return true;
-    } else if (n % 2 === 1) return true;
+  const lo = Math.max(0, index - 400);
+  const hi = Math.min(text.length, index + 400);
+  const before = text.slice(lo, index);
+  const after = text.slice(index, hi);
+
+  // Straight delimiters: an opener before AND a closer after means enclosed.
+  // NOT the apostrophe — "the world's fastest" is not a quotation.
+  for (const d of ['"', "`"]) {
+    const opens = (before.match(new RegExp(`\\${d}`, "g")) ?? []).length;
+    if (opens % 2 === 1 && after.includes(d)) return true;
   }
+  // Curly quotes genuinely pair, so an unmatched opener before plus a closer
+  // after is the tell.
+  const cOpen = (before.match(/[“]/g) ?? []).length;
+  const cClose = (before.match(/[”]/g) ?? []).length;
+  if (cOpen > cClose && /[”]/.test(after)) return true;
   return false;
 }
 
@@ -1249,15 +1350,112 @@ function hostOf(dest: string): string | null {
   const m = /^https?:\/\/([^/\s:?#]+)/i.exec(dest);
   if (!m) return null;
   const parts = m[1].toLowerCase().split(".");
+  if (parts.length < 2) return m[1].toLowerCase();
   // Fold subdomains: api.vault.acme.io and vault.acme.io are the same party.
-  return parts.length >= 2 ? parts.slice(-2).join(".") : m[1].toLowerCase();
+  //
+  // But on a MULTI-TENANT suffix they are not. Folding to the last two labels
+  // turned `evil-tenant.vercel.app` and `honest-merchant.vercel.app` into the
+  // same "merchant's own domain", so a listing hosted free on exactly those
+  // suffixes exempted every other tenant — and free hosting on them is the
+  // cheapest way to stand up a listing. Keep one more label for the suffixes
+  // where the label IS the tenant boundary.
+  const lastTwo = parts.slice(-2).join(".");
+  if (MULTI_TENANT_SUFFIXES.has(lastTwo) && parts.length >= 3) {
+    return parts.slice(-3).join(".");
+  }
+  return lastTwo;
 }
 
+/**
+ * Suffixes where the label to the left is a separate party, not a subdomain of
+ * one. Not a full public-suffix list — a dependency this module will not take —
+ * but the free-hosting and ccTLD-style suffixes that make the folding wrong in
+ * the direction that grants an exemption.
+ */
+const MULTI_TENANT_SUFFIXES: ReadonlySet<string> = new Set([
+  "vercel.app",
+  "pages.dev",
+  "workers.dev",
+  "github.io",
+  "gitlab.io",
+  "web.app",
+  "firebaseapp.com",
+  "netlify.app",
+  "herokuapp.com",
+  "azurewebsites.net",
+  "cloudfront.net",
+  "amazonaws.com",
+  "r2.dev",
+  "fly.dev",
+  "onrender.com",
+  "railway.app",
+  "repl.co",
+  "glitch.me",
+  "ngrok.io",
+  "ngrok.app",
+  "trycloudflare.com",
+  "co.uk",
+  "org.uk",
+  "ac.uk",
+  "gov.uk",
+  "com.au",
+  "com.br",
+  "com.cn",
+  "co.jp",
+  "co.kr",
+  "co.in",
+  "co.za",
+  "com.mx",
+  "com.tr",
+]);
+
 /** Hosts the quote presents as its own, so its own endpoints are not "external". */
-function collectOwnHosts(node: unknown, out: Set<string>, depth = 0): void {
+/**
+ * Keys whose VALUE the merchant's server sets as part of the x402 envelope.
+ *
+ * `extra` is not here and must never be: the spec leaves it as unvalidated
+ * merchant free-form JSON, so "a host named under `extra`" is precisely
+ * "a host the attacker chose to name in a field they control".
+ */
+const STRUCTURAL_HOST_KEYS = new Set(["resource", "url", "iconurl", "endpoint"]);
+
+/** Envelope containers a structural key may legitimately sit inside. */
+const ENVELOPE_CONTAINERS = new Set(["accepts", "paymentrequirements", "quote"]);
+
+/**
+ * AW-14. The merchant's own document used to supply the trust context that
+ * exempts it.
+ *
+ * This walked the WHOLE quote to depth 6, treating any key *named*
+ * `resource`/`url`/`iconUrl`/`endpoint` as declaring one of the merchant's own
+ * hosts — including inside `extra`, which the spec defines as unvalidated
+ * merchant free-form JSON. So one `extra.url` naming the attacker's collector
+ * added that collector to the "merchant's own hosts" set, and X402-203, the
+ * credential-exfiltration rule, `continue`d and emitted NOTHING. Measured: a
+ * quote that refused X402-203/critical returned `allow` with `findings: []`,
+ * an affirmative all-clear, on one added key.
+ *
+ * The comment that used to sit here said "Only structural URL-bearing keys,
+ * never `description`. Otherwise an attacker names their own exfil host in the
+ * prose and thereby exempts it." That was the right principle and the code did
+ * not implement it: `extra.url` is naming a host in a field you control just as
+ * surely as `description` is. The module's own stated rule is the test — an
+ * exemption must be earned by the value, never granted by the key, because the
+ * attacker chooses the key.
+ *
+ * So: collect only from structural POSITIONS, not merely structural key names.
+ * Top level, or inside a known envelope container (`accepts[]`), and never
+ * under `extra` at any depth.
+ */
+function collectOwnHosts(
+  node: unknown,
+  out: Set<string>,
+  depth = 0,
+  structural = true,
+): void {
   if (depth > 6 || node === null || typeof node !== "object") return;
   if (Array.isArray(node)) {
-    for (const v of node) collectOwnHosts(v, out, depth + 1);
+    for (const v of node) collectOwnHosts(v, out, depth + 1, structural);
     return;
   }
   for (const key of Object.getOwnPropertyNames(node)) {
@@ -1269,23 +1467,38 @@ function collectOwnHosts(node: unknown, out: Set<string>, depth = 0): void {
     }
     const k = key.toLowerCase();
     if (typeof v === "string") {
-      // Only structural URL-bearing keys, never `description`. Otherwise an
-      // attacker names their own exfil host in the prose and thereby exempts it.
-      if (k === "resource" || k === "url" || k === "iconurl" || k === "endpoint") {
+      if (structural && STRUCTURAL_HOST_KEYS.has(k)) {
         const h = hostOf(v);
         if (h) out.add(h);
       }
     } else {
-      collectOwnHosts(v, out, depth + 1);
+      // Descending into `extra` — or anything that is not a known envelope
+      // container — leaves structural territory for good. Once inside
+      // merchant-authored JSON, no key name earns an exemption.
+      const stillStructural =
+        structural && (ENVELOPE_CONTAINERS.has(k) || /^\d+$/.test(k));
+      collectOwnHosts(v, out, depth + 1, stillStructural);
     }
   }
 }
 
 /** Collect declared payee addresses so prose addresses can be compared to them. */
-function collectPayees(node: unknown, out: Set<string>, depth = 0): void {
+/**
+ * AW-14, the same shape on the payee side: `extra.to` disarmed X402-208's
+ * foreign-address corroborator. Rated lower by the audit because conformance
+ * backstops it — `evmQuoteFromRequirements` discards `extra` entirely, so a
+ * planted key cannot poison the money comparison — but the content layer
+ * should not depend on another layer catching its mistakes.
+ */
+function collectPayees(
+  node: unknown,
+  out: Set<string>,
+  depth = 0,
+  structural = true,
+): void {
   if (depth > 6 || node === null || typeof node !== "object") return;
   if (Array.isArray(node)) {
-    for (const v of node) collectPayees(v, out, depth + 1);
+    for (const v of node) collectPayees(v, out, depth + 1, structural);
     return;
   }
   for (const key of Object.getOwnPropertyNames(node)) {
@@ -1297,11 +1510,16 @@ function collectPayees(node: unknown, out: Set<string>, depth = 0): void {
     }
     const k = key.toLowerCase();
     if (typeof v === "string") {
-      if (k === "payto" || k === "to" || k === "asset" || k === "feepayer") {
+      if (
+        structural &&
+        (k === "payto" || k === "to" || k === "asset" || k === "feepayer")
+      ) {
         out.add(v.toLowerCase());
       }
     } else {
-      collectPayees(v, out, depth + 1);
+      const stillStructural =
+        structural && (ENVELOPE_CONTAINERS.has(k) || /^\d+$/.test(k));
+      collectPayees(v, out, depth + 1, stillStructural);
     }
   }
 }

@@ -28,12 +28,16 @@ const orderCall = (args: Record<string, unknown>) => ({
 
 describe("extractOrder", () => {
   it("reads conventional field names", () => {
-    expect(extractOrder({ symbol: "aapl", side: "buy", amount_usd: 200 })).toEqual({
+    // toMatchObject, not toEqual: extractOrder also reports EVERY alias it saw
+    // (symbolsSeen / notionalsSeen / quantitiesSeen / currenciesSeen), which is
+    // what lets guardOrder refuse a decoy field instead of picking a winner.
+    // The parse itself is unchanged, and that is what this test is about.
+    expect(extractOrder({ symbol: "aapl", side: "buy", amount_usd: 200 })).toMatchObject({
       symbol: "AAPL",
       side: "buy",
       notionalUsd: 200,
     });
-    expect(extractOrder({ ticker: "NVDA", action: "SELL", shares: 10 })).toEqual({
+    expect(extractOrder({ ticker: "NVDA", action: "SELL", shares: 10 })).toMatchObject({
       symbol: "NVDA",
       side: "sell",
       quantity: 10,
@@ -223,5 +227,110 @@ describe("inspectToolList", () => {
     expect(inspectToolList({ jsonrpc: "2.0", id: 1, result: { content: [] } })).toBeUndefined();
     expect(inspectToolList({ method: "tools/call" })).toBeUndefined();
     expect(inspectToolList(null)).toBeUndefined();
+  });
+});
+
+/**
+ * The two criticals from the zauth review, as tests.
+ *
+ * Both were measured against the published 0.2.0 tarball with README-default
+ * policy, not a hand-rolled fake. This component is in the money path by
+ * construction, so the rule it must obey is the one its own file already
+ * states: an unmodelled shape fails closed.
+ */
+describe("AW-02 — a JSON-RPC batch must not skip the guard", () => {
+  const overCap = orderCall({ symbol: "AAPL", side: "buy", notional: 50_000_000 });
+
+  it("REGRESSION: a one-element batch is refused, not forwarded", () => {
+    // Measured: the bare object produced 1 guard event and a refusal; the
+    // identical object wrapped in [...] produced 0 events and the broker
+    // received notional: 50000000 intact.
+    const events: unknown[] = [];
+    const out = guardRequest([overCap], guard(), (e) => events.push(e));
+    expect("respond" in out).toBe(true);
+    // The bypass was silent. A refusal that logs nothing is half a bypass.
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ decision: "refuse", code: "MCP-008" });
+  });
+
+  it("refuses a 10,000-element batch without inspecting element by element", () => {
+    // The scaled measurement: $10,000,000,000 in one 1.4MB batch, 47ms, zero
+    // audit events. The envelope is refused, so size is irrelevant.
+    const out = guardRequest(Array(10_000).fill(overCap), guard());
+    expect("respond" in out).toBe(true);
+  });
+
+  it("refuses a NESTED batch, which also forwarded", () => {
+    expect("respond" in guardRequest([[overCap]], guard())).toBe(true);
+  });
+
+  it("refuses an EMPTY batch rather than treating it as nothing to do", () => {
+    expect("respond" in guardRequest([], guard())).toBe(true);
+  });
+
+  it("still forwards an ordinary single message", () => {
+    const ok = orderCall({ symbol: "AAPL", side: "buy", notional: 100 });
+    expect("forward" in guardRequest(ok, guard())).toBe(true);
+  });
+});
+
+describe("AW-03 — the cap must not be checked against a number the caller chose", () => {
+  it("REGRESSION: a decoy notional beside a quantity is refused", () => {
+    // Measured: {quantity: 1000, notional: 1} was sized at $1, executed
+    // $25,000,000 against a $100 cap, and the audit row asserted a $1 order.
+    const out = guardRequest(
+      orderCall({ symbol: "AAPL", side: "buy", quantity: 1000, notional: 1 }),
+      guard(),
+    );
+    expect("respond" in out).toBe(true);
+  });
+
+  it("REGRESSION: two disagreeing dollar aliases are refused, not resolved", () => {
+    // {notional: 1, amount: 50000} — the guard saw $1, the broker kept $50,000.
+    const events: { code?: string }[] = [];
+    const out = guardRequest(
+      orderCall({ symbol: "AAPL", side: "buy", notional: 1, amount: 50_000 }),
+      guard(),
+      (e) => events.push(e as { code?: string }),
+    );
+    expect("respond" in out).toBe(true);
+    expect(events[0]?.code).toBe("MCP-005");
+  });
+
+  it("REGRESSION: two disagreeing symbols are refused, so the allowlist cannot be side-stepped", () => {
+    // {symbol: "AAPL", ticker: "GME"} — the allowlist checked AAPL; the broker
+    // kept GME. Both must be the same instrument or the order is meaningless.
+    const out = guardRequest(
+      orderCall({ symbol: "AAPL", ticker: "GME", side: "buy", notional: 100 }),
+      guard(),
+    );
+    expect("respond" in out).toBe(true);
+  });
+
+  it("refuses an order denominated in something other than USD", () => {
+    const out = guardRequest(
+      orderCall({ symbol: "AAPL", side: "buy", notional: 100, currency: "JPY" }),
+      guard(),
+    );
+    expect("respond" in out).toBe(true);
+  });
+
+  it("keeps the controls that already worked: quantity-only still fails closed", () => {
+    expect(
+      "respond" in guardRequest(orderCall({ symbol: "AAPL", side: "buy", quantity: 1000 }), guard()),
+    ).toBe(true);
+  });
+
+  it("keeps the allowlist and the cap working on unambiguous orders", () => {
+    expect(
+      "respond" in guardRequest(orderCall({ symbol: "GME", side: "buy", notional: 10 }), guard()),
+    ).toBe(true);
+    expect(
+      "respond" in guardRequest(orderCall({ symbol: "AAPL", side: "buy", notional: 50_000 }), guard()),
+    ).toBe(true);
+    // And an ordinary, unambiguous, in-policy order still goes through.
+    expect(
+      "forward" in guardRequest(orderCall({ symbol: "AAPL", side: "buy", notional: 100 }), guard()),
+    ).toBe(true);
   });
 });

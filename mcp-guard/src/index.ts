@@ -62,6 +62,20 @@ export interface OrderIntent {
   notionalUsd?: number;
   /** Share quantity, if the order is quantity-based rather than dollar-based. */
   quantity?: number;
+
+  /*
+   * EVERY alias the extractor saw for each dimension (AW-03).
+   *
+   * The guard forwards the caller's ORIGINAL bytes, so it never decides which
+   * field the broker honours. If two aliases of one dimension disagree, the
+   * guard cannot know which number it is actually capping — so it refuses
+   * rather than picking a winner. These carry the evidence for that decision
+   * and are optional so older callers of guardOrder() still type-check.
+   */
+  symbolsSeen?: readonly string[];
+  notionalsSeen?: readonly number[];
+  quantitiesSeen?: readonly number[];
+  currenciesSeen?: readonly string[];
 }
 
 export interface OrderPolicy {
@@ -164,6 +178,16 @@ export const CODES = {
   OVER_DAILY_CAP: "MCP-002",
   SYMBOL_NOT_ALLOWED: "MCP-003",
   UNKNOWN_NOTIONAL: "MCP-004",
+  /** Two aliases of one dimension disagree; the guard will not pick a winner. */
+  AMBIGUOUS_ORDER: "MCP-005",
+  /** A share quantity the guard cannot price, even though a notional was given. */
+  UNPRICED_QUANTITY: "MCP-006",
+  /** Sized in something other than USD, so the USD cap does not apply. */
+  NON_USD_ORDER: "MCP-007",
+  /** A batch envelope. Unmodelled shapes fail closed. */
+  BATCH_NOT_SUPPORTED: "MCP-008",
+  /** A body the guard could not parse. A parser differential is a bypass. */
+  UNPARSEABLE_BODY: "MCP-009",
   READ_INJECTION: "MCP-010",
 } as const;
 
@@ -323,6 +347,61 @@ export class McpGuard {
   guardOrder(order: OrderIntent): GuardDecision {
     const p = this.cfg.policy;
     const sym = order.symbol.toUpperCase();
+
+    // AW-03: ambiguity is refused BEFORE any cap is compared. A cap checked
+    // against one of two disagreeing fields is not a cap — the measured case
+    // passed a $25,000,000 order under a $100 cap and logged it as $1.
+    const distinct = (xs?: readonly (string | number)[]) => new Set(xs ?? []).size;
+
+    if (distinct(order.symbolsSeen) > 1) {
+      return {
+        action: "refuse",
+        code: CODES.AMBIGUOUS_ORDER,
+        reason:
+          `order names more than one instrument (${(order.symbolsSeen ?? []).join(", ")}); ` +
+          `the guard will not choose which one the broker reads`,
+      };
+    }
+    if (distinct(order.notionalsSeen) > 1) {
+      return {
+        action: "refuse",
+        code: CODES.AMBIGUOUS_ORDER,
+        reason:
+          `order carries conflicting dollar amounts (${(order.notionalsSeen ?? []).join(", ")}); ` +
+          `the guard cannot know which the broker will size on`,
+      };
+    }
+    if (distinct(order.quantitiesSeen) > 1) {
+      return {
+        action: "refuse",
+        code: CODES.AMBIGUOUS_ORDER,
+        reason: `order carries conflicting quantities (${(order.quantitiesSeen ?? []).join(", ")})`,
+      };
+    }
+
+    // A USD cap can only bound a USD order.
+    const nonUsd = (order.currenciesSeen ?? []).filter((c) => c !== "USD");
+    if (nonUsd.length > 0) {
+      return {
+        action: "refuse",
+        code: CODES.NON_USD_ORDER,
+        reason: `order is denominated in ${nonUsd.join(", ")}; the cap is in USD`,
+      };
+    }
+
+    // A quantity the guard cannot price is unbounded EVEN IF a notional was
+    // also supplied: the broker may size on the quantity and ignore the
+    // dollars. This is the unconditional half of AW-03 and it stands on its
+    // own, regardless of which alias any particular broker reads.
+    if (order.quantity !== undefined && order.notionalUsd !== undefined) {
+      return {
+        action: "refuse",
+        code: CODES.UNPRICED_QUANTITY,
+        reason:
+          `order gives both a quantity (${order.quantity}) and a dollar amount ` +
+          `($${order.notionalUsd}); the guard cannot bound a share count it cannot price`,
+      };
+    }
 
     if (p.allowedSymbols.length > 0 && !p.allowedSymbols.map((s) => s.toUpperCase()).includes(sym)) {
       return {

@@ -97,14 +97,22 @@ export function extractOrder(args: unknown): OrderIntent | undefined {
   if (typeof args !== "object" || args === null) return undefined;
   const a = args as Record<string, unknown>;
 
-  const sym = firstString(a, ["symbol", "ticker", "instrument", "stock"]);
-  if (sym === undefined) return undefined;
+  // AW-03. This used to take the FIRST alias that parsed and never look for a
+  // second, so one decoy field decided the order's size while the broker read
+  // a different one: `{quantity: 1000, notional: 1}` was sized at $1, executed
+  // $25,000,000, and the audit row positively certified a $1 order.
+  //
+  // The guard forwards the ORIGINAL bytes, so it can never be the thing that
+  // decides which field the broker honours. The only safe reading is to
+  // collect every alias of a dimension and refuse when they disagree.
+  const symbols = allStrings(a, ["symbol", "ticker", "instrument", "stock"]);
+  if (symbols.length === 0) return undefined;
 
   const sideRaw = (firstString(a, ["side", "action", "direction"]) ?? "").toLowerCase();
   const side: OrderIntent["side"] =
     sideRaw.includes("sell") ? "sell" : "buy"; // default to buy; sells are the safer default to allow, buys move money out
 
-  const notionalUsd = firstNumber(a, [
+  const notionals = allNumbers(a, [
     "notional",
     "notional_usd",
     "amount",
@@ -114,14 +122,38 @@ export function extractOrder(args: unknown): OrderIntent | undefined {
     "value",
     "total",
   ]);
-  const quantity = firstNumber(a, ["quantity", "qty", "shares", "units"]);
+  const quantities = allNumbers(a, ["quantity", "qty", "shares", "units"]);
+  const currencies = allStrings(a, ["currency", "currency_code", "denom"]);
 
   return {
-    symbol: String(sym).toUpperCase(),
+    // The cap must bound the LARGEST value any alias could be read as, since
+    // the guard does not control which one the broker picks.
+    symbol: String(symbols[0]).toUpperCase(),
     side,
-    ...(notionalUsd !== undefined ? { notionalUsd } : {}),
-    ...(quantity !== undefined ? { quantity } : {}),
+    ...(notionals.length > 0 ? { notionalUsd: Math.max(...notionals) } : {}),
+    ...(quantities.length > 0 ? { quantity: Math.max(...quantities) } : {}),
+    symbolsSeen: symbols.map((x) => String(x).toUpperCase()),
+    notionalsSeen: notionals,
+    quantitiesSeen: quantities,
+    currenciesSeen: currencies.map((c) => String(c).toUpperCase()),
   };
+}
+
+/** Every value present under any alias — the basis for refusing ambiguity. */
+function allNumbers(a: Record<string, unknown>, keys: readonly string[]): number[] {
+  const out: number[] = [];
+  for (const k of keys) {
+    const v = a[k];
+    const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+    if (Number.isFinite(n)) out.push(n);
+  }
+  return out;
+}
+
+function allStrings(a: Record<string, unknown>, keys: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const k of keys) if (typeof a[k] === "string" && a[k] !== "") out.push(a[k] as string);
+  return out;
 }
 
 function firstString(o: Record<string, unknown>, keys: string[]): string | undefined {
@@ -184,6 +216,25 @@ export function guardRequest(
   onEvent?: (e: GuardEvent) => void,
   now: () => number = () => Date.now(),
 ): { forward: unknown } | { respond: unknown } {
+  // AW-02. A JSON-RPC batch is a top-level ARRAY. `typeof [] === "object"` and
+  // `[].method` is undefined, so a batch fell through both checks below and
+  // was stringified upstream verbatim: no element inspected, no cap applied,
+  // no audit event. Measured at $10,000,000,000 in one 1.4MB batch with zero
+  // guard events.
+  //
+  // MCP removed batching in the 2025-06-18 revision, but the current SDK still
+  // accepts arrays, so a spec-current upstream executes them today. This guard
+  // refuses the envelope rather than trying to model it: an unmodelled shape
+  // fails closed, the same rule already applied to an unreadable order.
+  if (Array.isArray(msg)) {
+    onEvent?.({ at: now(), direction: "request", tool: "", decision: "refuse", code: "MCP-008" });
+    return {
+      respond: refusalResult(
+        null,
+        "batched JSON-RPC requests are not supported by this guard; send one request per message",
+      ),
+    };
+  }
   if (typeof msg !== "object" || msg === null) return { forward: msg };
   const m = msg as Record<string, unknown>;
   if (m["method"] !== "tools/call") return { forward: msg };
@@ -303,10 +354,27 @@ export function createProxyServer(opts: ProxyOptions): Server {
       try {
         msg = JSON.parse(raw);
       } catch {
-        // Not JSON we parse (could be an SSE resumption or a batch we do not
-        // model) — forward verbatim. A guard must not corrupt traffic it does
-        // not understand.
-        return forwardRaw(raw);
+        // AW-44. This used to forward verbatim, reasoning that a guard must
+        // not corrupt traffic it does not understand. That is the right rule
+        // for a PROXY and the wrong one for a GUARD: a parser differential is
+        // a bypass, not a fallback. A body this guard cannot read but the
+        // broker can is precisely the attack — measured at $770,000,000
+        // through a BOM-tolerant broker mock.
+        //
+        // The guard is in the money path by construction, so what it cannot
+        // read, it refuses.
+        opts.onEvent?.({
+          at: now(),
+          direction: "request",
+          tool: "",
+          decision: "refuse",
+          code: "MCP-009",
+        });
+        const body = JSON.stringify(
+          refusalResult(null, "request body is not JSON this guard can read, so it was not forwarded"),
+        );
+        res.writeHead(200, { "content-type": "application/json" }).end(body);
+        return;
       }
 
       const guarded = guardRequest(msg, opts.guard, opts.onEvent, now);

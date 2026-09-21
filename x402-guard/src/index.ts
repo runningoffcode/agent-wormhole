@@ -153,12 +153,31 @@ export interface InspectOptions {
 
 // --- helpers ---------------------------------------------------------------
 
+/** A Solana packet is 1232 bytes. Anything claiming more is not a transaction. */
+const MAX_TX_BYTES = 1232;
+
 function decodeTransaction(raw: Uint8Array | string): {
   tx: VersionedTransaction | null;
   err?: string;
 } {
+  // AW-05. The parameter is TYPED `Uint8Array | string`, but the value comes
+  // from JSON as `unknown`, and a type is not a runtime check. A plain object
+  // is neither, so it fell through to `Buffer.from(bytes)` below, which
+  // honours an attacker-declared `.length`: `{ "length": 2e8 }` allocates
+  // 200MB in 4.5s (measured), and a large enough value is a V8 fatal that no
+  // try/catch can intercept — a 48-byte body killing the process.
+  //
+  // Refuse the shape here rather than deeper: `Buffer.from(arrayLike)` must
+  // never be reachable from caller-controlled JSON.
+  if (typeof raw !== "string" && !(raw instanceof Uint8Array))
+    return { tx: null, err: "payload must be base64 or bytes" };
+
   const bytes =
     typeof raw === "string" ? Uint8Array.from(Buffer.from(raw, "base64")) : raw;
+
+  // Bound the allocation before anything downstream spreads or copies it.
+  if (bytes.length > MAX_TX_BYTES)
+    return { tx: null, err: `transaction exceeds ${MAX_TX_BYTES} bytes` };
   try {
     return { tx: VersionedTransaction.deserialize(bytes) };
   } catch {

@@ -122,6 +122,24 @@ const DANGEROUS_TOKEN_IX: Record<number, string> = {
  * blocklist that names only the opcodes someone has already thought of is a
  * bypass catalogue.
  */
+/**
+ * Lighthouse instruction discriminants that are pure assertions.
+ *
+ * AW-69. Lighthouse cannot move tokens — it asserts on account state and
+ * fails the transaction when an assertion does not hold — but it was
+ * allowlisted at the PROGRAM level with no instruction branch at all, so any
+ * data at all passed. These are the `Assert*` family from the v2 IDL; anything
+ * outside it is refused rather than assumed harmless.
+ *
+ * The numbering is taken from the published v2 IDL rather than verified
+ * against a live program, so it is deliberately the SMALL half of the
+ * trade-off: a mis-numbered entry here refuses an honest assertion, which an
+ * integrator sees immediately, rather than admitting an unmodelled one.
+ */
+const LIGHTHOUSE_ASSERT_IX = new Set([
+  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+]);
+
 const SYSTEM_ALLOWED_TAGS = new Set([4 /* AdvanceNonceAccount */]);
 const SYSTEM_LAMPORT_MOVERS = new Set([
   0 /* CreateAccount */, 2 /* Transfer */, 3 /* CreateAccountWithSeed */,
@@ -328,6 +346,8 @@ export function inspectPayment(
   // account. More than one create is rent leaving the funder for accounts the
   // quote never named, whoever owns them.
   let ataCreates = 0;
+  /** AW-68. Set when a compute-budget value appears more than once. */
+  let duplicateComputeBudget = false;
   let cuLimit: bigint | null = null;
   let cuPrice: bigint | null = null;
 
@@ -622,11 +642,55 @@ export function inspectPayment(
     if (programId === COMPUTE_BUDGET) {
       const data = Uint8Array.from(ix.data);
       const disc = data[0];
+      // AW-68. These were recorded by plain assignment, so a SECOND
+      // SetComputeUnitPrice overwrote the first and the X402-010 cap ran on
+      // the last value only: a 1 SOL fee followed by a zero fee returned
+      // `allow` with no findings. The Solana runtime rejects a duplicate
+      // compute-budget instruction outright, so a transaction carrying one is
+      // malformed as well as evasive — but a guard should not depend on the
+      // runtime to catch what it was asked to check.
+      //
+      // Take the MAXIMUM rather than the last value, and say that a duplicate
+      // was present.
       if (disc === 2) {
         const v = readU32LE(data, 1);
-        if (v !== null) cuLimit = BigInt(v >>> 0);
+        if (v !== null) {
+          const parsed = BigInt(v >>> 0);
+          if (cuLimit !== null) duplicateComputeBudget = true;
+          cuLimit = cuLimit === null || parsed > cuLimit ? parsed : cuLimit;
+        }
       } else if (disc === 3) {
-        cuPrice = readU64LE(data, 1);
+        const parsed = readU64LE(data, 1);
+        if (parsed !== null) {
+          if (cuPrice !== null) duplicateComputeBudget = true;
+          cuPrice = cuPrice === null || parsed > cuPrice ? parsed : cuPrice;
+        }
+      }
+    }
+
+    // AW-69. Lighthouse sits in ALLOWED_PROGRAMS and the walk had no branch
+    // for it, so arbitrary data and accounts fell through untouched and
+    // returned `allow` with zero findings. It is an assertion program and
+    // cannot move tokens, so the money impact is nil — but "the allowlist
+    // holds against instructions nobody has catalogued" was false for one of
+    // the seven programs by construction, and that claim is the whole reason
+    // an allowlist is used here.
+    //
+    // Same treatment as SYSTEM: name the discriminants that are pure
+    // assertions, refuse everything else.
+    if (programId === LIGHTHOUSE) {
+      const data = Uint8Array.from(ix.data);
+      const disc = data.length === 0 ? -1 : data[0];
+      if (!LIGHTHOUSE_ASSERT_IX.has(disc)) {
+        findings.push({
+          code: "X402-009",
+          severity: "critical",
+          message:
+            "unrecognized Lighthouse instruction in a payment — only the " +
+            "assertion instructions are modelled, and an instruction this " +
+            "walk cannot read is not one it can vouch for",
+          actual: `discriminant ${disc}`,
+        });
       }
     }
   }
@@ -665,6 +729,22 @@ export function inspectPayment(
         "most the merchant's own account",
       expected: "at most 1",
       actual: `${ataCreates} creates`,
+    });
+  }
+
+  // AW-68. The runtime rejects a duplicate compute-budget instruction, so a
+  // transaction carrying one cannot land — but it was being used to evade the
+  // fee cap by overwriting a large value with a small one, and a guard that
+  // says `allow` to something the chain will reject has still answered the
+  // wrong question.
+  if (duplicateComputeBudget) {
+    findings.push({
+      code: "X402-009",
+      severity: "critical",
+      message:
+        "payment carries more than one compute-budget instruction of the same " +
+        "kind — the runtime rejects this, and the duplicate was being read as " +
+        "a way to overwrite the priority fee the cap is checked against",
     });
   }
 

@@ -11,6 +11,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
   ComputeBudgetProgram,
+  TransactionInstruction,
   SystemProgram,
 } from "@solana/web3.js";
 import {
@@ -1111,5 +1112,76 @@ describe("guardSigner signs the bytes it inspected (AW-67)", () => {
     ]);
     expect(received).toHaveLength(2);
     expect(received.every((t) => t instanceof VersionedTransaction)).toBe(true);
+  });
+});
+
+/**
+ * AW-68 and AW-69: two allowlisted programs whose instructions were not
+ * actually modelled.
+ */
+describe("compute-budget and Lighthouse are read, not assumed", () => {
+  const xfer = () => payment(merchantAta, 1_000_000n);
+  const LIMIT = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
+  const LIGHTHOUSE = new PublicKey(
+    "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95",
+  );
+  const lh = (data: number[]) =>
+    new TransactionInstruction({
+      programId: LIGHTHOUSE,
+      keys: [],
+      data: Buffer.from(data),
+    });
+
+  it("AW-68: a duplicate price cannot overwrite the fee the cap checks", () => {
+    // Recorded by plain assignment, the second value won: a 1 SOL fee
+    // followed by a zero fee returned allow with no findings.
+    const v = inspectPayment(
+      build([
+        LIMIT,
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000_000_000n }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0n }),
+        xfer(),
+      ]),
+      quote,
+    );
+    expect(v.decision).toBe("refuse");
+    // The fee finding survives — the maximum is taken, not the last value.
+    expect(v.findings.some((f) => f.code === "X402-010")).toBe(true);
+    // And the duplicate itself is reported.
+    expect(v.findings.some((f) => f.code === "X402-009")).toBe(true);
+  });
+
+  it("AW-68: an ordinary single fee is unaffected", () => {
+    const v = inspectPayment(
+      build([
+        LIMIT,
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000n }),
+        xfer(),
+      ]),
+      quote,
+    );
+    expect(v.decision).toBe("allow");
+  });
+
+  it("AW-69: arbitrary Lighthouse data is refused, not waved through", () => {
+    // Lighthouse was allowlisted at the PROGRAM level with no instruction
+    // branch, so any data at all returned allow with zero findings — making
+    // "the allowlist holds against instructions nobody has catalogued" false
+    // for one of the seven programs by construction.
+    const v = inspectPayment(build([xfer(), lh([0xff, 0xde, 0xad])]), quote);
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-009")).toBe(true);
+  });
+
+  it("AW-69: MemoryWrite is not an assertion and is refused", () => {
+    expect(inspectPayment(build([xfer(), lh([0x00, 0x01])]), quote).decision)
+      .toBe("refuse");
+  });
+
+  it("AW-69: a genuine assertion instruction still allows", () => {
+    // The fix must not make Lighthouse unusable — it is allowlisted for a
+    // reason.
+    expect(inspectPayment(build([xfer(), lh([0x02, 0x00])]), quote).decision)
+      .toBe("allow");
   });
 });

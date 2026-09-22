@@ -132,9 +132,23 @@ export async function verify(
   // 0. The quote text itself, before it is trusted for anything. A quote that
   //    carries an injected directive or invisible unicode is refused here so it
   //    never reaches the amount/destination comparison as authoritative.
-  const quoteText = extractQuoteText(req.quote);
-  if (quoteText) {
-    const textVerdict = inspectQuoteText(quoteText);
+  // AW-38. This used to call `extractQuoteText`, which read FIVE hardcoded
+  // top-level keys and joined them into a string — which then dropped
+  // `inspectQuoteText` into its string branch, so the document walker it
+  // already has (2,000 fields, depth 12) never ran at all.
+  //
+  // Measured with a valid payload, so only the quote text could move the
+  // verdict: an injection in `title`, `terms`, `extra.description`,
+  // `accepts[0].description` or `outputSchema.description` returned `allow`
+  // with a SIGNED RECEIPT, while `inspectQuoteText` refused every one of them.
+  // No evasion was required; the text was simply never read. `extra` is an
+  // object in every real x402 quote, so even that key was excluded in
+  // practice.
+  //
+  // The scanner walks documents. Give it the document.
+  const scannable = scannableQuote(req.quote);
+  if (scannable !== undefined) {
+    const textVerdict = inspectQuoteText(scannable);
     if (textVerdict.decision === "refuse") {
       // A poisoned quote is decisive on its own — do not proceed to compare
       // against a quote we already do not trust.
@@ -469,17 +483,16 @@ export function canonicalReceipt(r: Receipt): string {
 // Every one tolerates an unknown shape and returns undefined/null rather than
 // throwing, because the caller's input is exactly the thing under suspicion.
 
-function extractQuoteText(quote: unknown): string | undefined {
-  if (typeof quote === "string") return quote;
-  if (quote && typeof quote === "object") {
-    const q = quote as Record<string, unknown>;
-    const parts: string[] = [];
-    for (const k of ["description", "memo", "note", "resource", "extra"]) {
-      const v = q[k];
-      if (typeof v === "string") parts.push(v);
-    }
-    return parts.length ? parts.join("\n") : undefined;
-  }
+/**
+ * What to hand the quote-text scanner.
+ *
+ * AW-38. The whole quote, so `inspectQuoteText`'s document walker runs over
+ * every nested string rather than five keys flattened into one. Returns
+ * undefined only when there is nothing to scan.
+ */
+function scannableQuote(quote: unknown): unknown {
+  if (typeof quote === "string") return quote.length > 0 ? quote : undefined;
+  if (quote && typeof quote === "object") return quote;
   return undefined;
 }
 
@@ -599,10 +612,36 @@ function canonicalizeQuote(quote: unknown): unknown {
  * digest ignores is a receipt that binds to the wrong request.
  */
 function textDigest(q: Record<string, unknown>): string | null {
+  // AW-38. This walked the same five keys the old extractor did. Now that the
+  // scanner reads the WHOLE quote, the digest has to as well — a field the
+  // scanner refuses on but the digest ignores is a receipt that binds to the
+  // wrong request, which is exactly AW-14.
   const parts: string[] = [];
-  for (const k of ["description", "memo", "note", "resource", "extra"]) {
-    const v = q[k];
-    if (typeof v === "string") parts.push(`${k}=${v}`);
+  const walk = (node: unknown, path: string, depth: number): void => {
+    if (depth > 12 || parts.length > 2000) return;
+    if (typeof node === "string") {
+      if (node.length > 0) parts.push(`${path}=${node}`);
+      return;
+    }
+    if (node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach((v, i) => walk(v, `${path}[${i}]`, depth + 1));
+      return;
+    }
+    for (const key of Object.keys(node as Record<string, unknown>).sort()) {
+      walk(
+        (node as Record<string, unknown>)[key],
+        path ? `${path}.${key}` : key,
+        depth + 1,
+      );
+    }
+  };
+  try {
+    walk(q, "", 0);
+  } catch {
+    // A hostile object graph must not break digest computation; an
+    // unreadable quote simply contributes no text.
+    return null;
   }
   if (parts.length === 0) return null;
   return createHash("sha256").update(parts.join("\u0000")).digest("hex");

@@ -2211,8 +2211,22 @@ function scanFields(
     // Wales and England flags have shipped on Apple, Google and Microsoft
     // platforms since 2017. An emoji-picker listing would have been refused.
     // Strip those sequences first, then report only what remains.
+    // AW-37. The carve-out stripped `U+1F3F4 [any tag]{1,8} U+E007F`
+    // GLOBALLY, and `{1,8}` bounds one sequence rather than the number of
+    // them — so re-wrapping a payload every 8 characters emptied the raw view
+    // entirely. Both X402-206 and the `unicode-tags` decode view are gated on
+    // the same index, so a chunked payload was read by NO view at all:
+    // measured, a 147-character payload refused with five codes plain, and
+    // returned `allow, findings: []` chunked at 8, 4 or 1.
+    //
+    // The real set is three RGI sequences — gbeng, gbsct, gbwls — and every
+    // subdivision tag is lowercase letters and digits by construction. An
+    // instruction to a model is not: it carries capitals, spaces and
+    // punctuation. Matching the actual character class costs the emoji picker
+    // nothing and takes the chunking trick away, and the count is bounded
+    // because no honest listing carries dozens of subdivision flags.
     const rawSansEmojiTags = raw.replace(
-      /\u{1F3F4}[\u{E0020}-\u{E007E}]{1,8}\u{E007F}/gu,
+      /\u{1F3F4}[\u{E0061}-\u{E007A}\u{E0030}-\u{E0039}]{2,7}\u{E007F}/gu,
       "",
     );
     const tagIdx = rawSansEmojiTags.search(UNICODE_TAGS_RE) >= 0

@@ -192,13 +192,44 @@ def record(addresses: set[str], source: str, via: str,
     return wrote
 
 
-def record_from_text(text: str, via: str, path: Path | None = None) -> int:
-    """What the readguard hook calls: quote payees as `quote`, the rest `read`."""
-    payees = quote_payees(text)
+def record_from_text(
+    text: str,
+    via: str,
+    path: Path | None = None,
+    source_kind: str = "read",
+) -> int:
+    """What the readguard hook calls: record what this text introduced.
+
+    AW-61. `quote_payees` grants the trusted `quote` origin to any `payTo` in
+    any JSON document that merely CONTAINS the key `accepts` or `payTo`, and
+    `readguard.run_hook` feeds this every inbound tool result — Read, WebFetch,
+    WebSearch, Bash, Glob, Grep, Task and every `mcp__*` tool. There was no
+    HTTP-402 status check, no check that the text came from an HTTP response at
+    all, and no binding between the payee and the host that served it.
+
+    So an attacker pre-seeded their address as trusted by getting the agent to
+    read one x402-shaped blob — a gist, a README, a tool result — and
+    `checkPayeeProvenance` returned null for it forever after. Reproduced: an
+    address in a blob read via WebFetch came back classified `trusted`.
+
+    X402-301 is advisory by design so no verdict flips, but what is lost is the
+    one sensor that says "nothing legitimate introduced this payee", in exactly
+    the wallet-drain shape the module exists to catch.
+
+    `source_kind` is how a caller attests where the text came from. Only
+    `"http_402"` — the body of a 402 response from the host being paid — earns
+    the `quote` origin. Everything else is `read`, which is what reading
+    something is.
+    """
     everything = extract_addresses(text)
-    wrote = record(payees, "quote", via, path=path)
-    wrote += record(everything - payees, "read", via, path=path)
-    return wrote
+    if source_kind == "http_402":
+        payees = quote_payees(text)
+        wrote = record(payees, "quote", via, path=path)
+        wrote += record(everything - payees, "read", via, path=path)
+        return wrote
+    # Not attested as a 402 body: nothing here earns trust by being shaped
+    # like a quote.
+    return record(everything, "read", via, path=path)
 
 
 def classify(path: Path | None = None) -> dict[str, set[str]]:

@@ -65,7 +65,11 @@ class TestQuoteExemption(unittest.TestCase):
         })
         with TemporaryDirectory() as d:
             p = Path(d) / "ledger.jsonl"
-            record_from_text(body, via="test", path=p)
+            # AW-61: the `quote` origin now requires the caller to attest that
+            # this text WAS the body of a 402 response. The property under test
+            # is unchanged — a payTo earns trust, an address in a description
+            # does not — but it only applies where trust is on the table.
+            record_from_text(body, via="test", path=p, source_kind="http_402")
             kinds = classify(path=p)
             self.assertIn(EVM, kinds["trusted"])
             self.assertIn(SOL, kinds["tainted"])
@@ -107,3 +111,43 @@ class TestLedger(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSourceKind(unittest.TestCase):
+    """AW-61. `quote_payees` granted the trusted `quote` origin to any `payTo`
+    in any JSON document merely CONTAINING the key `accepts` or `payTo`, and
+    `readguard.run_hook` fed it every inbound tool result — Read, WebFetch,
+    WebSearch, Bash, Glob, Grep, Task and every `mcp__*` tool.
+
+    There was no HTTP-402 status check, no check the text came from an HTTP
+    response at all, and no binding between the payee and the host that served
+    it. So an attacker pre-seeded their address as trusted by getting the agent
+    to read one x402-shaped blob — a gist, a README, a tool result — and
+    `checkPayeeProvenance` returned null for it forever after.
+    """
+
+    def test_an_unattested_blob_does_not_launder_a_payee(self):
+        body = json.dumps({"accepts": [{"payTo": EVM, "maxAmountRequired": "1"}]})
+        with TemporaryDirectory() as d:
+            p = Path(d) / "ledger.jsonl"
+            record_from_text(body, via="tool:WebFetch", path=p)
+            self.assertIn(EVM, classify(path=p)["tainted"])
+            self.assertNotIn(EVM, classify(path=p).get("trusted", set()))
+
+    def test_an_attested_402_body_still_earns_trust(self):
+        # The sensor has to keep working, or the fix just turns it off.
+        body = json.dumps({"accepts": [{"payTo": EVM, "maxAmountRequired": "1"}]})
+        with TemporaryDirectory() as d:
+            p = Path(d) / "ledger.jsonl"
+            record_from_text(body, via="https://merchant.example",
+                             path=p, source_kind="http_402")
+            self.assertIn(EVM, classify(path=p)["trusted"])
+
+    def test_the_readguard_path_defaults_to_untrusted(self):
+        # readguard feeds this every inbound tool result and cannot attest an
+        # HTTP status, so its default must be the safe one.
+        body = json.dumps({"payTo": EVM})
+        with TemporaryDirectory() as d:
+            p = Path(d) / "ledger.jsonl"
+            record_from_text(body, via="tool:Read", path=p)
+            self.assertIn(EVM, classify(path=p)["tainted"])

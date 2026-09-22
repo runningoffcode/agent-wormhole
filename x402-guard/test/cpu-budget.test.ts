@@ -104,16 +104,39 @@ describe("the leet-fold scan is linear, not quadratic (AW-04)", () => {
   });
 
   it("REGRESSION: cost grows roughly linearly, not with the square", () => {
-    // Quadratic would be ~16x from 16KB to 64KB. Allow generous headroom for
-    // a loaded CI box and still fail loudly on a return to O(n^2).
-    const time = (kb: number) => {
-      const t0 = Date.now();
-      inspectQuoteText({ description: bomb(kb) });
-      return Math.max(1, Date.now() - t0);
+    // Measured ABOVE the default field cap, on purpose.
+    //
+    // DEFAULT_MAX_FIELD_CHARS is 64KB, so a 16KB-vs-64KB comparison sits under
+    // the ceiling and measures the cap rather than the algorithm: with
+    // deliberately quadratic work injected into foldLeet, that comparison moved
+    // only 4.02x -> 4.77x and still passed. The cap bounds the damage today,
+    // but a caller who raises maxFieldChars gets whatever the algorithm really
+    // is, so that is the property worth pinning.
+    //
+    // Quadratic would be ~4x from 128KB to 256KB; linear is ~2x. Measured
+    // linear: 1.94x and 3.88x.
+    const CAP = 1_000_000;
+    const median = (kb: number) => {
+      const runs: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        const t0 = performance.now();
+        inspectQuoteText({ description: bomb(kb) }, { maxFieldChars: CAP });
+        runs.push(performance.now() - t0);
+      }
+      return runs.sort((a, b) => a - b)[2];
     };
-    const small = time(16);
-    const large = time(64);
-    expect(large / small).toBeLessThan(8);
+    // Warm-up, so JIT compilation is not charged to the first sample. And
+    // performance.now(), not Date.now(): at millisecond resolution a scheduler
+    // hiccup moved this ratio by whole multiples, and it failed a publish at
+    // 8.71 against a threshold of 8 while the scan was provably linear.
+    median(64);
+    const small = median(64);
+    const large = median(256);
+    // A 4x input over a 4x span: linear is ~4x, quadratic ~16x. The wider span
+    // is what makes this sensitive — a 128->256 comparison moved only
+    // 1.94x -> 2.31x under injected quadratic work and would have passed any
+    // threshold loose enough not to flake, while 64->256 moved 3.88x -> 6.17x.
+    expect(large / small).toBeLessThan(5.5);
   });
 
   it("still folds leetspeak, so the speed did not cost the detection", () => {

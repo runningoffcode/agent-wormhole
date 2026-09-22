@@ -15,7 +15,7 @@ import {
 /**
  * AW-08 and AW-09 — what a caller may change about its own verdict.
  *
- * Measured by zauth against the real createVerifyHandler with a signing key:
+ * Measured against the real createVerifyHandler with a signing key:
  * an authorization that expired an hour ago refused bare, and ALLOWED with
  * `{"clockSkewSeconds":"0"}` — a string, so `now + skew` was string
  * concatenation and the expiry bound moved to roughly the year 2534. The

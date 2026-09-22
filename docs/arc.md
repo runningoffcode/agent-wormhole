@@ -4,15 +4,13 @@ Arc is Circle's EVM chain where USDC is the gas token. This document describes
 what Agent Wormhole does on Arc, what it verified, and what it does not claim.
 
 > **PAUSED (2026-09-21).** The hosted Arc layer is disabled and no signer is
-> configured, so nothing on this path can be signed or broadcast. An external
-> security review (zauth / Project Apex) found that task creation — the
-> authorization boundary for the signer — had no operator in it: the payment
-> gate correctly enforced a policy the requester had written. The gate itself
-> survived their attacks; the missing check was on *who* may write the policy.
+> configured, so nothing on this path can be signed or broadcast, while the
+> authorization boundary around the signer is upgraded.
 >
-> The boundary has been rebuilt (operator recipient allowlist enforced at
-> creation and again at signing, per-tenant task quota, deployment-wide halt,
-> master off switch) and Arc returns once the signing path is re-reviewed.
+> That boundary has been rebuilt — an operator recipient allowlist enforced at
+> creation and again at signing, a per-tenant task quota, a deployment-wide
+> halt and a master off switch — and Arc returns once the signing path is
+> re-reviewed.
 >
 > **Payment verification for Arc is unaffected and still live** — it is
 > offline arithmetic over a quote and an authorization, and it signs nothing.

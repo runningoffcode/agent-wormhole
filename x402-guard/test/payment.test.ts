@@ -4,7 +4,7 @@ import { inspectPayment } from "../src/index.js";
 /**
  * AW-05 — the shape guard on decodeTransaction.
  *
- * Reported by zauth: a typed parameter is not a runtime check, and the value
+ * Reported externally: a typed parameter is not a runtime check, and the value
  * arrives from JSON as `unknown`.
  */
 

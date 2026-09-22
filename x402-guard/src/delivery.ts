@@ -95,6 +95,37 @@ function mediaType(v: string | null | undefined): string | null {
   return t.length > 0 ? t : null;
 }
 
+/**
+ * Does this body read as text, whatever it was labelled?
+ *
+ * AW-39. Content-Type is merchant-supplied, so gating the paid-content scan
+ * on it let the merchant turn the scan off for their own content. This is the
+ * second opinion: decode as UTF-8 and ask whether the result is mostly
+ * printable. A genuine binary body fails quickly — random bytes are full of
+ * control characters and invalid sequences — so the cost of being wrong here
+ * is scanning something harmless, not missing something hostile.
+ */
+function looksTextual(bytes: Uint8Array): boolean {
+  // A sample is enough; an injection needs to be readable, so it cannot hide
+  // in the tail of an otherwise-binary blob and still work on the model.
+  const sample = bytes.subarray(0, 2048);
+  let decoded: string;
+  try {
+    decoded = new TextDecoder("utf-8", { fatal: true }).decode(sample);
+  } catch {
+    return false; // not valid UTF-8 — genuinely binary
+  }
+  if (decoded.length === 0) return false;
+  let printable = 0;
+  for (const ch of decoded) {
+    const c = ch.codePointAt(0)!;
+    // Tab, LF, CR, and anything from space up. Everything else is a control
+    // character, which prose does not contain.
+    if (c === 9 || c === 10 || c === 13 || c >= 32) printable += 1;
+  }
+  return printable / [...decoded].length > 0.9;
+}
+
 function isTextual(mt: string | null): boolean {
   if (mt === null) return false;
   return (
@@ -216,8 +247,17 @@ export function inspectDelivery(
   // Paid content is the cheapest injection channel ever built: the agent pays
   // the attacker to hand it text it will then trust BECAUSE it paid. Textual
   // bodies run through the same scanner the quote does; its codes ride along.
+  // AW-39. The gate used to be `isTextual(contentType ?? quoted)` — the
+  // MERCHANT'S OWN HEADER decided whether the merchant's content got scanned.
+  // Measured: the same injected body refused with three codes under
+  // `text/plain` and returned `allow` with zero findings under
+  // `application/octet-stream`, which costs the attacker one header.
+  //
+  // The bytes decide now. A body that decodes as UTF-8 text and reads like
+  // text IS text, whatever it was labelled; the declared type is only used to
+  // skip work on things that are definitively not text.
   if (delivered && bytes !== null && bytes.length > 0 &&
-      isTextual(contentType ?? quoted)) {
+      (isTextual(contentType ?? quoted) || looksTextual(bytes))) {
     const cap = opts.maxScanBytes ?? DEFAULT_MAX_SCAN_BYTES;
     const text = new TextDecoder("utf-8", { fatal: false })
       .decode(bytes.subarray(0, cap));

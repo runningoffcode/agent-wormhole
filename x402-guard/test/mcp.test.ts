@@ -655,3 +655,43 @@ describe("hosted verify: a case-variant allow cannot skip the gate", () => {
     expect(out.wormhole_integrity).toBeUndefined();
   });
 });
+
+/**
+ * AW-41. `const { id, method, params } = msg` threw on a line of `null`,
+ * killing a server whose own contract is never-crash / always-answer — and
+ * this process stands between an agent and its wallet, so a crash is a guard
+ * that is no longer there. A JSON-RPC batch and a bare string both fell
+ * through to silence, which the spec does not permit either.
+ */
+describe("the stdio server always answers and never dies (AW-41)", () => {
+  for (const [label, message] of [
+    ["null", null],
+    ["a bare string", "hello"],
+    ["a number", 42],
+    ["undefined", undefined],
+    ["a batch array", [{ jsonrpc: "2.0", id: 1, method: "tools/list" }]],
+  ] as const) {
+    it(`${label} gets an error response, not a crash or silence`, async () => {
+      const res: any = await handleMessage(message as never);
+      expect(res).not.toBeNull();
+      expect(res.error?.code).toBe(-32600);
+    });
+  }
+
+  it("a valid request still works", async () => {
+    const res: any = await handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+    });
+    expect(res.result?.tools?.length).toBeGreaterThan(0);
+  });
+
+  it("a notification is still answered with silence, which is correct", async () => {
+    const res = await handleMessage({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    } as never);
+    expect(res).toBeNull();
+  });
+});

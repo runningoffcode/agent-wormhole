@@ -706,6 +706,26 @@ function rpcError(id: unknown, code: number, message: string) {
  * the full dispatch without a process or a pipe.
  */
 export async function handleMessage(msg: RpcMessage): Promise<object | null> {
+  // AW-41. `const { id, method, params } = msg` threw on a line of `null`,
+  // killing a server whose own contract is never-crash / always-answer — and
+  // this is the process standing between an agent and its wallet, so a crash
+  // is a guard that is no longer there. A JSON-RPC BATCH (an array) and a
+  // bare string both fell through to silence, which the spec does not permit
+  // either: a request with an id gets a response, always.
+  if (msg === null || typeof msg !== "object") {
+    return rpcError(null, -32600, "invalid request: expected a JSON-RPC object");
+  }
+  if (Array.isArray(msg)) {
+    // Batches are refused rather than silently dropped. The same reasoning as
+    // mcp-guard's MCP-008: a batch is an envelope this server does not model,
+    // and an unmodelled envelope must be answered, not ignored.
+    return rpcError(
+      null,
+      -32600,
+      "invalid request: JSON-RPC batches are not supported by this server",
+    );
+  }
+
   const { id, method, params } = msg;
   const isNotification = id === undefined;
 

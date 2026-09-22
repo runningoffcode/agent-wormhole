@@ -290,6 +290,24 @@ export const TRUSTED_DOMAINS: Readonly<Record<string, DomainEntry>> = {
     label: "Robinhood Testnet USDG",
     verified: true,
   },
+
+  // Kite mainnet bridged USDC — the token Kite documents for x402 settlement.
+  // Its EIP-712 name is "Bridged USDC (Kite AI)", NOT "USD Coin" and not the
+  // "USDC.e" symbol, which is the kind of difference that silently recovers
+  // the wrong signer if taken from a document instead of the contract.
+  //
+  // Verified against the deployed contract rather than the docs: name(),
+  // version() and decimals() read over RPC, then the domain recomputed as
+  // keccak(abi.encode(TYPEHASH, keccak(name), keccak(version), 2366, asset))
+  // and compared to DOMAIN_SEPARATOR(). Both are
+  // 0x5d955afb663de40bd0780e115f3d5fa9ad612419f55c0c4a177f40b4f0f69a6d.
+  // authorizationState(address,bytes32) answers, so EIP-3009 is present.
+  "2366:0x7ab6f3ed87c42ef0adb67ed95090f8bf5240149e": {
+    name: "Bridged USDC (Kite AI)",
+    version: "2",
+    label: "Kite USDC.e",
+    verified: true,
+  },
 } as const;
 
 // --- network parsing -------------------------------------------------------

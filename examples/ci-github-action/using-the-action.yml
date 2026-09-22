@@ -22,7 +22,25 @@ jobs:
 
       # The action checks out its own copy of the scanner and puts it on
       # PYTHONPATH, so there is no pip install step here.
-      - uses: runningoffcode/agent-wormhole@main
+      #
+      # AW-59. Pin to a commit SHA, never to `@main` or a `@v1` tag. A tag or
+      # branch is a mutable pointer: whoever can move it decides what runs in
+      # your CI, and this action runs with your runner's token and your
+      # checked-out source.
+      #
+      # The placeholder below is deliberate and the release process must
+      # replace it. A SHA here would be worse than a hole: the only commits
+      # that exist right now predate the AW-81 input-injection fix, so pinning
+      # to one would publish a working example that tells every consumer to
+      # run the injectable version of this action. An unfillable placeholder
+      # fails loudly; a stale-but-plausible SHA fails silently, in the
+      # consumer's CI, with the gate green.
+      #
+      # tests/test_ci_hardening.py::TestConsumerExamplePinning resolves this
+      # pin against the repository and fails unless the commit it names
+      # actually contains the hardened action.yml — so this cannot be filled
+      # in with any 40 hex characters, and cannot be left unfilled at release.
+      - uses: runningoffcode/agent-wormhole@REPLACE_WITH_RELEASE_COMMIT_SHA # see note above
         with:
           path: '.'
           fail-on: 'high'

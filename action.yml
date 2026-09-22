@@ -33,8 +33,22 @@ runs:
 
     - name: Run Agent Wormhole
       shell: bash
+      env:
+        # AW-81. These were spliced into the script body as ${{ inputs.* }},
+        # which GitHub expands TEXTUALLY before bash parses a single token. A
+        # `path` of `."; touch /tmp/pwned; echo "` closed the quote and ran as
+        # the runner user in the consumer's CI, and the step still exited 0 —
+        # so the security gate reported green on the PR carrying the payload.
+        # `$(...)` in `path` and a quote-break in `local-only` did the same.
+        # Binding through env: is GitHub's documented mitigation: the value
+        # arrives as data in the process environment and is never parsed as
+        # syntax.
+        WH_PATH: ${{ inputs.path }}
+        WH_FAIL_ON: ${{ inputs.fail-on }}
+        WH_LOCAL_ONLY: ${{ inputs.local-only }}
+        WH_BLAST_RADIUS: ${{ inputs.blast-radius }}
       run: |
-        set -o pipefail   # `tee` must not swallow a nonzero scan exit code
+        set -euo pipefail   # `tee` must not swallow a nonzero scan exit code
 
         # AW-30. The scanner lives in the action's own checkout; the tree
         # being scanned is the caller's workspace. Keeping those separate is
@@ -54,16 +68,105 @@ runs:
         #   2. invoke the module by its file path rather than by -m, so the
         #      import is not resolved by name at all.
         # The target is passed as an argument, which is all it ever needed to be.
-        TARGET="$(cd "$GITHUB_WORKSPACE" && cd "${{ inputs.path }}" && pwd)"
+        #
+        # AW-81. Binding `path` through env: stops it being parsed as bash
+        # SYNTAX, but `cd` still parsed it as its own OPTIONS. Four ways the
+        # same value walked the scan off the caller's repo, each exiting 0 —
+        # a green gate that never looked at the tree it was gating:
+        #
+        #   `-L` / `-P` / `--`  taken as options, so cd got no operand and
+        #                       went to $HOME: the scan read the runner's home
+        #                       directory. Only `--` as a terminator stops it.
+        #   `-`                 cd jumped to $OLDPWD and ECHOED it, so that
+        #                       echo landed in TARGET too. Redirecting cd's
+        #                       stdout is what keeps the echo out of $( ).
+        #   a relative path     resolved through CDPATH, which a caller
+        #                       workflow can set at job or workflow level and
+        #                       composite steps inherit. CDPATH=/evil with
+        #                       path=src silently scanned /evil/src.
+        #   `/etc`, `../..`     an absolute or climbing path simply left the
+        #                       workspace.
+        #
+        # So: unset CDPATH, terminate the options, swallow cd's stdout, and
+        # then confine the result. Confinement is the deliberate call — this
+        # action scans the caller's checked-out repo in CI, and there is no
+        # honest reason for that target to sit outside $GITHUB_WORKSPACE.
+        # Refusing turns every silent redirect above into a loud failure
+        # instead of a green scan of the wrong tree, which is the failure mode
+        # this whole finding is about.
+        # An EMPTY workspace makes `cd -- ""` a no-op, so both sides of the
+        # comparison below would resolve to the action's own checkout and the
+        # prefix test would pass by comparing a directory with itself — the
+        # gate would scan the action instead of the caller's repo and exit 0.
+        # Require it explicitly rather than letting the check pass vacuously.
+        if [ -z "${GITHUB_WORKSPACE:-}" ]; then
+          echo "agent-wormhole: GITHUB_WORKSPACE is not set (scan refused)" >&2
+          exit 2
+        fi
 
-        ARGS="$TARGET --fail-on ${{ inputs.fail-on }} --no-color"
-        [ "${{ inputs.local-only }}" = "true" ] && ARGS="$ARGS --local-only"
-        [ "${{ inputs.blast-radius }}" = "true" ] && ARGS="$ARGS --blast-radius"
+        # Resolve the workspace FIRST and guard it. Unguarded, a failure here
+        # left WORKSPACE_REAL empty, which turns the prefix test into
+        # "$TARGET/" == /* — true for every absolute path. `set -e` happens to
+        # catch it today; a check that is correct only because of a shell
+        # option is one refactor from failing open, so it carries its own guard.
+        WORKSPACE_REAL="$(unset CDPATH; cd -- "$GITHUB_WORKSPACE" >/dev/null && pwd -P)" || {
+          echo "agent-wormhole: GITHUB_WORKSPACE does not resolve to a directory (scan refused)" >&2
+          exit 2
+        }
+        if [ -z "$WORKSPACE_REAL" ]; then
+          echo "agent-wormhole: GITHUB_WORKSPACE did not resolve (scan refused)" >&2
+          exit 2
+        fi
+
+        TARGET="$(unset CDPATH; cd -- "$WORKSPACE_REAL" >/dev/null && cd -- "$WH_PATH" >/dev/null && pwd -P)" || {
+          echo "agent-wormhole: path does not resolve to a directory inside the workspace" >&2
+          exit 2
+        }
+        # A trailing "/" on the prefix so /work/repo-evil is not read as being
+        # inside /work/repo.
+        case "$TARGET/" in
+          "$WORKSPACE_REAL"/*) ;;
+          *)
+            echo "agent-wormhole: path must resolve inside GITHUB_WORKSPACE (scan refused)" >&2
+            exit 2
+            ;;
+        esac
+
+        # AW-81. An unrecognised --fail-on reaches the scanner as an opaque
+        # string; reject it here so a typo fails the step loudly instead of
+        # being argued about downstream, and so no caller value can smuggle a
+        # second token past argv.
+        case "$WH_FAIL_ON" in
+          critical|high|medium|low|never) ;;
+          *)
+            # AW-81. Name the input, never echo its value: this line lands in
+            # the consumer's CI log, which is readable by anyone who can read
+            # the run, and the value is attacker-chosen on a fork PR.
+            echo "agent-wormhole: fail-on must be one of critical, high, medium, low, never" >&2
+            exit 2
+            ;;
+        esac
+
+        # AW-81. An array, not a string: `$ARGS` was unquoted, so whitespace in
+        # any input split into extra argv words and `--fail-on 'high --evil'`
+        # smuggled a flag the caller never granted.
+        ARGS=("$TARGET" --fail-on "$WH_FAIL_ON" --no-color)
+        # `if`, not `[ ... ] && ...`: under `set -e` a trailing false && list
+        # would exit the step nonzero the moment either flag is off.
+        #
+        # The quotes around $WH_LOCAL_ONLY / $WH_BLAST_RADIUS are load-bearing,
+        # not style. Unquoted, the value word-splits into `[`'s own operator
+        # grammar: `x = x -o true` makes the test true, so a caller string
+        # decides whether --local-only is on. That flag governs whether the
+        # scan reads global settings, so the caller would be choosing the scan
+        # scope through a test expression rather than through the input.
+        if [ "$WH_LOCAL_ONLY" = "true" ]; then ARGS+=(--local-only); fi
+        if [ "$WH_BLAST_RADIUS" = "true" ]; then ARGS+=(--blast-radius); fi
 
         # Run from the ACTION's own directory, so the CWD that python puts at
         # sys.path[0] is ours and not the caller's. `-m` is kept because the
         # package uses relative imports and cannot be invoked by file path.
-        python3 -m wormhole scan $ARGS 2>&1 | tee "$RUNNER_TEMP/wormhole.txt"
+        python3 -m wormhole scan "${ARGS[@]}" 2>&1 | tee "$RUNNER_TEMP/wormhole.txt"
       working-directory: ${{ github.action_path }}
 
     - name: Summary

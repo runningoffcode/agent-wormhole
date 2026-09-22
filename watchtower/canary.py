@@ -254,9 +254,19 @@ def scan_text_for_canaries(
         if addr in text:
             c = registry.get(addr)
             assert c is not None
-            idx = text.find(addr)
-            # Redact the canary out of the excerpt: the excerpt gets published.
-            excerpt = (text[:idx] + "<canary>" + text[idx + len(addr):])[:200]
+            # AW-63. This redacted only the FIRST occurrence of the ONE
+            # address that matched, so a memo naming a canary twice — or
+            # naming two canaries — published the address in
+            # `evidence.excerpt`. The canary is the thing this module exists
+            # to keep secret: once it is published, the trap is spent and the
+            # attacker knows which address is watched.
+            #
+            # Replace EVERY registry canary, every time it appears, before
+            # anything is built from the text.
+            redacted = text
+            for known in registry.addresses():
+                redacted = redacted.replace(known, "<canary>")
+            excerpt = redacted[:200]
             hits.append(
                 CanaryHit(
                     signature=signature,

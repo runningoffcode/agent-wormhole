@@ -513,6 +513,26 @@ class TestConsumerExamplePinning(unittest.TestCase):
                     ["git", "cat-file", "-p", f"{pin}:action.yml"],
                     cwd=REPO, capture_output=True, text=True,
                 )
+                if proc.returncode != 0:
+                    # A shallow clone -- which is what actions/checkout makes
+                    # by default -- has the tip and nothing behind it, so a
+                    # perfectly good pin to an earlier commit is simply not
+                    # present locally. That is not the same as a fabricated
+                    # SHA, and failing on it would make this guard fire on
+                    # every CI run while saying nothing about the pin.
+                    #
+                    # Distinguish the two: if the object is genuinely absent
+                    # AND history is truncated, skip; if history is complete,
+                    # an unresolvable pin is a real failure.
+                    if (REPO / ".git" / "shallow").exists():
+                        # subTest swallows skipTest as a failure, so step over
+                        # this file rather than raising.
+                        print(
+                            f"\n  [pin audit] {rel} pins {pin}; shallow clone "
+                            "cannot resolve it — run with full history to audit",
+                            file=sys.stderr,
+                        )
+                        continue
                 self.assertEqual(
                     proc.returncode, 0,
                     f"{rel} pins {pin}, which is not a commit in this "

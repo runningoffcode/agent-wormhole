@@ -55,6 +55,24 @@ export interface PaymentQuote {
   asset: string;
   /** Exact amount, in the token's base units, as a decimal string. */
   amount: string;
+  /**
+   * AW-70. The three fields below are carried from the 402 entry as INERT
+   * DATA. They are merchant-authored text and the merchant is the adversary
+   * this package models, so nothing here may ever decide whether bytes get
+   * read — only whether a finding is ADDED. Each is an optional plain string:
+   * never an array or object, because `quote` arrives as `unknown` on the
+   * hosted path (verify.ts) and is cast straight in, so any structure a
+   * consumer unpacked would make the merchant a co-author of the evidence.
+   */
+  /** The entry's `scheme`, verbatim. The guard asserts exact-match amounts, so
+   *  anything but `exact` means it is checking a claim the merchant never made. */
+  scheme?: string;
+  /** The entry's `network`, verbatim. Carried so an SVM verdict records which
+   *  cluster the bytes were for. No rule reads it yet — see AW-70 residual. */
+  network?: string;
+  /** The entry's `extra.feePayer`, verbatim: who the merchant CLAIMS pays the
+   *  fee. Only ever the last conjunct of a finding-adding test. */
+  feePayer?: string;
 }
 
 export type Decision = "allow" | "refuse" | "abstain";
@@ -244,15 +262,33 @@ export function inspectPayment(
   const { tx, err } = decodeTransaction(raw);
 
   if (!tx) {
+    // AW-70. These abstains pass the ACCUMULATOR, never a fresh []. They sit
+    // above the instruction walk today so the array is empty in practice, but
+    // a hardcoded [] is a standing invitation to erase evidence the moment a
+    // parse-time finding is added above them — which is how a prior attempt on
+    // this finding turned an abstain into an event-suppression primitive.
     return {
       decision: "abstain",
-      findings: [],
+      findings,
       reason: `could not deserialize the transaction (${err}) — refusing to report it as safe`,
     };
   }
 
   const msg = tx.message;
   const keys = msg.staticAccountKeys.map((k) => k.toBase58());
+
+  // AW-70. The fee payer is account 0 of the signed message: the account the
+  // runtime actually debits for the transaction fee, whatever the entry says.
+  //
+  // Read UNCONDITIONALLY. No option and no merchant field decides whether this
+  // happens — that is the whole lesson of AW-36 and of the two reverted
+  // attempts on this finding. The previous attempt gated the fee-payer check
+  // on `typeof quote.feePayer === "string"`, a value the MERCHANT writes, so
+  // an adversary switched the guard off by simply omitting the field. A guard
+  // the attacker disables by omission is not a guard.
+  //
+  // One array index on an array this function has already materialised.
+  const feePayer = keys.length > 0 ? keys[0] : null;
 
   /**
    * A versioned transaction can hide accounts behind an address lookup table,
@@ -265,7 +301,7 @@ export function inspectPayment(
   if (msg.addressTableLookups && msg.addressTableLookups.length > 0) {
     return {
       decision: "abstain",
-      findings: [],
+      findings,
       reason:
         "transaction uses address lookup tables; the referenced accounts are " +
         "not in the message and cannot be resolved without RPC",
@@ -298,7 +334,7 @@ export function inspectPayment(
   } catch (e) {
     return {
       decision: "abstain",
-      findings: [],
+      findings,
       reason: `quote contains an unreadable address (${
         e instanceof Error ? e.message : String(e)
       })`,
@@ -331,7 +367,7 @@ export function inspectPayment(
     } catch (e) {
       return {
         decision: "abstain",
-        findings: [],
+        findings,
         reason: `expectedPayer is not a readable address (${
           e instanceof Error ? e.message : String(e)
         }) — refusing to report the payer as checked`,
@@ -704,13 +740,71 @@ export function inspectPayment(
     const feeLamports = (limit * cuPrice) / 1_000_000n;
     const cap = opts.maxPriorityFeeLamports ?? DEFAULT_MAX_PRIORITY_FEE_LAMPORTS;
     if (feeLamports > cap) {
+      // AW-70. The cap bounded the lamports but named nobody, so an operator
+      // reading the finding could not tell whose SOL was being spent. Attribute
+      // it from the signed bytes: `feePayer` is account 0 of the message, not
+      // anything the merchant wrote. When the caller told us which wallet they
+      // expected to pay, say whether it is that one.
+      const whose =
+        feePayer === null
+          ? "fee payer could not be read"
+          : expectedAuthority !== null && feePayer === expectedAuthority
+            ? `paid by expectedPayer ${feePayer}`
+            : `paid by ${feePayer}`;
       findings.push({
         code: "X402-010",
         severity: "critical",
         message:
-          "priority fee exceeds the cap — fees are paid regardless of what the quote covers",
+          "priority fee exceeds the cap — fees are paid regardless of what the " +
+          `quote covers (${whose})`,
         expected: `<= ${cap.toString()} lamports`,
         actual: `${feeLamports.toString()} lamports`,
+      });
+    }
+  }
+
+  // --- 2c. the merchant's fee-payer claim vs the signed bytes --------------
+  // AW-70. The audit asked for `extra.feePayer` to be compared against
+  // `staticAccountKeys[0]`. Taken literally that is the wrong check under this
+  // package's own threat model: the README states the quote is attacker-
+  // controlled text and the MERCHANT is the adversary. A check whose trigger
+  // is a merchant field is a check the merchant turns off by omitting it.
+  //
+  // So the check is anchored on two things the merchant cannot author:
+  // `feePayer`, read unconditionally from the signed message above, and
+  // `opts.expectedPayer`, supplied by the CALLER. Those two alone decide that
+  // something is worth saying. The merchant's claim appears ONLY as the last
+  // conjunct, so its sole power is to earn the merchant a finding their own
+  // promise implies — never to buy silence about the bytes.
+  //
+  // Why the contradiction needs the claim at all: "the expected payer pays its
+  // own fee" is the ordinary non-sponsored case. Refusing on that alone would
+  // block most honest traffic, which is worse than the defect. Omitting the
+  // claim therefore buys a merchant silence about their own promise and
+  // nothing more — X402-010 still bounds the fee unconditionally, and X402-001
+  // still checks the destination.
+  //
+  // This sits OUTSIDE the `cuPrice > 0` branch on purpose. Nesting it there
+  // would let an attacker skip the check by omitting a compute-budget
+  // instruction — which instructions a transaction carries is the attacker's
+  // choice, so nesting would be exactly the attacker-steered predicate this
+  // finding is about.
+  //
+  // `quote.feePayer` is compared as a STRING and never passed to
+  // `new PublicKey()`: base58 decode is O(n^2) and would be a DoS lever on an
+  // unbounded merchant value.
+  if (expectedAuthority !== null && feePayer === expectedAuthority) {
+    const claimed = typeof quote.feePayer === "string" ? quote.feePayer.trim() : "";
+    if (claimed !== "" && claimed !== expectedAuthority) {
+      findings.push({
+        code: "X402-011",
+        severity: "critical",
+        message:
+          "the entry names a different fee payer than the transaction does: the " +
+          "agent's own wallet is account 0 and pays the fee, while the quote " +
+          "promised it would be someone else — a gasless payment that is not gasless",
+        expected: claimed,
+        actual: feePayer,
       });
     }
   }
@@ -758,6 +852,54 @@ export function inspectPayment(
         "transaction contains no transfer to the account derived from the quote",
       expected: expectedAta,
     });
+  }
+
+  // --- 3b. the entry's scheme must be the one this section checks ----------
+  // AW-70. Section 4 below asserts the transferred amount EQUALS the quoted
+  // amount. That is the `exact` scheme's contract. An `upto` entry makes no
+  // such promise — it names a ceiling — so the builder silently converting it
+  // into an exact quote meant the guard was asserting a claim the merchant
+  // never made, and an `upto` entry paid at exactly the ceiling returned a
+  // silent allow with the mismatch question never asked.
+  //
+  // Trimmed and case-folded so `"Exact"` and `" exact "` are read as the typos
+  // they are rather than as a different scheme. This PUSHES and falls through:
+  // it never returns early and never abstains, so it STACKS with X402-001
+  // rather than replacing it. The previous attempt returned
+  // `{decision:"abstain", findings: []}` here, before the instruction walk,
+  // which erased the proof that the transaction paid the attacker's ATA — an
+  // event-suppression primitive handed to the merchant, strictly worse than
+  // the defect it was meant to fix.
+  //
+  // An ABSENT scheme is not a finding: `inspectPayment` is called directly
+  // with hand-built quotes all over this package and on the hosted path, where
+  // no entry was ever parsed. Silence about a field nobody claimed is not the
+  // same as a contradicted claim.
+  if (typeof quote.scheme === "string") {
+    const scheme = quote.scheme.trim().toLowerCase();
+    if (scheme !== "" && scheme !== "exact") {
+      findings.push({
+        // Its own code, not X402-002. That code means "amount does not match
+        // the quoted amount" in the README and in every audit event, and
+        // sink.ts builds events from code and severity alone — it discards
+        // message, expected and actual. Reusing it would make a scheme
+        // mismatch indistinguishable from a wrong amount in the record.
+        code: "X402-012",
+        // Medium, not critical: `upto` is a legitimate x402 scheme, and an
+        // agent paying at or below a quoted ceiling has done nothing wrong.
+        // What is true is narrower — this guard checks the amount for EXACT
+        // equality, so on a non-exact entry it cannot make the assertion its
+        // allow would imply. Say that, and let the caller decide; refusing an
+        // honest ceiling payment would be a false positive on valid traffic.
+        severity: "medium",
+        message:
+          "the 402 entry does not use the `exact` scheme, so the amount check " +
+          "below asserts exact equality the entry never promised — this guard " +
+          "does not verify a ceiling",
+        expected: "exact",
+        actual: quote.scheme.slice(0, 64),
+      });
+    }
   }
 
   // --- 4. the amount must match exactly -----------------------------------
@@ -1194,7 +1336,32 @@ export function quoteFromRequirements(req: PaymentRequirements): PaymentQuote {
       "x402-guard: payment requirements are missing payTo, asset, or maxAmountRequired",
     );
   }
-  return { payTo: req.payTo, asset: req.asset, amount: req.maxAmountRequired };
+  // AW-70. `scheme`, `network` and `extra.feePayer` were dropped here, so a
+  // consumer could not tell an `upto` entry from an `exact` one, and an SVM
+  // allow said nothing about which cluster or which payer the entry named.
+  //
+  // This is a PARSE step and nothing more: copy, no normalisation, no
+  // conversion, no throw. Judgement belongs in the rules, not the builder —
+  // a builder that rejects is a builder the hosted path never calls, since
+  // verify() and mcp() cast merchant JSON straight into inspectPayment and
+  // never come through here at all.
+  const quote: PaymentQuote = {
+    payTo: req.payTo,
+    asset: req.asset,
+    amount: req.maxAmountRequired,
+  };
+  if (typeof req.scheme === "string") quote.scheme = req.scheme;
+  if (typeof req.network === "string") quote.network = req.network;
+  // Read the single literal key `feePayer` and require a string. NOT a prefix
+  // or keyword match: a `startsWith("feePayer")` heuristic turns
+  // `feePayerRequired: false` — an entry DENYING gaslessness — into a critical
+  // refuse, which is how the previous attempt broke honest traffic.
+  const extra: unknown = (req as { extra?: unknown }).extra;
+  if (extra !== null && typeof extra === "object") {
+    const claimed = (extra as Record<string, unknown>).feePayer;
+    if (typeof claimed === "string") quote.feePayer = claimed;
+  }
+  return quote;
 }
 
 /**

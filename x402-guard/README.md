@@ -535,6 +535,7 @@ a JS agent's payment path.
 | `X402-009` | A System/ATA instruction with no place in a payment — `Assign`, allocation, or unclassifiable |
 | `X402-010` | Priority fee above the cap (default 0.01 SOL) — fees drain the payer regardless of the quote |
 | `X402-011` | Payer binding (opt-in `expectedPayer`) — the transfer's authority or source account is not the named wallet |
+| `X402-012` | The 402 entry's scheme is not `exact`, so the amount check asserts an equality the entry never promised |
 
 Programs are an **allowlist**, not a blocklist — so it holds against
 instructions nobody has catalogued yet.

@@ -524,7 +524,15 @@ describe("facilitator payloads", () => {
   });
 
   it("maps a 402 accepts entry to a quote", () => {
-    expect(quoteFromRequirements(requirements)).toEqual(quote);
+    // AW-70. Kept as an exact-shape `toEqual` on purpose: this assertion is
+    // what proves the builder carries precisely what it claims and nothing
+    // more. `scheme` and `network` are now carried from the entry as inert
+    // data; `feePayer` is absent because this entry has no `extra`.
+    expect(quoteFromRequirements(requirements)).toEqual({
+      ...quote,
+      scheme: "exact",
+      network: "solana",
+    });
   });
 
   it("allows a conforming payload object", () => {
@@ -1183,5 +1191,205 @@ describe("compute-budget and Lighthouse are read, not assumed", () => {
     // reason.
     expect(inspectPayment(build([xfer(), lh([0x02, 0x00])]), quote).decision)
       .toBe("allow");
+  });
+});
+
+/**
+ * AW-70. `quoteFromRequirements` dropped `scheme`, `network` and
+ * `extra.feePayer`, so a consumer could not tell an `upto` entry from an
+ * `exact` one and an SVM allow said nothing about who the entry claimed would
+ * pay the fee. The fields are now carried as inert optional strings and two
+ * existing rules read them.
+ *
+ * The threat model these tests encode: the MERCHANT writes the quote, so no
+ * merchant field may ever decide whether bytes are inspected. It may only
+ * earn the merchant a finding their own claim implies.
+ */
+describe("AW-70: scheme, network and fee payer survive the entry", () => {
+  const facilitator = Keypair.generate();
+
+  /** Like `build`, but lets the test choose account 0 — the fee payer. */
+  function buildPaidBy(feePayer: PublicKey, instructions: any[]): Uint8Array {
+    const msg = new TransactionMessage({
+      payerKey: feePayer,
+      recentBlockhash: PublicKey.default.toBase58(),
+      instructions,
+    }).compileToV0Message();
+    return new VersionedTransaction(msg).serialize();
+  }
+
+  const entry = {
+    scheme: "exact",
+    network: "solana",
+    payTo: merchant.publicKey.toBase58(),
+    asset: USDC.toBase58(),
+    maxAmountRequired: "1000000",
+  };
+
+  it("carries scheme, network and extra.feePayer onto the quote", () => {
+    const q = quoteFromRequirements({
+      ...entry,
+      extra: { feePayer: facilitator.publicKey.toBase58() },
+    });
+    expect(q.scheme).toBe("exact");
+    expect(q.network).toBe("solana");
+    expect(q.feePayer).toBe(facilitator.publicKey.toBase58());
+  });
+
+  it("reads the single literal key `feePayer`, not a prefix", () => {
+    // `feePayerRequired: false` is an entry DENYING gaslessness. A
+    // startsWith("feePayer") heuristic turned it into a critical refuse.
+    const q = quoteFromRequirements({ ...entry, extra: { feePayerRequired: false } });
+    expect(q.feePayer).toBeUndefined();
+    expect(inspectPayment(build([payment(merchantAta, 1_000_000n)]), q, {
+      expectedPayer: payer.publicKey.toBase58(),
+    }).decision).toBe("allow");
+  });
+
+  it("REGRESSION: a non-exact scheme is reported, not silently converted", () => {
+    // Reported under its OWN code, and not as a refusal. `upto` is a
+    // legitimate x402 scheme: an agent paying at or below a quoted ceiling has
+    // done nothing wrong, and refusing it would be a false positive on honest
+    // traffic. What is true is narrower — this guard checks the amount for
+    // exact equality, so on a non-exact entry it cannot make the assertion its
+    // allow would imply, and it says so.
+    const q = quoteFromRequirements({ ...entry, scheme: "upto" });
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n)]), q);
+    const scheme = v.findings.find((f) => f.code === "X402-012");
+    expect(scheme).toBeDefined();
+    expect(scheme?.severity).toBe("medium");
+    expect(v.decision).not.toBe("refuse");
+    // Not X402-002: that code means "amount does not match", and sink.ts
+    // builds audit events from code and severity alone, so reusing it would
+    // make a scheme mismatch indistinguishable from a wrong amount.
+    expect(v.findings.some((f) => f.code === "X402-002")).toBe(false);
+  });
+
+  it("reads `Exact` and ` exact ` as the exact scheme, not as a typo'd one", () => {
+    for (const scheme of ["Exact", " exact ", "EXACT"]) {
+      const q = quoteFromRequirements({ ...entry, scheme });
+      expect(inspectPayment(build([payment(merchantAta, 1_000_000n)]), q).decision).toBe("allow");
+    }
+  });
+
+  it("REGRESSION: the scheme finding STACKS, it never replaces the evidence", () => {
+    // A prior attempt abstained with `findings: []` on a non-exact scheme,
+    // before the instruction walk — erasing the proof that the transaction
+    // paid the attacker. The finding must be added, never substituted.
+    const q = quoteFromRequirements({ ...entry, scheme: "upto" });
+    const v = inspectPayment(build([payment(attackerAta, 1_000_000n)]), q);
+    expect(v.decision).toBe("refuse");
+    // The destination evidence survives — that is the whole point.
+    expect(v.findings.some((f) => f.code === "X402-001")).toBe(true);
+    // And the scheme note rides alongside it rather than replacing it.
+    expect(v.findings.some((f) => f.code === "X402-012")).toBe(true);
+  });
+
+  it("REGRESSION: a broken gasless promise is a finding", () => {
+    // The entry says the facilitator pays; the bytes make the agent account 0.
+    const q = quoteFromRequirements({
+      ...entry,
+      extra: { feePayer: facilitator.publicKey.toBase58() },
+    });
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n)]), q, {
+      expectedPayer: payer.publicKey.toBase58(),
+    });
+    expect(v.findings.some((f) => f.code === "X402-011")).toBe(true);
+    expect(v.decision).toBe("refuse");
+  });
+
+  it("REGRESSION: the fee-payer check does not need a compute-budget instruction", () => {
+    // Section 2c sits OUTSIDE the `cuPrice > 0` branch. Nesting it there would
+    // let an attacker skip the check by omitting a compute-budget instruction,
+    // which is the attacker-steered predicate this finding is about. This
+    // transaction carries no compute-budget instruction at all.
+    const q = quoteFromRequirements({
+      ...entry,
+      extra: { feePayer: facilitator.publicKey.toBase58() },
+    });
+    const tx = build([payment(merchantAta, 1_000_000n)]);
+    expect(tx).toBeDefined();
+    const v = inspectPayment(tx, q, { expectedPayer: payer.publicKey.toBase58() });
+    expect(v.findings.some((f) => f.code === "X402-011")).toBe(true);
+  });
+
+  it("is silent when the gasless promise is honoured", () => {
+    const q = quoteFromRequirements({
+      ...entry,
+      extra: { feePayer: facilitator.publicKey.toBase58() },
+    });
+    const v = inspectPayment(
+      buildPaidBy(facilitator.publicKey, [payment(merchantAta, 1_000_000n)]),
+      q,
+      { expectedPayer: payer.publicKey.toBase58() },
+    );
+    expect(v.decision).toBe("allow");
+    expect(v.findings).toEqual([]);
+  });
+
+  it("is silent when the entry names the agent as its own fee payer", () => {
+    const q = quoteFromRequirements({
+      ...entry,
+      extra: { feePayer: ` ${payer.publicKey.toBase58()} ` },
+    });
+    const v = inspectPayment(build([payment(merchantAta, 1_000_000n)]), q, {
+      expectedPayer: payer.publicKey.toBase58(),
+    });
+    expect(v.decision).toBe("allow");
+  });
+
+  it("REGRESSION: omitting feePayer does not switch the fee cap off", () => {
+    // The merchant must not be able to disable a check by omission. The cap is
+    // read from the signed bytes and never consults the entry.
+    const overCap = [
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000_000_000 }),
+      payment(merchantAta, 1_000_000n),
+    ];
+    const without = inspectPayment(build(overCap), quoteFromRequirements(entry), {
+      expectedPayer: payer.publicKey.toBase58(),
+    });
+    const with_ = inspectPayment(
+      build(overCap),
+      quoteFromRequirements({ ...entry, extra: { feePayer: facilitator.publicKey.toBase58() } }),
+      { expectedPayer: payer.publicKey.toBase58() },
+    );
+    expect(without.findings.some((f) => f.code === "X402-010")).toBe(true);
+    expect(with_.findings.some((f) => f.code === "X402-010")).toBe(true);
+  });
+
+  it("REGRESSION: X402-010 names who is being debited", () => {
+    const v = inspectPayment(
+      build([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000_000_000 }),
+        payment(merchantAta, 1_000_000n),
+      ]),
+      quoteFromRequirements(entry),
+      { expectedPayer: payer.publicKey.toBase58() },
+    );
+    const cap = v.findings.find((f) => f.code === "X402-010");
+    expect(cap).toBeDefined();
+    expect(cap!.message).toContain(`paid by expectedPayer ${payer.publicKey.toBase58()}`);
+  });
+
+  it("does not base58-decode the merchant's feePayer (O(n^2) DoS lever)", () => {
+    const q = quoteFromRequirements({ ...entry, extra: { feePayer: "x".repeat(200_000) } });
+    const t = performance.now();
+    inspectPayment(build([payment(merchantAta, 1_000_000n)]), q, {
+      expectedPayer: payer.publicKey.toBase58(),
+    });
+    expect(performance.now() - t).toBeLessThan(500);
+  });
+
+  it("carries network but writes no network rule — honest aliases still allow", () => {
+    // `solana`, `svm` and CAIP-2 all resolve to one lane via laneFor(). A raw
+    // string compare here false-positived on honest mainnet traffic, so the
+    // field is carried as data and no rule reads it yet.
+    for (const network of ["solana", "svm", "SOLANA", " solana ", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"]) {
+      const q = quoteFromRequirements({ ...entry, network });
+      expect(q.network).toBe(network);
+      expect(inspectPayment(build([payment(merchantAta, 1_000_000n)]), q).decision).toBe("allow");
+    }
   });
 });

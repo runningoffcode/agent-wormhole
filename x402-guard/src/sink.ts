@@ -147,7 +147,29 @@ export interface PaymentEvent {
   payee_hash?: string;
   amount_bucket?: string;
   ts: string;
+  /**
+   * Which SUPPLIED fields this record could not read. Absent on every honest
+   * record, so the seven-key shape is unchanged for normal traffic.
+   *
+   * AW-71: `chain_id: 0` meant both "Solana" and "we could not read what you
+   * sent", so an operator reading the spool could not locate the rows whose
+   * chain was guessed. The doubt belongs in its own key rather than in
+   * `chain_id`'s value -- the cross-language `chain_id` vocabulary stays
+   * exactly as the reporter and the SQLite CHECK constraint expect it.
+   *
+   * A KEY and not a sentinel value, so there is nothing for a caller to forge:
+   * the entries are drawn from a closed two-name set this module writes, and
+   * `assertNoPlaintext` re-checks them against that set before the line is
+   * written.
+   */
+  unreadable?: string[];
 }
+
+/**
+ * The only two names that may appear in {@link PaymentEvent.unreadable}.
+ * Closed, so the key cannot become a channel for caller-supplied text.
+ */
+export const UNREADABLE_FIELDS: ReadonlyArray<string> = ["amount", "chain_id"];
 
 /**
  * Solana has no EIP-155 chain id. Zero is the declared sentinel for "this event
@@ -171,6 +193,7 @@ export const KNOWN_CODES: ReadonlySet<string> = new Set([
   // Solana conformance (index.ts)
   "X402-001", "X402-002", "X402-003", "X402-006",
   "X402-007", "X402-008", "X402-009", "X402-010", "X402-011",
+  "X402-012",
   // EVM EIP-3009 conformance (evm.ts)
   "X402-101", "X402-102", "X402-103", "X402-104",
   "X402-105", "X402-106", "X402-107", "X402-108", "X402-110",
@@ -239,30 +262,77 @@ export const AMOUNT_BUCKETS: ReadonlyArray<string> = [
  * `payment.amount_bucket` on the Python side exactly.
  */
 export function amountBucket(amount: unknown): string | null {
+  const r = resolveAmountTagged(amount);
+  return r.kind === "band" ? r.bucket : null;
+}
+
+/**
+ * The three distinct facts a supplied amount can be.
+ *
+ * Same reasoning as {@link ChainIdResolution}: `null` conflated "no amount on
+ * this finding at all" (a quote-text finding has none, and that is normal) with
+ * "an amount arrived that we could not read" (which is a defect somewhere
+ * upstream). `toEvents` omits the key in both cases -- the wire shape is
+ * unchanged -- but only the second one is worth telling the operator about.
+ */
+export type AmountResolution =
+  | { kind: "band"; bucket: string }
+  | { kind: "absent" }
+  | { kind: "unreadable" };
+
+/**
+ * Band a base-unit amount, keeping WHY it did not band.
+ *
+ * `Number.isInteger`, not `Number.isSafeInteger`. AW-71: the safe-integer test
+ * rejected every whole count above 2^53, which on the SVM lamport lane is not an
+ * exotic case -- 1e18 lamports is an ordinary figure, and `2**53` itself is a
+ * whole number. The four exact values that lane produces most often were the
+ * ones getting no band at all, so the highest-value payments were the least
+ * labelled. Above 2^53 a JS number is still an exact integer, just a sparse one;
+ * `BigInt(n)` converts it without rounding, and the band is 3 orders of
+ * magnitude wide, so the sparseness cannot move a value across a boundary.
+ */
+export function resolveAmountTagged(amount: unknown): AmountResolution {
+  if (amount === undefined || amount === null) return { kind: "absent" };
+
   let v: bigint;
   try {
     if (typeof amount === "bigint") {
       v = amount;
     } else if (typeof amount === "number") {
-      if (!Number.isSafeInteger(amount)) return null;
+      if (!Number.isInteger(amount)) return { kind: "unreadable" };
       v = BigInt(amount);
     } else if (typeof amount === "string") {
       const s = amount.trim();
-      if (!/^[0-9]+$/.test(s)) return null;
-      v = BigInt(s);
+      if (s.length === 0) return { kind: "absent" };
+      if (/^0[xX][0-9a-fA-F]+$/.test(s)) {
+        // Hex is how the EVM spells a uint256; rejecting it banded nothing.
+        try {
+          v = BigInt(s);
+        } catch {
+          return { kind: "unreadable" };
+        }
+      } else if (/^[0-9]+$/.test(s)) {
+        v = BigInt(s);
+      } else {
+        return { kind: "unreadable" };
+      }
     } else {
-      return null;
+      return { kind: "unreadable" };
     }
   } catch {
-    return null;
+    return { kind: "unreadable" };
   }
-  if (v < 0n) return null;
-  if (v === 0n) return "amt:0";
-  if (v < 1000n) return "amt:1-1e3";
-  if (v < 1000000n) return "amt:1e3-1e6";
-  if (v < 1000000000n) return "amt:1e6-1e9";
-  if (v < 1000000000000n) return "amt:1e9-1e12";
-  return "amt:1e12+";
+
+  // A negative amount is not a band and not an absence -- it is a value that
+  // should not exist, which is exactly what "unreadable" is for.
+  if (v < 0n) return { kind: "unreadable" };
+  if (v === 0n) return { kind: "band", bucket: "amt:0" };
+  if (v < 1000n) return { kind: "band", bucket: "amt:1-1e3" };
+  if (v < 1000000n) return { kind: "band", bucket: "amt:1e3-1e6" };
+  if (v < 1000000000n) return { kind: "band", bucket: "amt:1e6-1e9" };
+  if (v < 1000000000000n) return { kind: "band", bucket: "amt:1e9-1e12" };
+  return { kind: "band", bucket: "amt:1e12+" };
 }
 
 /**
@@ -281,11 +351,103 @@ export function amountBucket(amount: unknown): string | null {
  * costs a Solana-only bundle nothing and removes the drift surface entirely.
  */
 export function resolveChainId(chainId: unknown): number | null {
+  const r = resolveChainIdTagged(chainId);
+  return r.kind === "evm" ? r.id : null;
+}
+
+/**
+ * The four distinct facts a supplied chain id can be, kept distinct.
+ *
+ * AW-71: the old `resolveChainId(x) ?? CHAIN_ID_SOLANA` in `toEvents` collapsed
+ * these into one integer, so "the caller said Solana", "the caller said nothing"
+ * and "the caller sent bytes we could not read" all landed on 0. An operator
+ * reading the spool could not tell a genuine Solana row from an unreadable one,
+ * and a fleet console's Solana bucket silently absorbed every parse failure.
+ *
+ * A tagged union rather than a sentinel integer, deliberately. A sentinel is a
+ * VALUE, and any value a caller can also supply is a value a caller can forge --
+ * an earlier attempt declared CHAIN_ID_UNRESOLVED = MAX_SAFE_INTEGER while this
+ * function still accepted that number as an ordinary chain id, so a caller could
+ * stamp their own row "unreadable". A tag computed here is not a field the
+ * caller writes.
+ */
+export type ChainIdResolution =
+  | { kind: "evm"; id: number }
+  | { kind: "non_evm" }
+  | { kind: "absent" }
+  | { kind: "unreadable" };
+
+/**
+ * Resolve a supplied chain id, keeping WHY it did not resolve.
+ *
+ * Accepts every shape the x402 envelope documents, because the pre-AW-71 version
+ * accepted only a bare `number` and CAIP-2/v1 strings -- so `"8453"`, `"0x2105"`
+ * and `8453n`, all of which appear in real payloads (JSON has no integer type
+ * wide enough for a uint256, and hex is the EVM's native spelling), filed
+ * themselves under the Solana sentinel. That is not a cosmetic mislabel: it put
+ * Base traffic in the Solana bucket of every downstream report.
+ *
+ * `0` and the Solana name resolve to `non_evm`, which is a real answer rather
+ * than a failure: Solana's chain identity is not an EIP-155 integer.
+ */
+export function resolveChainIdTagged(chainId: unknown): ChainIdResolution {
+  if (chainId === undefined || chainId === null) return { kind: "absent" };
+
   if (typeof chainId === "number") {
-    return Number.isSafeInteger(chainId) && chainId > 0 ? chainId : null;
+    if (chainId === 0) return { kind: "non_evm" };
+    if (Number.isSafeInteger(chainId) && chainId > 0) {
+      return { kind: "evm", id: chainId };
+    }
+    // Negative, fractional, NaN, Infinity, or beyond 2^53 where the integer we
+    // read back is not the integer that was sent.
+    return { kind: "unreadable" };
   }
-  if (typeof chainId !== "string") return null;
-  return parseNetwork(chainId);
+
+  if (typeof chainId === "bigint") {
+    if (chainId === 0n) return { kind: "non_evm" };
+    if (chainId > 0n && chainId <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      return { kind: "evm", id: Number(chainId) };
+    }
+    return { kind: "unreadable" };
+  }
+
+  if (typeof chainId !== "string") return { kind: "unreadable" };
+
+  const s = chainId.trim();
+  if (s.length === 0) return { kind: "absent" };
+
+  // Bare decimal: "8453". JSON carries chain ids as strings more often than as
+  // numbers, and the pre-fix code sent every one of them to the Solana bucket.
+  if (/^[0-9]+$/.test(s)) {
+    if (/^0+$/.test(s)) return { kind: "non_evm" };
+    const id = Number(s);
+    return Number.isSafeInteger(id) && id > 0
+      ? { kind: "evm", id }
+      : { kind: "unreadable" };
+  }
+
+  // Hex, either case of the prefix and the digits. "0x2105" is Base.
+  if (/^0[xX][0-9a-fA-F]+$/.test(s)) {
+    let v: bigint;
+    try {
+      v = BigInt(s);
+    } catch {
+      return { kind: "unreadable" };
+    }
+    if (v === 0n) return { kind: "non_evm" };
+    return v > 0n && v <= BigInt(Number.MAX_SAFE_INTEGER)
+      ? { kind: "evm", id: Number(v) }
+      : { kind: "unreadable" };
+  }
+
+  // CAIP-2 `eip155:<id>` and the known bare v1 names, via the one shared table.
+  const viaNetwork = parseNetwork(s);
+  if (viaNetwork !== null) return { kind: "evm", id: viaNetwork };
+
+  // The declared non-EVM chain, by name.
+  if (s.toLowerCase() === "solana") return { kind: "non_evm" };
+
+  return { kind: "unreadable" };
 }
 
 // --- module state ----------------------------------------------------------
@@ -306,6 +468,7 @@ interface SinkState {
   keepSegments: number;
   written: number;
   dropped: number;
+  degraded: number;
   bytesSinceCheck: number;
   checkEvery: number;
   /**
@@ -445,6 +608,7 @@ export function configureEventSink(opts: EventSinkOptions | null): boolean {
           : DEFAULT_KEEP,
       written: 0,
       dropped: 0,
+      degraded: 0,
       checkEvery: checkInterval(maxBytes),
       bytesSinceCheck: Number.MAX_SAFE_INTEGER, // force a check on the first write
       fd: null,
@@ -477,6 +641,7 @@ export function eventSinkStats(): {
   path: string;
   written: number;
   dropped: number;
+  degraded: number;
   salted: boolean;
   maxBytes: number;
   keepSegments: number;
@@ -486,6 +651,7 @@ export function eventSinkStats(): {
     path: sink.path,
     written: sink.written,
     dropped: sink.dropped,
+    degraded: sink.degraded,
     salted: sink.hmacKey !== null,
     maxBytes: sink.maxBytes,
     keepSegments: sink.keepSegments,
@@ -528,12 +694,27 @@ export function toEvents(
   if (!Array.isArray(verdict.findings)) return out;
 
   const ts = (now ?? new Date()).toISOString();
-  // Solana (and anything unresolvable) collapses to the declared sentinel
-  // rather than null, because the storage column is NOT NULL and 0 is the
-  // agreed meaning of "not an EIP-155 chain".
-  const chain_id = resolveChainId(ctx.chainId ?? null) ?? CHAIN_ID_SOLANA;
+
+  // Resolved ONCE per verdict, unconditionally, for every input shape. There is
+  // no branch here that can decide a record is not worth building: AW-71's
+  // second attempt made this section "fail closed" by dropping events, which for
+  // an audit log is fail-OPEN -- a malformed chain id made a critical refusal
+  // vanish from the spool, and an explicit chainId of 0 (this module's own
+  // Solana sentinel) cost Solana integrators every refusal record they had.
+  const chain = resolveChainIdTagged(ctx.chainId);
+  const amount = resolveAmountTagged(ctx.amount);
+
+  // The storage column is NOT NULL and 0 is the agreed meaning of "not an
+  // EIP-155 chain", so an unresolved chain still writes 0 -- but it now says so
+  // on a separate key instead of being indistinguishable from real Solana.
+  const chain_id = chain.kind === "evm" ? chain.id : CHAIN_ID_SOLANA;
   const payee_hash = hashPayee(ctx.payTo);
-  const amount_bucket = amountBucket(ctx.amount);
+  const amount_bucket = amount.kind === "band" ? amount.bucket : null;
+
+  // Built from tags this module computed, never from caller bytes.
+  const unreadable: string[] = [];
+  if (amount.kind === "unreadable") unreadable.push("amount");
+  if (chain.kind === "unreadable") unreadable.push("chain_id");
 
   for (const f of verdict.findings) {
     if (!f || typeof f !== "object") continue;
@@ -556,6 +737,9 @@ export function toEvents(
     // Assigned only when present, so the key is absent rather than null.
     if (payee_hash !== null) ev.payee_hash = payee_hash;
     if (amount_bucket !== null) ev.amount_bucket = amount_bucket;
+    // Fresh array per event: the records are handed out separately and must not
+    // share a mutable field.
+    if (unreadable.length > 0) ev.unreadable = unreadable.slice();
     out.push(ev);
   }
   return out;
@@ -571,7 +755,7 @@ export function toEvents(
  * standing between a future refactor and a plaintext address on disk.
  */
 const REQUIRED_KEYS = ["chain_id", "code", "decision", "severity", "ts"];
-const OPTIONAL_KEYS = ["amount_bucket", "payee_hash"];
+const OPTIONAL_KEYS = ["amount_bucket", "payee_hash", "unreadable"];
 
 export function assertNoPlaintext(ev: PaymentEvent): string[] {
   const bad: string[] = [];
@@ -604,6 +788,23 @@ export function assertNoPlaintext(ev: PaymentEvent): string[] {
     bad.push(`amount_bucket not in vocabulary: ${ev.amount_bucket}`);
   }
   if (!/^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(ev.ts)) bad.push(`ts: ${ev.ts}`);
+
+  // `unreadable` is built here from a closed two-name set, so this is a second
+  // gate on the one key whose existence is decided by caller context: if a
+  // future refactor ever lets a caller-supplied string reach it, the line is
+  // refused rather than written. Checked as an allowlist for the same reason the
+  // key set above is.
+  if (ev.unreadable !== undefined) {
+    if (!Array.isArray(ev.unreadable) || ev.unreadable.length === 0) {
+      bad.push(`unreadable not a non-empty array`);
+    } else {
+      for (const f of ev.unreadable) {
+        if (typeof f !== "string" || !UNREADABLE_FIELDS.includes(f)) {
+          bad.push(`unreadable field not in vocabulary: ${String(f)}`);
+        }
+      }
+    }
+  }
   return bad;
 }
 
@@ -746,6 +947,7 @@ export function recordVerdict(
 
     let payload = "";
     let n = 0;
+    let degraded = 0;
     for (const ev of events) {
       if (assertNoPlaintext(ev).length > 0) {
         // Fail closed. A record that does not match the promised shape is
@@ -754,6 +956,7 @@ export function recordVerdict(
         continue;
       }
       payload += JSON.stringify(ev) + "\n";
+      if (ev.unreadable !== undefined) degraded++;
       n++;
     }
     if (n === 0) return 0;
@@ -765,6 +968,12 @@ export function recordVerdict(
       return 0;
     }
     s.written += n;
+    // Counted on the SAME UNIT as `written` -- one per event, added only after
+    // the bytes reached the file -- so `degraded <= written` always holds and
+    // the counter can never claim a record that is not on disk. An earlier
+    // attempt counted a degraded record for an event it had already dropped,
+    // which made the counter unreconcilable against the spool.
+    s.degraded += degraded;
     s.bytesSinceCheck += payload.length;
 
     // Rotation is checked ONLY BEFORE the write, never after.

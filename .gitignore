@@ -31,3 +31,8 @@ x402-guard/*.tgz
 .env
 .env.*
 !.env.example
+
+# Audit correspondence stays out of the public repo. The response document
+# describes finding-by-finding mechanisms against a running system; it belongs
+# with the private review material.
+docs/security-review-response.md

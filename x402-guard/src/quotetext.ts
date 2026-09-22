@@ -301,7 +301,34 @@ const VARIATION_SELECTOR_GLOBAL = /[︀-️]/g;
  * appears in a JSON payment quote, and when it does appear mid-keyword it is
  * doing exactly one job.
  */
-const ZERO_WIDTH_REPORTABLE = /[​-‍⁠-⁤﻿­᠎￹-￻]/;
+/**
+ * Every format character, plus the filler letters that render as nothing.
+ *
+ * AW-34. Strips `\p{Cf}` wholesale rather than a hand-listed subset: 59 of the
+ * 170 `Cf` code points evaded the literal class. U+3164 and U+FFA0 are
+ * categorised `Lo` (a letter!) despite rendering as nothing, so they are named
+ * explicitly alongside the Hangul jamo fillers they decompose to.
+ *
+ * Deliberately NOT `\p{Mn}`: Thai and Devanagari use combining marks as real
+ * letters, and stripping them corrupts honest text in those scripts — verified
+ * before choosing this boundary.
+ */
+const INVISIBLE_FORMAT_GLOBAL =
+  /[\p{Cf}\u3164\uFFA0\u115F\u1160\u17B4\u17B5]/gu;
+
+const ZERO_WIDTH_REPORTABLE_LITERAL = /[​-‍⁠-⁤﻿­᠎￹-￻]/;
+
+/**
+ * AW-34. What X402-205 reports on.
+ *
+ * The literal class above named a fixed subset; an exhaustive sweep of the 170
+ * `Cf` code points found 59 that evaded it. This is the property the subset
+ * was approximating, plus the filler letters that are categorised `Lo` despite
+ * rendering as nothing. `\p{Mn}` is deliberately excluded — Thai and
+ * Devanagari use combining marks as real letters.
+ */
+const ZERO_WIDTH_REPORTABLE =
+  /[\p{Cf}\u3164\uFFA0\u115F\u1160\u17B4\u17B5]/u;
 
 /**
  * Unicode tag block. The `u` flag is mandatory: without it this range is two
@@ -463,10 +490,28 @@ function despacedVariant(text: string): string {
 }
 
 export function normalizeQuoteText(text: string): string {
-  let s = text.replace(ZERO_WIDTH_GLOBAL, "");
+  // AW-34, gap 1: ORDER. This used to strip the invisible classes and THEN
+  // call decodeHtmlEntities, which put them straight back — `&#173;` became
+  // U+00AD *after* the only pass that removes it, and X402-205 is computed
+  // against `raw`, which held only the ASCII entity. Both the content rules
+  // and the presence detector went silent on the payload this file's own
+  // header calls "the most serious kind". Decode first, then strip.
+  let s = decodeHtmlEntities(text);
+  s = s.replace(ZERO_WIDTH_GLOBAL, "");
+  // AW-34, gap 2: COVERAGE. The literal class named a fixed set and an
+  // exhaustive sweep of all 170 Unicode `Cf` code points found 59 that evaded
+  // it — U+3164 HANGUL FILLER and U+FFA0 HALFWIDTH HANGUL FILLER among them,
+  // and U+3164 NFKC-decomposes to U+1160, so normalization actively converted
+  // one uncaught invisible into another.
+  //
+  // `\p{Cf}` is the property the literal set was approximating. Verified safe
+  // across scripts that genuinely need invisible marks — Thai, Devanagari,
+  // Arabic, Hebrew, Persian all round-trip unchanged — because no `Cf` code
+  // point is a letter in any script. The Hangul fillers are `Lo` rather than
+  // `Cf`, so they are named explicitly.
+  s = s.replace(INVISIBLE_FORMAT_GLOBAL, "");
   s = s.replace(VARIATION_SELECTOR_GLOBAL, "");
   s = s.replace(UNICODE_TAGS_GLOBAL, "");
-  s = decodeHtmlEntities(s);
   try {
     s = s.normalize("NFKC");
   } catch {
@@ -2186,7 +2231,28 @@ function scanFields(
     // conjunction. There is no benign reason for a joiner inside a price list,
     // and the technique's whole purpose is to break the keyword adjacency the
     // other rules depend on.
-    const zw = raw.search(ZERO_WIDTH_REPORTABLE);
+    // AW-34. The presence detector ran against `raw`, so an entity-encoded
+    // invisible (`&#173;`) held only ASCII at this point and the detector saw
+    // nothing — while the decoded form reached the model as the real
+    // character. Search the decoded text too, so "an invisible is present" is
+    // answered about what the MODEL receives rather than what the wire
+    // carried.
+    // Emoji sequences legitimately carry U+200D (ZWJ) and the tag block, and a
+    // picker listing is an honest use. Remove those two specific shapes before
+    // asking whether an invisible is PRESENT, so the finding stays a signal
+    // rather than firing on every listing with a family emoji or a flag.
+    const rawSansEmoji = raw
+      .replace(/\p{Extended_Pictographic}(?:\u200D\p{Extended_Pictographic})+/gu, "")
+      .replace(
+        /\u{1F3F4}[\u{E0061}-\u{E007A}\u{E0030}-\u{E0039}]{2,7}\u{E007F}/gu,
+        "",
+      );
+    const zw = Math.max(
+      rawSansEmoji.search(ZERO_WIDTH_REPORTABLE),
+      decodeHtmlEntities(rawSansEmoji).search(ZERO_WIDTH_REPORTABLE) >= 0
+        ? raw.search(/&#x?[0-9a-fA-F]+;|&[a-zA-Z]+;/)
+        : -1,
+    );
     if (zw >= 0) {
       push({
         code: "X402-205",

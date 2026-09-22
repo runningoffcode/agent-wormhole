@@ -542,10 +542,28 @@ export function normalizeQuoteText(text: string): string {
  */
 function percentDecode(text: string): string {
   if (!text.includes("%")) return text;
+  // AW-73. This was all-or-nothing: `decodeURIComponent` throws on the FIRST
+  // malformed escape and the catch discarded the whole decoded view. So one
+  // `%ZZ` — or the ordinary phrase "100% uptime", which is not an escape at
+  // all — removed the percent view of an entire field, and an injection that
+  // lives only in encoded form went unread. Measured: an encoded payload
+  // refused alone and allowed once "100% uptime" appeared beside it.
+  //
+  // Decode each escape independently and leave the ones that do not decode
+  // as they are. A malformed escape is now a malformed escape rather than a
+  // reason to stop looking at the rest of the text.
   try {
     return decodeURIComponent(text);
   } catch {
-    return text;
+    return text.replace(/%[0-9a-fA-F]{2}/g, (esc) => {
+      try {
+        return decodeURIComponent(esc);
+      } catch {
+        // A lone continuation byte is valid on its own and invalid in
+        // sequence; keep the literal rather than losing the field.
+        return esc;
+      }
+    });
   }
 }
 
@@ -2140,10 +2158,25 @@ export function inspectQuoteText(
   quote: unknown,
   opts: InspectQuoteTextOptions = {},
 ): QuoteTextVerdict {
-  const maxFieldChars = opts.maxFieldChars ?? DEFAULT_MAX_FIELD_CHARS;
-  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
-  const maxDecodeDepth = opts.maxDecodeDepth ?? DEFAULT_MAX_DECODE_DEPTH;
-  const ignore = new Set((opts.ignore ?? []).map((c) => c.toUpperCase()));
+  // AW-65. The QUOTE was guarded a few lines below and the OPTIONS were not,
+  // so the guard was unreachable for the cases that mattered: `opts = null`
+  // threw on `.maxFieldChars`, `{ignore: [1]}` threw on `.toUpperCase`, and
+  // `{ignore: "X402"}` threw on `.map`. A throw is the one shape that turns
+  // this module off — it propagates past every caller that expects a verdict —
+  // and this file's own doctrine is that a lane throwing is an abstain, never
+  // an allow. Normalise at the entry rather than trusting the type.
+  const o: InspectQuoteTextOptions =
+    opts !== null && typeof opts === "object" ? opts : {};
+  const num = (v: unknown, fallback: number): number =>
+    typeof v === "number" && Number.isFinite(v) && v > 0 ? v : fallback;
+  const maxFieldChars = num(o.maxFieldChars, DEFAULT_MAX_FIELD_CHARS);
+  const maxDepth = num(o.maxDepth, DEFAULT_MAX_DEPTH);
+  const maxDecodeDepth = num(o.maxDecodeDepth, DEFAULT_MAX_DECODE_DEPTH);
+  const ignore = new Set(
+    (Array.isArray(o.ignore) ? o.ignore : [])
+      .filter((c): c is string => typeof c === "string")
+      .map((c) => c.toUpperCase()),
+  );
 
   // Fail closed on anything that is not a scannable document. A caller that
   // passes undefined because an upstream parse failed must not be told the

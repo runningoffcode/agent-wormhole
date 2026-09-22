@@ -31,13 +31,13 @@
     "robinhood"
   ],
   "peerDependencies": {
-    "wormhole-x402": "^0.3.0"
+    "wormhole-x402": ">=0.9.0-rc.2"
   },
   "devDependencies": {
     "@types/node": "^22",
     "typescript": "^5",
     "vitest": "^2",
-    "wormhole-x402": "^0.3.0"
+    "wormhole-x402": ">=0.9.0-rc.2"
   },
   "bin": {
     "mcp-trade-guard": "./dist/run.js"

@@ -144,25 +144,169 @@ export function priceFor(
  * volume. `caller_asserted` events never reach here (they are dropped at
  * `record`), but this filters them again — the second, arithmetic gate.
  */
+/**
+ * One money field that could not be read as configured, and what was used.
+ *
+ * A LIST ON THE RETURN VALUE rather than a throw. AW-71: the pre-fix arithmetic
+ * threw on two config shapes (a fractional `includedVolume`, a number-typed
+ * price), which loses the whole period's invoice -- and a throw reachable from
+ * config is a denial-of-billing primitive wherever config is not purely
+ * operator-controlled. It is equally not acceptable to substitute a number
+ * silently: the pre-fix code did that for a negative flat fee and produced a
+ * NEGATIVE invoice that looked like a real one. A complete invoice plus a
+ * visible defect list is the only shape that can be neither lost nor silently
+ * wrong.
+ */
+export interface PriceFieldFault {
+  /** Which config field could not be read. */
+  field: "flatMicroUsdc" | "includedVolume" | "perCallMicroUsdc";
+  /** Why, in a fixed vocabulary -- never an echo of the supplied value. */
+  reason: "not-numeric" | "negative" | "out-of-range" | "fractional";
+  /** The value used instead, as a decimal string. */
+  usedInstead: string;
+}
+
+/**
+ * Read a money field as non-negative integer micro-USDC.
+ *
+ * Accepts bigint, a whole number, and a numeric string. The string case is not
+ * hypothetical: a price table that round-trips through JSON comes back with
+ * `flatMicroUsdc: "25000000"`, and the pre-fix code fed that straight into
+ * `+` -- where JS chose STRING CONCATENATION over addition, so a 25 USDC fee
+ * plus 15000 micro-USDC of overage billed as "2500000015000", a 99,800-fold
+ * overbill that threw nothing and typed as a string all the way to the invoice.
+ */
+function toMicroUsdc(
+  value: unknown,
+  field: PriceFieldFault["field"],
+  fallback: bigint,
+  faults: PriceFieldFault[],
+): bigint {
+  const fault = (reason: PriceFieldFault["reason"]): bigint => {
+    faults.push({ field, reason, usedInstead: fallback.toString() });
+    return fallback;
+  };
+
+  if (typeof value === "bigint") {
+    return value < 0n ? fault("negative") : value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return fault("not-numeric");
+    if (!Number.isInteger(value)) return fault("fractional");
+    if (value < 0) return fault("negative");
+    if (!Number.isSafeInteger(value)) return fault("out-of-range");
+    return BigInt(value);
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!/^[+-]?[0-9]+$/.test(s)) return fault("not-numeric");
+    let v: bigint;
+    try {
+      v = BigInt(s);
+    } catch {
+      return fault("not-numeric");
+    }
+    return v < 0n ? fault("negative") : v;
+  }
+  return fault("not-numeric");
+}
+
+/**
+ * Read `includedVolume` as a non-negative whole call count.
+ *
+ * NOT CLAMPED. An out-of-range value falls back to the default included volume
+ * and is reported, because clamping 1e308 to Number.MAX_SAFE_INTEGER would mean
+ * no call in any conceivable month is ever overage -- i.e. the month silently
+ * becomes free, which is the same class of defect as the negative invoice, just
+ * pointing the other way.
+ */
+function toIncludedVolume(
+  value: unknown,
+  fallback: number,
+  faults: PriceFieldFault[],
+): number {
+  const fault = (reason: PriceFieldFault["reason"]): number => {
+    faults.push({ field: "includedVolume", reason, usedInstead: String(fallback) });
+    return fallback;
+  };
+
+  let n: number;
+  if (typeof value === "bigint") {
+    if (value < 0n) return fault("negative");
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) return fault("out-of-range");
+    return Number(value);
+  } else if (typeof value === "number") {
+    n = value;
+  } else if (typeof value === "string" && /^[+-]?[0-9]+$/.test(value.trim())) {
+    n = Number(value.trim());
+  } else {
+    return fault("not-numeric");
+  }
+
+  if (!Number.isFinite(n)) return fault("not-numeric");
+  if (n < 0) return fault("negative");
+  if (!Number.isSafeInteger(n)) {
+    // A fraction is a near-miss we can honour by flooring: 10.5 included calls
+    // means 10 are included. Anything beyond 2^53 is not a call count at all.
+    if (Number.isInteger(n)) return fault("out-of-range");
+    const floored = Math.floor(n);
+    faults.push({
+      field: "includedVolume",
+      reason: "fractional",
+      usedInstead: String(floored),
+    });
+    return floored;
+  }
+  return n;
+}
+
 export function monthlyInvoice(
   events: ReadonlyArray<BillingEvent>,
   config: PriceConfig = {},
-): { flatMicroUsdc: bigint; overageMicroUsdc: bigint; totalMicroUsdc: bigint; billableCalls: number } {
+): {
+  flatMicroUsdc: bigint;
+  overageMicroUsdc: bigint;
+  totalMicroUsdc: bigint;
+  billableCalls: number;
+  faults: PriceFieldFault[];
+} {
   const monthly = config.monthly ?? DEFAULT_MONTHLY_TIER;
-  const perCall = config.perCallMicroUsdc ?? DEFAULT_PER_CALL_MICRO_USDC;
+
+  // Every money field is read through a total function, so no supplied shape can
+  // reach the arithmetic as something other than a non-negative bigint. Faults
+  // are collected, never thrown: see PriceFieldFault.
+  const faults: PriceFieldFault[] = [];
+  const flatMicroUsdc = toMicroUsdc(
+    monthly.flatMicroUsdc,
+    "flatMicroUsdc",
+    DEFAULT_MONTHLY_TIER.flatMicroUsdc,
+    faults,
+  );
+  const perCall = toMicroUsdc(
+    config.perCallMicroUsdc ?? DEFAULT_PER_CALL_MICRO_USDC,
+    "perCallMicroUsdc",
+    DEFAULT_PER_CALL_MICRO_USDC,
+    faults,
+  );
+  const includedVolume = toIncludedVolume(
+    monthly.includedVolume,
+    DEFAULT_MONTHLY_TIER.includedVolume,
+    faults,
+  );
 
   let billableCalls = 0;
   for (const e of events) {
     if (isBillable(e.provenance)) billableCalls++;
   }
 
-  const overageCalls = Math.max(0, billableCalls - monthly.includedVolume);
+  const overageCalls = Math.max(0, billableCalls - includedVolume);
   const overageMicroUsdc = BigInt(overageCalls) * perCall;
   return {
-    flatMicroUsdc: monthly.flatMicroUsdc,
+    flatMicroUsdc,
     overageMicroUsdc,
-    totalMicroUsdc: monthly.flatMicroUsdc + overageMicroUsdc,
+    totalMicroUsdc: flatMicroUsdc + overageMicroUsdc,
     billableCalls,
+    faults,
   };
 }
 
@@ -210,6 +354,99 @@ export interface BillingEvent {
 export interface MeterStore {
   append(event: BillingEvent): void;
   recent(windowMs: number): ReadonlyArray<BillingEvent>;
+  /**
+   * The last `limit` events by INSERTION ORDER, newest last. Optional.
+   *
+   * AW-71: `recent()` picks its window from `max(issuedAt)`, a caller-supplied
+   * field, so ONE event bearing a far-future timestamp moves the right edge past
+   * every honest row and `recent()` returns just that row -- measured, 40 rows
+   * down to 1 -- which blinded `correlate` completely until the forged row aged
+   * out of the ring. `correlate` therefore stopped reading `recent()`.
+   *
+   * Insertion order is the one ordering a caller cannot influence: a row cannot
+   * arrive before rows that are already in the store. No field on the record is
+   * consulted, so there is nothing here to forge.
+   *
+   * `recent()` itself is deliberately NOT widened. It is also the BILLING
+   * surface -- `monthlyInvoice(store.recent(period))` is how a billing loop
+   * drives it -- and returning a superset there re-bills last period's calls.
+   * The two readers want different things from the same data, so they get
+   * different methods.
+   *
+   * Optional so an existing custom store still satisfies the interface; see
+   * `correlationFeed` for what a store without it falls back to.
+   */
+  tail?(limit: number): ReadonlyArray<BillingEvent>;
+}
+
+/**
+ * How many events by arrival `correlate` looks at.
+ *
+ * A COUNT bound, and it is here for PERFORMANCE, not as a security boundary --
+ * say so plainly. `buildCluster`'s sliding window is O(n^2) in the size of one
+ * candidate group, today, with no fix applied: 20,000 honest rows in one window
+ * take ~14 seconds on this machine. Feeding it the whole ring would turn a
+ * routine call into a denial of service reachable from a single account.
+ *
+ * The bound therefore also PRICES the blinding attack rather than closing it: an
+ * attacker who appends this many rows still pushes honest traffic out of the
+ * feed. That raises the cost from one forged row to a few thousand; it does not
+ * eliminate the class. Closing it needs `buildCluster`'s window made linear so
+ * the whole ring can be read safely, which lives in correlate's own section.
+ */
+export const CORRELATE_TAIL = 2000;
+
+/**
+ * The events `correlate` reads. Never `recent()`; see {@link MeterStore.tail}.
+ *
+ * A store that does not implement `tail` falls back to `recent()` and keeps the
+ * original exposure -- the alternative was a breaking change to a published
+ * interface, and a durable store can close it by adding six lines.
+ */
+export function correlationFeed(
+  store: MeterStore,
+  windowMs: number,
+  limit: number = CORRELATE_TAIL,
+): ReadonlyArray<BillingEvent> {
+  if (typeof store.tail === "function") {
+    try {
+      // `tail` is preferred because it slices by insertion order, so a single
+      // future-dated row cannot blind the feed the way a timestamp-anchored
+      // read can. But it carries no notion of time, and returning it unfiltered
+      // drops recency entirely — a cluster formed once would be reported as
+      // current forever, including groups years old. Anchor on the newest
+      // event actually present and keep the window relative to it.
+      const rows = store.tail(limit);
+      if (rows.length === 0) return rows;
+      // Anchor on the MEDIAN timestamp, not the newest. The newest is exactly
+      // what an attacker controls — a single far-future row is what blinded
+      // the timestamp-anchored read this branch exists to replace, and
+      // anchoring on it here would reintroduce that blinding through the back
+      // door. A median moves only if most of the window is forged, and by
+      // then the feed has bigger problems than its cutoff.
+      const times: number[] = [];
+      for (const e of rows) {
+        const t = Date.parse(e.issuedAt);
+        if (Number.isFinite(t)) times.push(t);
+      }
+      if (times.length === 0) return rows;
+      times.sort((a, b) => a - b);
+      const anchor = times[Math.floor(times.length / 2)];
+      // The window is one-sided from the median, widened to cover the rows
+      // that legitimately sit on either side of it.
+      const cutoff = anchor - windowMs;
+      return rows.filter((e) => {
+        const t = Date.parse(e.issuedAt);
+        // An unparseable timestamp is kept: dropping it would let a malformed
+        // row delete itself from the audit feed.
+        return !Number.isFinite(t) || t >= cutoff;
+      });
+    } catch {
+      // A store that throws must not take the correlation call down with it.
+      return [];
+    }
+  }
+  return store.recent(windowMs);
 }
 
 /**
@@ -223,6 +460,15 @@ export function createMemoryStore(maxEvents = 100_000): MeterStore {
     append(event: BillingEvent): void {
       buf.push(event);
       if (buf.length > maxEvents) buf.splice(0, buf.length - maxEvents);
+    },
+    tail(limit: number): ReadonlyArray<BillingEvent> {
+      // The limit is sanitised here rather than trusted, so a caller that hands
+      // in NaN or 1e9 gets the constant instead of an unbounded slice.
+      const n =
+        Number.isInteger(limit) && limit > 0 && limit <= CORRELATE_TAIL
+          ? limit
+          : CORRELATE_TAIL;
+      return n >= buf.length ? buf.slice() : buf.slice(buf.length - n);
     },
     recent(windowMs: number): ReadonlyArray<BillingEvent> {
       if (buf.length === 0) return [];
@@ -331,7 +577,7 @@ export function createMeter(opts: MeterOptions = {}): MeterHandle {
     record,
     store,
     priceFor: (provenance, tier) => priceFor(provenance, tier, price),
-    correlate: (o) => correlate(store.recent(o.windowMs), o),
+    correlate: (o) => correlate(correlationFeed(store, o.windowMs), o),
   };
 }
 

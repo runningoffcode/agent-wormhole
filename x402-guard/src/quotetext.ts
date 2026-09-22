@@ -1593,10 +1593,19 @@ function collectOwnHosts(
   out: Set<string>,
   depth = 0,
   structural = true,
+  seen: WeakSet<object> = new WeakSet(),
 ): void {
   if (depth > 6 || node === null || typeof node !== "object") return;
+  // AW-74. These carried a depth cap but no visited set, unlike
+  // `collectTextFields`, which has a WeakSet — so a shared-reference graph was
+  // walked once per PATH rather than once per node: fanout 14 at depth 6
+  // measured 542ms on a document that contains almost nothing. Bounded, so it
+  // was never a remote hazard, but it is wasted work on a hot path and the
+  // sibling walker already had the answer.
+  if (seen.has(node as object)) return;
+  seen.add(node as object);
   if (Array.isArray(node)) {
-    for (const v of node) collectOwnHosts(v, out, depth + 1, structural);
+    for (const v of node) collectOwnHosts(v, out, depth + 1, structural, seen);
     return;
   }
   for (const key of Object.getOwnPropertyNames(node)) {
@@ -1620,7 +1629,7 @@ function collectOwnHosts(
         structural &&
         !NEVER_STRUCTURAL.has(k) &&
         (ENVELOPE_CONTAINERS.has(k) || /^\d+$/.test(k));
-      collectOwnHosts(v, out, depth + 1, stillStructural);
+      collectOwnHosts(v, out, depth + 1, stillStructural, seen);
     }
   }
 }
@@ -1638,10 +1647,19 @@ function collectPayees(
   out: Set<string>,
   depth = 0,
   structural = true,
+  seen: WeakSet<object> = new WeakSet(),
 ): void {
   if (depth > 6 || node === null || typeof node !== "object") return;
+  // AW-74. These carried a depth cap but no visited set, unlike
+  // `collectTextFields`, which has a WeakSet — so a shared-reference graph was
+  // walked once per PATH rather than once per node: fanout 14 at depth 6
+  // measured 542ms on a document that contains almost nothing. Bounded, so it
+  // was never a remote hazard, but it is wasted work on a hot path and the
+  // sibling walker already had the answer.
+  if (seen.has(node as object)) return;
+  seen.add(node as object);
   if (Array.isArray(node)) {
-    for (const v of node) collectPayees(v, out, depth + 1, structural);
+    for (const v of node) collectPayees(v, out, depth + 1, structural, seen);
     return;
   }
   for (const key of Object.getOwnPropertyNames(node)) {
@@ -1664,7 +1682,7 @@ function collectPayees(
         structural &&
         !NEVER_STRUCTURAL.has(k) &&
         (ENVELOPE_CONTAINERS.has(k) || /^\d+$/.test(k));
-      collectPayees(v, out, depth + 1, stillStructural);
+      collectPayees(v, out, depth + 1, stillStructural, seen);
     }
   }
 }

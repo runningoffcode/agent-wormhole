@@ -77,6 +77,17 @@ export interface EvmPaymentQuote {
   payTo: string;
   /** Exact amount in the token's base units, as a decimal string. */
   amount: string;
+  /**
+   * The merchant's `extra` block, when the 402 entry carried one.
+   *
+   * AW-75. This was attached as a NON-ENUMERABLE property and not declared
+   * here at all, so it survived a direct read and vanished through
+   * `JSON.stringify`, spread, `structuredClone` and `postMessage` — taking
+   * `assetTransferMethod`, which the verifier treats as authoritative, with
+   * it. Declared and enumerable now, so what a caller sees is what crosses a
+   * boundary.
+   */
+  extra?: Record<string, unknown>;
 }
 
 // --- EIP-3009 constants ----------------------------------------------------
@@ -1061,15 +1072,20 @@ export function evmQuoteFromRequirements(
     asset: req.asset,
     amount,
   };
-  // Preserve extra so a caller that passes the quote straight through can still
-  // surface an out-of-band assetTransferMethod. Non-enumerable to keep the
-  // quote shape clean for equality checks in tests.
+  // AW-75. `extra` used to be defined NON-ENUMERABLE, for the stated reason of
+  // keeping "the quote shape clean for equality checks in tests" — and the
+  // cost was that `JSON.stringify`, spread, `Object.assign`, `structuredClone`
+  // and `postMessage` all silently dropped it. That is the field
+  // `inspectAuthorization` treats as authoritative for the transfer method,
+  // precisely so a caller cannot lie about it, so an agent that serialised the
+  // quote anywhere lost the routing signal and got a different verdict on the
+  // other side with no indication anything had changed.
+  //
+  // A test convenience is not worth a field that vanishes when it crosses a
+  // boundary. Ordinary enumerable property; the tests can compare what they
+  // mean to compare.
   if (req.extra) {
-    Object.defineProperty(q, "extra", {
-      value: req.extra,
-      enumerable: false,
-      writable: false,
-    });
+    q.extra = req.extra;
   }
   return q;
 }

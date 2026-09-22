@@ -1156,3 +1156,38 @@ describe("the session nonce set cannot be poisoned (AW-66)", () => {
       .toBe("allow");
   });
 });
+
+/**
+ * AW-75. `extra` was attached NON-ENUMERABLE, for the stated reason of keeping
+ * "the quote shape clean for equality checks in tests" — and the cost was that
+ * `JSON.stringify`, spread, `Object.assign`, `structuredClone` and
+ * `postMessage` all silently dropped it.
+ *
+ * That is the field `inspectAuthorization` treats as authoritative for the
+ * transfer method, precisely so a caller cannot lie about it. An agent that
+ * serialised the quote anywhere lost the routing signal and got a different
+ * verdict on the other side, with nothing to indicate anything had changed.
+ */
+describe("a quote survives being serialised (AW-75)", () => {
+  const req = {
+    network: "eip155:8453",
+    payTo: "0x1111111111111111111111111111111111111111",
+    asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    maxAmountRequired: "1000000",
+    extra: { assetTransferMethod: "permit2" },
+  };
+
+  it("extra survives JSON, spread and structuredClone", () => {
+    const q = evmQuoteFromRequirements(req as never) as any;
+    expect(q.extra?.assetTransferMethod).toBe("permit2");
+    expect(JSON.parse(JSON.stringify(q)).extra?.assetTransferMethod).toBe("permit2");
+    expect({ ...q }.extra?.assetTransferMethod).toBe("permit2");
+    expect(structuredClone(q).extra?.assetTransferMethod).toBe("permit2");
+  });
+
+  it("a quote with no extra stays clean", () => {
+    const { extra, ...bare } = req;
+    const q = evmQuoteFromRequirements(bare as never);
+    expect(JSON.stringify(q)).not.toContain("extra");
+  });
+});

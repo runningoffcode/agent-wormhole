@@ -752,6 +752,67 @@ async function callVerifyPayment(args: Record<string, unknown>): Promise<unknown
   return withProvenance(result, args);
 }
 
+/**
+ * What `check_before_use` was actually given to check.
+ *
+ * AW-72. This replaces `typeof args.content === "string" ? args.content : ""`,
+ * which collapsed six unrelated situations — an object, a number, a boolean,
+ * null, an empty string, and no argument at all — into one value, scanned that
+ * value, and reported `scanned: ["<string>"]`: an affirmative claim of having
+ * walked a field it never had, from the tool whose entire contract is "check
+ * this before trusting it". A call with NO ARGUMENTS came back allow.
+ *
+ * Absence is its own variant so it cannot be spelled with the same characters
+ * as empty text, and the discriminant forces every consumer to name the case
+ * before it can read a value.
+ */
+type SubjectRef =
+  | { kind: "absent" }
+  | { kind: "url"; url: string }
+  | { kind: "text"; text: string }
+  | { kind: "document"; document: object }
+  | { kind: "unscannable"; typeName: string };
+
+/**
+ * Classify the argument by its RUNTIME TYPE, never by its content.
+ *
+ * The presence test is `hasOwnProperty`, not truthiness: `content: 0` and
+ * `content: false` are present-but-unscannable, and a truthiness test would
+ * have reported them as absent — both shapes a caller can hit by accident and
+ * an attacker can send on purpose. Every branch that is not text/document
+ * refuses to report a result at all, so steering toward one of them gains the
+ * caller an `unchecked` with `isError`, never an allow.
+ */
+/**
+ * True when a hosted answer claims success while having read nothing.
+ *
+ * AW-72's shape on the hosted path. The local branch abstains when the scan
+ * covered zero characters; a hosted 200 carrying `scanned: []` is the same
+ * vacuous claim wearing a remote answer's authority, and only a non-blocking
+ * verdict is worth second-guessing — a refuse that read nothing is still a
+ * refuse, and suppressing it would erase a finding.
+ */
+function hostedScannedNothing(parsed: unknown): boolean {
+  if (parsed === null || typeof parsed !== "object") return false;
+  const o = parsed as Record<string, unknown>;
+  const decision = o.decision ?? o.verdict;
+  if (decision !== "allow" && decision !== "clean") return false;
+  const scanned = o.scanned;
+  return Array.isArray(scanned) && scanned.length === 0;
+}
+
+function readSubject(args: Record<string, unknown>): SubjectRef {
+  const url = typeof args.url === "string" ? args.url.trim() : "";
+  if (url.length > 0) return { kind: "url", url };
+  if (!Object.prototype.hasOwnProperty.call(args, "content")) {
+    return { kind: "absent" };
+  }
+  const c = args.content;
+  if (typeof c === "string") return { kind: "text", text: c };
+  if (c !== null && typeof c === "object") return { kind: "document", document: c };
+  return { kind: "unscannable", typeName: c === null ? "null" : typeof c };
+}
+
 /** One tool result in MCP shape. */
 function toolResult(value: unknown, isError = false) {
   return {
@@ -888,8 +949,31 @@ export async function handleMessage(msg: RpcMessage): Promise<object | null> {
       }
 
       if (name === "check_before_use") {
-        const url = typeof args.url === "string" ? args.url.trim() : "";
-        const content = typeof args.content === "string" ? args.content : "";
+        const subject = readSubject(args);
+
+        // Refuse to report on a subject that does not exist, BEFORE the hosted
+        // dispatch — which also stops billing the paid /check endpoint for a
+        // call that carried nothing to check.
+        if (subject.kind === "absent" || subject.kind === "unscannable") {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: toolResult(
+              {
+                verdict: "unchecked",
+                subject:
+                  subject.kind === "absent"
+                    ? "no 'content' or 'url' argument was supplied"
+                    : `'content' is a ${subject.typeName}, which holds no text to scan`,
+                reason:
+                  "nothing was scanned — this is NOT a clean result. Pass the " +
+                  "text or the parsed document as 'content'.",
+              },
+              true,
+            ),
+          };
+        }
+
         const hosted = hostedConfig();
         if (hosted !== null && hosted.insecure !== undefined) {
           return {
@@ -914,7 +998,11 @@ export async function handleMessage(msg: RpcMessage): Promise<object | null> {
                 authorization: `Bearer ${hosted.apiKey}`,
                 "content-type": "application/json",
               },
-              body: JSON.stringify(url.length > 0 ? { url } : { content }),
+              body: JSON.stringify(
+                subject.kind === "url"
+                  ? { url: subject.url }
+                  : { content: subject.kind === "text" ? subject.text : subject.document },
+              ),
             });
             const text = await res.text();
             let parsed: unknown;
@@ -931,6 +1019,26 @@ export async function handleMessage(msg: RpcMessage): Promise<object | null> {
                   {
                     verdict: "unchecked",
                     reason: `hosted check answered ${res.status} — the subject was NOT checked; do not treat as clean`,
+                    detail: parsed,
+                  },
+                  true,
+                ),
+              };
+            }
+            // A 200 that scanned nothing is not a clean answer. The local
+            // branch abstains on zero coverage; without the same rule here the
+            // AW-72 false-clean simply moves to the hosted path, and a hosted
+            // deployment is the one an operator is most likely to trust.
+            if (hostedScannedNothing(parsed)) {
+              return {
+                jsonrpc: "2.0",
+                id,
+                result: toolResult(
+                  {
+                    verdict: "unchecked",
+                    reason:
+                      "hosted check reported no scanned fields — the subject was " +
+                      "NOT read; do not treat as clean",
                     detail: parsed,
                   },
                   true,
@@ -956,7 +1064,10 @@ export async function handleMessage(msg: RpcMessage): Promise<object | null> {
         // Local mode. This server NEVER fetches — a security tool that
         // requests arbitrary URLs from a possibly-compromised machine is
         // itself the risk, the same doctrine as every local scanner here.
-        if (url.length > 0) {
+        // Test the discriminant, not the derived string: this is what narrows
+        // `subject` to the two scannable variants for the block below, so the
+        // scan site cannot be reached with a subject that holds no text.
+        if (subject.kind === "url") {
           return {
             jsonrpc: "2.0",
             id,
@@ -973,16 +1084,30 @@ export async function handleMessage(msg: RpcMessage): Promise<object | null> {
           };
         }
         try {
+          const scanned = subject.kind === "text" ? subject.text : subject.document;
+          const scan = inspectQuoteText(scanned);
           return {
             jsonrpc: "2.0",
             id,
-            result: toolResult({
-              mode: "local",
-              scan: inspectQuoteText(content),
-              scope:
-                "local scan only: content rules, no fetch, no history. " +
-                "'allow' here means clean by rules, not safe.",
-            }),
+            result: toolResult(
+              {
+                mode: "local",
+                // What arrived, so a reader can tell a real scan from a vacuous
+                // one without inferring it from the shape of `scanned`.
+                subject: {
+                  kind: subject.kind,
+                  charsScanned: scan.charsScanned,
+                },
+                scan,
+                scope:
+                  "local scan only: content rules, no fetch, no history. " +
+                  "'allow' here means clean by rules, not safe.",
+              },
+              // An abstain is not a pass. The tool's contract is "check this
+              // before trusting it", so a verdict that checked nothing must
+              // reach the model as an error rather than as quiet prose.
+              scan.decision === "abstain",
+            ),
           };
         } catch (err) {
           return {

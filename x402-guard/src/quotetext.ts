@@ -207,6 +207,21 @@ export interface QuoteTextVerdict extends Verdict {
   findings: QuoteTextFinding[];
   /** Every field path walked, so an operator can confirm coverage. */
   scanned: string[];
+  /**
+   * Characters actually handed to the rules, after per-field truncation.
+   *
+   * Required, not optional, so the compiler enumerates every return site
+   * rather than letting a future branch omit it and have a consumer read
+   * absent-as-verified. `scanned` is a list of PATHS, and a path is not
+   * evidence that bytes were read — AW-72 was a verdict claiming
+   * `scanned: ["<string>"]` for a field it never had.
+   *
+   * This is a coverage FLOOR, never proof of comprehension: it counts
+   * characters the rules were given, not characters they understood. A payload
+   * in a form no rule decodes still increments it. Do not let it become a
+   * trust signal or a reason to relax another check.
+   */
+  charsScanned: number;
 }
 
 export interface InspectQuoteTextOptions {
@@ -239,8 +254,14 @@ const DEFAULT_MAX_DECODE_DEPTH = 3;
  * service a merchant can trigger by serving a deeply-populated `extra`. The
  * cap is high enough that no honest quote approaches it and low enough that
  * the worst case stays inside the latency budget.
+ *
+ * AW-72 raised this 2000 -> 4000, which doubles the bounded worst case and is
+ * a deliberate trade-off. Scanning object keys means a document of N key/value
+ * pairs now produces 2N fields, so at the old cap an attacker could push a
+ * payload past the end of the scan with half as much padding as before. The
+ * raise keeps the DOCUMENT size at which the walk stops unchanged.
  */
-const MAX_FIELDS = 2000;
+const MAX_FIELDS = 4000;
 
 // --- normalization ---------------------------------------------------------
 
@@ -1495,6 +1516,12 @@ interface TextField {
   value: string;
   /** Set when a key that should hold an identifier held prose instead. */
   structuralAnomaly?: boolean;
+  /**
+   * This field is an object KEY rather than a value. Keys are scanned because
+   * in an MCP manifest the key IS the tool name, which is loaded into the
+   * model's context as a definition it is trained to follow.
+   */
+  isKey?: boolean;
 }
 
 /**
@@ -1567,6 +1594,27 @@ function collectTextFields(
     }
     const child = path ? `${path}.${key}` : key;
     const lower = key.toLowerCase();
+
+    // AW-72. The key itself is attacker-controlled text and was never read by
+    // any rule, so a payload spelled as a tool NAME — an entirely ordinary MCP
+    // manifest shape — came back allow. It is pushed as an ordinary field with
+    // NO charset, length or "looks structural" gate: attempt 2 gated this
+    // behind a boring-key test whose character class admitted `.`, `-` and `_`,
+    // so the attacker simply chose separators and the bytes went unread. Any
+    // predicate on the key's own content is that same hole. The only test here
+    // is length-zero, which an attacker can satisfy only by carrying no
+    // payload. A key is a field, so it rides the ordinary maxFieldChars path
+    // and reuses its existing `truncated` signal — no separate key cap, since
+    // attempt 2's silent 512-char key truncation turned padding into a bypass.
+    //
+    // Keys are scanned under rules tuned for VALUES. Every content rule needs a
+    // multi-word phrase, which is why `payTo` and `$schema` match nothing; if a
+    // rule is ever added that fires on a single token, the false-positive
+    // profile of keys changes sharply and this decision must be revisited.
+    if (key.length > 0) {
+      if (out.length >= MAX_FIELDS) return;
+      out.push({ path: `${child} <key>`, value: key, isKey: true });
+    }
 
     if (typeof value === "string") {
       if (value.length === 0) continue;
@@ -2395,6 +2443,7 @@ export function inspectQuoteText(
       decision: "abstain",
       findings: [],
       scanned: [],
+      charsScanned: 0,
       reason:
         "no quote was supplied — refusing to report absent text as clean",
     };
@@ -2413,6 +2462,7 @@ export function inspectQuoteText(
       decision: "abstain",
       findings: [],
       scanned: [],
+      charsScanned: 0,
       reason:
         `quote is a ${typeof quote}, not an object — refusing to report an ` +
         `unscannable quote as clean`,
@@ -2443,20 +2493,34 @@ export function inspectQuoteText(
       decision: "abstain",
       findings: [],
       scanned: [],
+      charsScanned: 0,
       reason:
         `quote could not be walked (${(e as Error)?.message ?? "unknown error"}) — ` +
         `refusing to report an unscannable quote as clean`,
     };
   }
 
+  // The walk stopped at the field cap. Some of the document was never
+  // collected, so no statement about the whole of it is available — but the
+  // fields we DID collect must still be scanned and every finding kept.
+  // Returning `findings: []` here (as this branch used to) made padding an
+  // evidence-erasure primitive: a payload plus enough cheap filler to reach the
+  // cap turned a live refuse into `abstain []`, with the proof that a
+  // transaction paid an attacker thrown away. Scanning keys doubles the field
+  // count and so halves the padding needed, which is what made this urgent.
+  // A blocking finding still refuses; anything short of that abstains, because
+  // the unscanned remainder is unknown, not clean.
   if (fields.length >= MAX_FIELDS) {
+    const partial = scanFields(fields, { maxFieldChars, maxDecodeDepth, ignore }, ctx);
     return {
-      decision: "abstain",
-      findings: [],
-      scanned: fields.slice(0, 50).map((f) => f.path),
+      decision: partial.decision === "refuse" ? "refuse" : "abstain",
+      findings: partial.findings,
+      scanned: partial.scanned,
+      charsScanned: partial.charsScanned,
       reason:
-        `quote contains at least ${MAX_FIELDS} text fields, past the scan cap — ` +
-        `refusing to report a partially scanned quote as clean`,
+        `quote contains at least ${MAX_FIELDS} text fields, past the scan cap; ` +
+        `text past the cap was not read — refusing to report a partially ` +
+        `scanned quote as clean`,
     };
   }
 
@@ -2470,6 +2534,7 @@ export function inspectQuoteText(
       decision: partial.decision === "refuse" ? "refuse" : "abstain",
       findings: partial.findings,
       scanned: partial.scanned,
+      charsScanned: partial.charsScanned,
       reason:
         `quote nests deeper than the ${maxDepth}-level walk limit; at least one ` +
         `subtree was not read — refusing to report a partially walked quote as clean`,
@@ -2488,6 +2553,9 @@ function scanFields(
   const scanned: string[] = [];
   const truncatedFields: string[] = [];
   const seenCodes = new Set<string>();
+  // Counted after the per-field truncation slice, so it measures what the
+  // rules were actually handed rather than what arrived.
+  let charsScanned = 0;
 
   const push = (f: QuoteTextFinding) => {
     // One finding per (field, code). A merchant repeating the same phrase
@@ -2508,6 +2576,7 @@ function scanFields(
       raw = raw.slice(0, cfg.maxFieldChars);
       truncated = true;
     }
+    charsScanned += raw.length;
 
     // X402-205 — zero-width characters (WORM-005). Presence alone, no
     // conjunction. There is no benign reason for a joiner inside a price list,
@@ -2747,7 +2816,7 @@ function scanFields(
   );
 
   if (blocking) {
-    return { decision: "refuse", findings: sortFindings(findings), scanned };
+    return { decision: "refuse", findings: sortFindings(findings), scanned, charsScanned };
   }
 
   // Nothing blocking was found, but a field was truncated, so "nothing was
@@ -2758,6 +2827,7 @@ function scanFields(
       decision: "abstain",
       findings: sortFindings(findings),
       scanned,
+      charsScanned,
       reason:
         `field(s) ${truncatedFields.slice(0, 3).join(", ")} exceeded the ` +
         `${cfg.maxFieldChars}-character scan cap; text past the cap was not read — ` +
@@ -2765,10 +2835,30 @@ function scanFields(
     };
   }
 
+  // Nothing was read, so "nothing was found" is vacuous. AW-72 was exactly
+  // this verdict: an empty subject scanned to completion and reported allow
+  // with scanned:["<string>"], an affirmative claim of coverage over no bytes.
+  // Placed AFTER the refuse and truncation branches on purpose, so it can only
+  // turn an allow into an abstain — it never downgrades a refuse and never
+  // replaces findings with []. Zero coverage and a finding cannot coexist
+  // anyway, since no rule can fire on text no rule was given.
+  if (charsScanned === 0) {
+    return {
+      decision: "abstain",
+      findings: sortFindings(findings),
+      scanned,
+      charsScanned,
+      reason:
+        "no text was scanned — refusing to report an empty or unscannable " +
+        "subject as clean",
+    };
+  }
+
   return {
     decision: "allow",
     findings: sortFindings(findings),
     scanned,
+    charsScanned,
   };
 }
 

@@ -489,6 +489,116 @@ function despacedVariant(text: string): string {
   return out;
 }
 
+/**
+ * Un-join punctuation-joined text: `Ignore.all.previous.instructions` becomes
+ * `Ignore all previous instructions`, which the content rules can read.
+ *
+ * AW-36. `looksStructural` exempted a value from being scanned at all when it
+ * carried no whitespace, justified on the grounds that "an instruction to a
+ * model needs spaces between its words". A model does not need spaces: a
+ * dot-, underscore- or dash-joined sentence reads as the sentence, and so
+ * every structural key was a free channel for a payload. The exemption was
+ * granted by the KEY and never earned by the VALUE. Two earlier repairs tried
+ * to close it with a per-key grammar and then with a grammar plus a URL
+ * carve-out; both leaked, for the same underlying reason recorded below.
+ *
+ * WHY THERE IS NO CARVE-OUT HERE. Splitting destroys a hostname —
+ * `merchant.example.org` becomes `merchant example org` — and the self-host
+ * exemption that keeps an honest secrets-manager listing from refusing keys on
+ * that hostname. The obvious repair is to hold url-ish spans back from the
+ * split. That is exactly what the previous attempt did, and its pattern's
+ * unbounded `\S*` after `scheme://` held the whole remainder of a
+ * whitespace-free field back, so four characters — `a://` in front of the
+ * payload — restored the full bypass on all 26 keys tested.
+ *
+ * Bounding the carve-out was possible: a host pattern that must TERMINATE at
+ * the authority (a trailing `(?![A-Za-z0-9_.-])` guard, so it refuses to match
+ * when more label-shaped text follows) does preserve the merchant hostname and
+ * does not slide along a payload. It was still rejected. A carve-out of any
+ * width is a pattern deciding which SPANS of attacker-controlled text get
+ * read, which is an attacker-steerable surface; bounding shrinks that surface
+ * rather than removing it. Here every byte of every field is split,
+ * unconditionally, so there is no window to widen. The hostname question is
+ * answered where it is actually asked instead — X402-203 declines to BLOCK on
+ * a destination read out of a split view (see `splitView`).
+ *
+ * This is an ADDITIONAL view: the original text is never replaced, so nothing
+ * that matched before stops matching, and the literal and normalized views
+ * still carry the intact hostname. Splitting only ADDS word boundaries, so it
+ * can reveal a phrase present in the source but cannot fuse two fragments into
+ * a phrase that was not there.
+ *
+ * THE FALSE POSITIVE THIS COSTS, stated plainly because it is real and it is
+ * the only one measured. `ignore_all_previous_instructions` as a config-flag
+ * name and `ignore.all.previous.instructions` as a payload are the SAME STRING
+ * once un-joined, so no view-level rule can separate them — they are not
+ * distinguishable at the byte level. A listing that names that flag, or links
+ * `docs/ignore-previous-instructions.md`, now refuses where it previously
+ * allowed.
+ *
+ * The exposure is confined to X402-202, the one rule that fires on a single
+ * phrase; every other rule needs a CONJUNCTION, and an identifier supplies
+ * only one conjunct. Measured: `send_api_key_to_endpoint`,
+ * `transfer_funds_to_wallet`, `post_credentials_to_url` and
+ * `upload_env_file_to_server` all still allow. Ordinary configuration
+ * vocabulary is untouched as well, because the override rule needs a verb, one
+ * to three qualifiers AND an instruction noun — `ignore_case=true`,
+ * `ignore_unknown_fields`, `override_default_timeout`, `system_prompt_version`
+ * and `all_previous_invoices` all allow. What refuses is a listing carrying
+ * the full override phrase in joined form, which in practice means
+ * prompt-injection tooling describing itself.
+ *
+ * That trade is accepted deliberately and in this direction: the alternative
+ * is a rule that reads `ignore.all.previous.instructions` in a `payTo` field
+ * and ships the payment. A caller who genuinely sells injection-testing tools
+ * can pass `ignore: ["X402-202"]`, which is caller-supplied and can never be
+ * read out of the quote.
+ *
+ * The joiner class is a shape denylist — not alphanumeric, not whitespace —
+ * rather than a list of ASCII punctuation, because an ASCII list is the same
+ * mistake one alphabet over. It therefore covers non-ASCII separators as well:
+ * U+00B7 middot, U+2027, em-dash, U+3002 ideographic full stop, U+FF0E
+ * fullwidth full stop, U+2022 bullet and U+2011 non-breaking hyphen all pass
+ * through the split (each allows on the unfixed tree and refuses here).
+ *
+ * THE SEPARATOR RUN IS DELIBERATELY UNBOUNDED, and that is the one place this
+ * file accepts an unbounded quantifier. A bound here is not a safety margin —
+ * it is a cliff the attacker steps over. Built first at `{1,64}`, and runs of
+ * 1 through 64 refused while a run of 65 returned `allow` on every key tested,
+ * restoring the entire bypass for the cost of one more dot. Raising the number
+ * only moves the cliff; the run length is chosen by the attacker, so any
+ * finite bound is a gate on attacker-controlled input deciding whether the
+ * bytes get read, which is the exact failure class that sank the two previous
+ * attempts one layer up.
+ *
+ * It is safe to leave unbounded here because the two character classes are
+ * DISJOINT: `[A-Za-z0-9]` cannot match anything `[^A-Za-z0-9\s]` matches, so
+ * the run has exactly one possible extent at each start position and there is
+ * nothing for the engine to backtrack into. Measured over a doubling sweep at
+ * 20/40/80/160KB on the shapes that would expose backtracking — a separator
+ * run terminated by whitespace so the lookahead fails, repeated 200-character
+ * runs each ending in a tab, solid letters, solid separators, alternating
+ * `a.`, and a high-entropy base64 blob — every shape is linear, at most 2.7ms
+ * at 160KB, and the bounded and unbounded forms time identically. This is not
+ * the shape that went quadratic in the previous attempt: that pattern was a
+ * greedy run with no mandatory anchor character before it, so every start
+ * position had many candidate extents to try and discard.
+ *
+ * THE GATE MUST MATCH THE SAME RUN THE REPLACE PERFORMS. It is a pure "would
+ * the replace change anything" short-circuit, never a judgement about content.
+ * An earlier cut used `\w[joiner]\w`, a SINGLE joiner between two word
+ * characters, so `Ignore..all..previous` failed the gate and runs of 2 and
+ * longer all still allowed — a two-character joiner defeated the whole repair.
+ */
+const JOINER_RUN = /([A-Za-z0-9])[^A-Za-z0-9\s]+(?=[A-Za-z0-9])/g;
+const JOINED_GATE = /[A-Za-z0-9][^A-Za-z0-9\s]+[A-Za-z0-9]/;
+
+function unjoinedVariant(text: string): string | null {
+  if (!JOINED_GATE.test(text)) return null;
+  const out = text.replace(JOINER_RUN, "$1 ");
+  return out === text ? null : out;
+}
+
 export function normalizeQuoteText(text: string): string {
   // AW-34, gap 1: ORDER. This used to strip the invisible classes and THEN
   // call decodeHtmlEntities, which put them straight back — `&#173;` became
@@ -571,13 +681,38 @@ const BASE64_RE = /[A-Za-z0-9+/=_-]{24,}/g;
 const HEX_RE = /(?:0x)?[0-9a-fA-F]{40,}/g;
 
 /**
+ * A whitespace-free buffer whose letter groups are held apart by separators —
+ * `Ignore.all.previous.instructions`. Three groups are required so a lone
+ * `USDC.e` or a `base-sepolia` decode does not qualify as a sentence.
+ *
+ * The separator runs are unbounded for the same reason JOINER_RUN's is: a
+ * bound is a length the attacker picks their way past, and the classes on
+ * either side are disjoint from the separator class, so each run has one
+ * possible extent and the match is linear. The letter groups ARE bounded,
+ * because those classes are not adjacent to a same-class neighbour and a bound
+ * there costs an attacker nothing they cannot already do with fewer letters.
+ */
+const JOINED_LETTER_RUN =
+  /[A-Za-z]{2,32}[^A-Za-z0-9\s]+[A-Za-z]{2,32}[^A-Za-z0-9\s]+[A-Za-z]{2,32}/;
+
+/**
  * Is this decoded buffer plausibly text a model would act on?
  *
  * Without this check, every base58 address and every hex signature in a quote
  * decodes to line noise that the rules then scan, which costs time and can
- * produce nonsense excerpts. Requiring a high proportion of printable ASCII
- * and at least one space is a cheap, effective filter: an English instruction
- * has spaces, a decoded ed25519 key does not.
+ * produce nonsense excerpts. A high proportion of printable ASCII is the cheap
+ * part of that filter and it stays.
+ *
+ * AW-36. The other half of the filter used to be `/\s/` — "an English
+ * instruction has spaces, a decoded ed25519 key does not" — which is the
+ * identical key-shaped assumption `looksStructural` made, one layer down. A
+ * base64 blob whose plaintext is dot-joined decodes to a buffer with no
+ * whitespace at all, so it was discarded as line noise BEFORE any view could
+ * un-join it, and base64-of-joined-text stayed a live channel even once the
+ * structural keys were being walked. A buffer whose word structure is carried
+ * by separators instead of spaces is text too, so accept that shape as well.
+ * An ed25519 key or a base58 address still has neither, so the filter keeps
+ * doing the job it was added for.
  */
 function looksLikeText(s: string): boolean {
   if (s.length < 12) return false;
@@ -586,7 +721,8 @@ function looksLikeText(s: string): boolean {
     const c = s.charCodeAt(i);
     if ((c >= 0x20 && c <= 0x7e) || c === 0x0a || c === 0x09) printable++;
   }
-  return printable / s.length > 0.9 && /\s/.test(s) && /[a-zA-Z]{3,}/.test(s);
+  if (printable / s.length <= 0.9 || !/[a-zA-Z]{3,}/.test(s)) return false;
+  return /\s/.test(s) || JOINED_LETTER_RUN.test(s);
 }
 
 function decodeBase64(token: string): string | null {
@@ -620,6 +756,12 @@ function decodeHex(token: string): string | null {
 interface Layer {
   text: string;
   via?: string;
+  /**
+   * This view came out of the un-join split, so its word boundaries are
+   * synthetic. A rule that needs an intact hostname must not BLOCK on it —
+   * see X402-203 and `ScanContext.splitView`.
+   */
+  split?: boolean;
 }
 
 /**
@@ -1315,9 +1457,26 @@ const STRUCTURAL_KEYS = new Set([
  *
  * Generous on purpose — the goal is not to validate x402 (that is conformance's
  * job, properly this time) but to answer one question: could this plausibly be
- * an identifier rather than a sentence? The discriminator is WHITESPACE, not
- * length: an instruction to a model needs spaces between its words, and no
- * identifier in this protocol has any.
+ * an identifier rather than a sentence?
+ *
+ * AW-36. This test used to decide whether the value was READ. That was the
+ * defect: the discriminator was WHITESPACE ("an instruction to a model needs
+ * spaces between its words"), and a dot-joined sentence or a base64 blob
+ * satisfies the class, so every structural key carried an unscanned channel
+ * that returned `allow` and never appeared in `scanned`. No grammar can close
+ * that by being tighter, either: CAIP-2/19 references are free-form BY
+ * SPECIFICATION so the reference segment must admit `.` `-` and `_`;
+ * `base-sepolia` and `exact-evm` are honest so a token grammar must admit
+ * internal hyphens; a base58 address is any run of non-0OIl characters, which
+ * most English word runs are. Every grammar wide enough for the real protocol
+ * is wide enough for a sentence.
+ *
+ * So the test no longer decides whether the value is read — it decides only
+ * whether to RAISE X402-211, the shape finding. Every structural value is
+ * scanned as prose, always. That inverts the false-positive pressure too:
+ * under the old design a loose shape test was a bypass, so shape tests got
+ * pushed tight, and a tight one refuses honest traffic. Here a loose one costs
+ * at most one unraised medium finding on a value that is read regardless.
  *
  * The length bound was originally 128 and that was wrong — a serialized
  * Ed25519 signature is 130 hex characters, so a real `signature` field was
@@ -1411,14 +1570,17 @@ function collectTextFields(
 
     if (typeof value === "string") {
       if (value.length === 0) continue;
-      // A key that should hold an identifier is exempt from the prose rules
-      // only while the VALUE still looks like an identifier. A well-formed
-      // "exact" or "eip155:8453" is skipped, because a network name like "base"
-      // would otherwise collide with the propagation vocabulary for no gain.
-      // A `scheme` containing a sentence is scanned and flagged.
+      // AW-36. This used to `continue` — skip the field entirely — when the
+      // value looked like an identifier, so a joined or base64-encoded payload
+      // under a structural key was never walked, never appeared in `scanned`,
+      // and returned allow. The shape test survives, but only to decide
+      // whether to raise X402-211; the value is pushed and scanned either way.
       if (STRUCTURAL_KEYS.has(lower) && !SCHEMA_PROSE_KEYS.has(lower)) {
-        if (looksStructural(value)) continue;
-        out.push({ path: child, value, structuralAnomaly: true });
+        out.push({
+          path: child,
+          value,
+          structuralAnomaly: !looksStructural(value),
+        });
         continue;
       }
       out.push({ path: child, value });
@@ -1457,6 +1619,13 @@ interface ScanContext {
    * instruction; the same sentence pointing elsewhere is exfiltration.
    */
   ownHosts?: Set<string>;
+  /**
+   * This view came out of the AW-36 un-join split, which turns every
+   * separator run into a space. That destroys hostnames —
+   * `merchant.example.org` becomes `merchant example org` — so the self-host
+   * comparison X402-203 depends on cannot be evaluated here.
+   */
+  splitView?: boolean;
 }
 
 /** Registrable-ish host of a URL or bare email, lowercased. Never throws. */
@@ -1862,9 +2031,29 @@ function scanOneView(text: string, ctx: ScanContext = {}): RuleHit[] {
       // block a sale on a question this module lacks the evidence to settle.
       // The real exfiltration case (a live third-party URL, with the merchant's
       // own domain known) is untouched and still critical.
+      //  3. AW-36. The view came out of the un-join split, whose whole job is
+      //     to turn separator runs into spaces so the content rules can read a
+      //     joined sentence. That also de-dots any hostname in the same text,
+      //     so the merchant's own `merchant.example.org` and a third party's
+      //     `evil-collector.xyz` are indistinguishable here — the same
+      //     unanswerable question as (1) and (2), reaching the rule by a
+      //     different route. Report, do not block.
+      //
+      //     BE HONEST ABOUT WHAT THIS CURRENTLY BUYS: nothing measurable. It
+      //     is unreachable today, because EXTERNAL_DEST needs `://` or an
+      //     `@host`, and the split removes both — measured, X402-203 produces
+      //     no finding at all in a split view in either direction, and
+      //     deleting this clause reddens no test. It is written down because
+      //     the alternative reading of "unreachable" is "safe to block on",
+      //     and if EXTERNAL_DEST is ever loosened to match a de-dotted host
+      //     this clause is what stops the merchant's own rotation URL from
+      //     hard-refusing their listing. It is a stated precondition, not a
+      //     guard doing work — and the consequence of that is recorded in the
+      //     other direction too: a joined exfiltration URL naming a third
+      //     party is NOT caught here, on this tree or the unfixed one.
       const isEmail = !dest[0].includes("://");
       const noDeclaredHost = !ctx.ownHosts || ctx.ownHosts.size === 0;
-      if (isEmail || noDeclaredHost) {
+      if (isEmail || noDeclaredHost || ctx.splitView) {
         hits.push({
           code: "X402-203",
           severity: "high",
@@ -1873,7 +2062,9 @@ function scanOneView(text: string, ctx: ScanContext = {}): RuleHit[] {
             `(${dest[0].slice(0, 60)}) — reported, not blocking: ` +
             (isEmail
               ? "the destination is an email address, which cannot be checked against the quote's own domain"
-              : "the quote declares no resource URL, so this destination cannot be compared to the merchant's own host"),
+              : noDeclaredHost
+              ? "the quote declares no resource URL, so this destination cannot be compared to the merchant's own host"
+              : "this destination was read out of the un-joined view, whose split removes the dots from any hostname, so it cannot be compared to the merchant's own host"),
           offset: pos,
         });
         break;
@@ -2493,8 +2684,30 @@ function scanFields(
       }
     }
 
+    // AW-36. The un-join view is built over EVERY view already collected —
+    // literal, normalized, percent, unicode-tags, despaced, and every peeled
+    // base64/hex layer — because a joined payload can arrive at any of those
+    // depths. It is appended rather than substituted, so the intact hostname
+    // survives in the views that already existed.
+    //
+    // Unconditional, with no gate on `structuralAnomaly` and none on the key
+    // class. Gating it on the shape finding is what left the first repair
+    // blind on `description` and `title`, where the same joined bypass is
+    // live and which the audit text does not call out.
+    for (const base of [...views]) {
+      const unjoined = unjoinedVariant(base.text);
+      if (unjoined !== null) {
+        views.push({
+          text: unjoined,
+          via: base.via ? `${base.via}+unjoined` : "unjoined",
+          split: true,
+        });
+      }
+    }
+
     for (const view of views) {
-      for (const hit of scanOneView(view.text, ctx)) {
+      const viewCtx = view.split ? { ...ctx, splitView: true } : ctx;
+      for (const hit of scanOneView(view.text, viewCtx)) {
         // The `error` field is not merchant marketing copy — it is generated by
         // the facilitator or resource server on the unhappy path, and its
         // natural vocabulary is the vocabulary X402-208 matches ("replace the

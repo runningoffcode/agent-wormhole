@@ -92,6 +92,70 @@ function serverInfo(): { name: string; version: string } {
  */
 const sessionNonces = new Set<string>();
 
+/**
+ * AW-42. A per-session budget for BILLED remote calls.
+ *
+ * `check_token` turned an address it had not seen into `POST /scan` on the
+ * hosted API with the operator's key — a billed, state-changing write whose
+ * input comes straight from model-visible text, with no rate limit, no
+ * budget, no dedupe and no confirmation. Measured: 300 calls in 0.20s, 300
+ * billed scans, $3.00, which is $882/min of the operator's balance at the
+ * documented rate.
+ *
+ * The second-order effect is the one that matters: `/v1/verify` settles credit
+ * BEFORE verifying and this file turns any non-200 into `decision: "abstain"`,
+ * so draining the balance is a remote way to disarm `verify_payment` for the
+ * rest of the session. Spending the operator's money is the cheap part;
+ * turning the guard off is the point.
+ *
+ * Dedupe first — the same address asked twice is one scan — then a count
+ * ceiling. `WORMHOLE_SCAN_BUDGET` raises or lowers it; 0 disables on-demand
+ * scanning entirely. Exhausting it must never disable the FREE registry read,
+ * or credit exhaustion silently disarms the guard, which is the failure this
+ * budget exists to prevent.
+ */
+const DEFAULT_SCAN_BUDGET = 25;
+const billedScans = { spent: 0, seen: new Set<string>() };
+
+function scanBudget(): number {
+  const raw = process.env.WORMHOLE_SCAN_BUDGET;
+  if (raw === undefined) return DEFAULT_SCAN_BUDGET;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 0 ? n : DEFAULT_SCAN_BUDGET;
+}
+
+/**
+ * Reset the session spend. Exported for tests only — a real session's budget
+ * is meant to persist for the life of the process, which is exactly the
+ * property that makes it a budget.
+ */
+export function __resetScanBudgetForTests(): void {
+  billedScans.spent = 0;
+  billedScans.seen.clear();
+}
+
+/** null when the scan may proceed; otherwise why it may not. */
+function reserveBilledScan(address: string): string | null {
+  const key = address.toLowerCase();
+  if (billedScans.seen.has(key)) {
+    return (
+      `this address was already scanned in this session; the earlier result ` +
+      `stands. Repeating it would bill again for the same answer.`
+    );
+  }
+  const budget = scanBudget();
+  if (billedScans.spent >= budget) {
+    return (
+      `the per-session on-demand scan budget (${budget}) is spent. The free ` +
+      `registry lookup still works, so this is a limit on BILLED scans, not on ` +
+      `checking. Raise it with WORMHOLE_SCAN_BUDGET if that is what you want.`
+    );
+  }
+  billedScans.spent += 1;
+  billedScans.seen.add(key);
+  return null;
+}
+
 export const TOOLS = [
   {
     name: "verify_payment",
@@ -983,6 +1047,23 @@ export async function handleMessage(msg: RpcMessage): Promise<object | null> {
             };
           }
           if (res.status === 404 && hosted !== null) {
+            // AW-42. A billed, state-changing write whose input comes from
+            // model-visible text. Dedupe and a per-session ceiling, and the
+            // free registry answer above still stands when it is spent.
+            const denied = reserveBilledScan(address);
+            if (denied !== null) {
+              return {
+                jsonrpc: "2.0",
+                id,
+                result: toolResult({
+                  verdict: "unchecked",
+                  address,
+                  reason: `no on-demand scan was performed: ${denied}`,
+                  scans_used: billedScans.spent,
+                  scan_budget: scanBudget(),
+                }),
+              };
+            }
             const scanRes = await fetch(`${apiBase}/scan`, {
               method: "POST",
               headers: {

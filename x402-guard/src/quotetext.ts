@@ -2069,12 +2069,52 @@ function scanOneView(text: string, ctx: ScanContext = {}): RuleHit[] {
   return hits;
 }
 
+/**
+ * AW-40. Every excerpt this module produces goes through here, and every one
+ * of them ends up inside a verdict that a model reads.
+ *
+ * `inspectDelivery` decodes a paid body, runs the scanner, and pushes its
+ * findings — excerpts included — into a verdict that `toolResult` then
+ * stringifies straight into the model-facing text block. Measured: a refused
+ * body produced TWO verbatim copies of `<|im_start|>system ... <|im_end|>` in
+ * the tool output. X402-209 detects role delimiters and then reproduces them
+ * into the context it was protecting. The agent had only ever held opaque
+ * base64; the guard decoded it and read it aloud.
+ *
+ * An excerpt earns its place — an operator reading a log needs to see what
+ * tripped the rule — so it is neutralised rather than removed: the delimiters
+ * and control characters that make text *executable* as an instruction are
+ * defanged, and the words stay legible. This package already enforces the
+ * codes-only rule in three other places; this is the fourth.
+ */
+export function neutralizeForDisplay(text: string): string {
+  return (
+    text
+      // Chat-template delimiters, the shapes that make a model treat what
+      // follows as a turn boundary rather than as content.
+      .replace(/<\|/g, "\u2039|")
+      .replace(/\|>/g, "|\u203a")
+      .replace(/<\/?(?:system|user|assistant|im_start|im_end)>/gi, (m) =>
+        m.replace(/</g, "\u2039").replace(/>/g, "\u203a"),
+      )
+      .replace(/\[(\/?INST|\/?SYS)\]/gi, (m) =>
+        m.replace(/\[/g, "\u2045").replace(/\]/g, "\u2046"),
+      )
+      .replace(/^#{1,6}\s/gm, "# ")
+      // Invisibles have no business in something rendered to a human either,
+      // and they are what the finding is often about.
+      .replace(/[\p{Cf}\u3164\uFFA0]/gu, "\u00b7")
+  );
+}
+
 function excerptAt(text: string, offset: number): string {
   const start = Math.max(0, offset - 20);
-  return text
-    .slice(start, start + 160)
-    .replace(/\s+/g, " ")
-    .trim();
+  return neutralizeForDisplay(
+    text
+      .slice(start, start + 160)
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
 }
 
 /**
@@ -2308,7 +2348,9 @@ function scanFields(
           "every renderer, readable as ASCII by the model",
         field: field.path,
         offset: tagIdx,
-        excerpt: decoded.slice(0, 160) || excerptAt(raw, tagIdx),
+        excerpt:
+          neutralizeForDisplay(decoded.slice(0, 160)) ||
+          excerptAt(raw, tagIdx),
         via: "unicode-tags",
         sink,
       });

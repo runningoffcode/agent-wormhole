@@ -17,7 +17,11 @@ import { generateKeyPairSync } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import { EIP3009 } from "../src/evm.js";
-import { handleMessage, TOOLS } from "../src/mcp.js";
+import {
+  handleMessage,
+  TOOLS,
+  __resetScanBudgetForTests,
+} from "../src/mcp.js";
 
 const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as Hex;
 const account = privateKeyToAccount(PK);
@@ -693,5 +697,83 @@ describe("the stdio server always answers and never dies (AW-41)", () => {
       method: "notifications/initialized",
     } as never);
     expect(res).toBeNull();
+  });
+});
+
+/**
+ * AW-42. `check_token` turned an address it had not seen into a billed,
+ * state-changing `POST /scan` with the operator's key — input straight from
+ * model-visible text, with no rate limit, budget, dedupe or confirmation.
+ * Measured: 300 calls in 0.20s, 300 billed scans, $3.00, which is $882/min.
+ *
+ * The second-order effect is the one that matters: /v1/verify settles credit
+ * BEFORE verifying and this file turns any non-200 into `abstain`, so draining
+ * the balance is a remote way to disarm verify_payment for the session.
+ */
+describe("on-demand scans are budgeted (AW-42)", () => {
+  const REAL_FETCH = globalThis.fetch;
+  let scans = 0;
+
+  function withRegistry(knownSubstring?: string) {
+    scans = 0;
+    // The budget is per-PROCESS by design — that is what makes it a budget —
+    // so each case starts from a known point rather than inheriting the last.
+    __resetScanBudgetForTests();
+    process.env.WORMHOLE_API_KEY = "awk_test";
+    process.env.WORMHOLE_VERIFY_URL = "https://verify.test/api/v1/verify";
+    globalThis.fetch = (async (u: any) => {
+      const s = String(u);
+      if (s.endsWith("/scan")) {
+        scans += 1;
+        return new Response(JSON.stringify({ verdict: "clean" }), { status: 200 });
+      }
+      if (knownSubstring && s.includes(knownSubstring)) {
+        return new Response(
+          JSON.stringify({ observed: true, verdict: "flagged" }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+  }
+
+  afterEach(() => {
+    globalThis.fetch = REAL_FETCH;
+    delete process.env.WORMHOLE_API_KEY;
+    delete process.env.WORMHOLE_VERIFY_URL;
+    delete process.env.WORMHOLE_SCAN_BUDGET;
+  });
+
+  const check = (address: string) =>
+    call("check_token", { address });
+
+  it("repeated lookups of one address bill once", async () => {
+    withRegistry();
+    process.env.WORMHOLE_SCAN_BUDGET = "50";
+    const addr = "0x" + "ab".repeat(20);
+    for (let i = 0; i < 20; i += 1) await check(addr);
+    expect(scans).toBe(1);
+  });
+
+  it("distinct addresses are capped by the budget", async () => {
+    withRegistry();
+    process.env.WORMHOLE_SCAN_BUDGET = "5";
+    for (let i = 0; i < 100; i += 1) {
+      await check("0x" + i.toString(16).padStart(40, "0"));
+    }
+    expect(scans).toBe(5);
+  });
+
+  it("the FREE registry read still answers once the budget is spent", async () => {
+    // The property the budget exists to protect. If exhausting credit silently
+    // disarmed the guard, the budget would have created the failure it was
+    // meant to prevent.
+    withRegistry("aaaaaaaa");
+    process.env.WORMHOLE_SCAN_BUDGET = "2";
+    for (let i = 0; i < 10; i += 1) {
+      await check("0x" + i.toString(16).padStart(40, "0"));
+    }
+    const out = payloadOf(await check("0x" + "aa".repeat(20)));
+    expect(out.verdict).toBe("flagged");
   });
 });

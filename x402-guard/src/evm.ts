@@ -950,9 +950,27 @@ export async function inspectAuthorization(
   // NOT on-chain replay protection — that needs authorizationState via RPC.
   // This is bytes32 well-formedness (already checked) plus a within-session
   // seen-set, when the caller supplies one.
+  // AW-66(d). Two defects here, and they compound.
+  //
+  // The key omitted the AUTHORIZER, so a nonce was global to (chain, asset)
+  // rather than to the wallet that signed it — two unrelated payers picking
+  // the same bytes32 collided. And it was committed BEFORE the verdict, so a
+  // payload this function was about to REFUSE still burned the nonce.
+  //
+  // Together that is a denial of service on a victim's own payment:
+  // reproduced, an attacker's redirected payload refused with X402-101 and
+  // committed the victim's nonce, and the victim's honest retry then refused
+  // with X402-107 as a replay. The attacker needs only to observe a nonce and
+  // submit a payload that fails.
+  //
+  // `from` is in the key now, and the commit happens only on a verdict this
+  // function is actually allowing.
+  let nonceKey: string | null = null;
   if (opts.seenNonces) {
-    const nkey = `${chainId}:${quoteAsset.toLowerCase()}:${(nonce as string).toLowerCase()}`;
-    if (opts.seenNonces.has(nkey)) {
+    nonceKey =
+      `${chainId}:${quoteAsset.toLowerCase()}:${from.toLowerCase()}:` +
+      `${(nonce as string).toLowerCase()}`;
+    if (opts.seenNonces.has(nonceKey)) {
       findings.push({
         code: "X402-107",
         severity: "high",
@@ -960,14 +978,16 @@ export async function inspectAuthorization(
           "authorization nonce was already seen this session — possible replay (session-scoped detection only; on-chain replay state is not checked offline)",
         actual: nonce,
       });
-    } else {
-      opts.seenNonces.add(nkey);
+      nonceKey = null; // already recorded; nothing to commit
     }
   }
 
   const blocking = findings.some(
     (f) => f.severity === "critical" || f.severity === "high",
   );
+  // Commit only what we are about to vouch for. A refused authorization was
+  // never authorised, so it has no claim on the nonce.
+  if (!blocking && nonceKey !== null) opts.seenNonces?.add(nonceKey);
   return { decision: blocking ? "refuse" : "allow", findings };
 }
 

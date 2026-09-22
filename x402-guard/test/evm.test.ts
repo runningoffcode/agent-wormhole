@@ -1067,3 +1067,92 @@ describe("guardEvmSigner — no object is handed back unwrapped", () => {
     expect(g.uid).toBe("abc");
   });
 });
+
+/**
+ * AW-66(d). The session nonce set had two defects that compound.
+ *
+ * The key omitted the AUTHORIZER, so a nonce was global to (chain, asset)
+ * rather than to the wallet that signed it. And it was committed BEFORE the
+ * verdict, so a payload `inspectAuthorization` was about to REFUSE still burned
+ * the nonce.
+ *
+ * Together: a denial of service on a victim's own payment. Reproduced — an
+ * attacker's redirected payload refused with X402-101 and committed the
+ * victim's nonce, and the victim's honest retry then refused as a replay.
+ */
+describe("the session nonce set cannot be poisoned (AW-66)", () => {
+  const NONCE_B =
+    "0x00000000000000000000000000000000000000000000000000000000000000cd" as Hex;
+  const other = privateKeyToAccount(("0x" + "22".repeat(32)) as Hex);
+
+  async function authFor(
+    signer: typeof account,
+    to: string,
+    nonce: Hex,
+  ): Promise<EvmPayload> {
+    const signature = await signer.signTypedData({
+      domain: {
+        name: "USD Coin",
+        version: "2",
+        chainId: 8453,
+        verifyingContract: BASE_USDC as Hex,
+      },
+      types: EIP3009.TYPES,
+      primaryType: EIP3009.PRIMARY_TYPE,
+      message: {
+        from: signer.address,
+        to: to as Hex,
+        value: 1_000_000n,
+        validAfter: 0n,
+        validBefore: 0n,
+        nonce,
+      },
+    });
+    return {
+      signature,
+      assetTransferMethod: "eip3009",
+      authorization: {
+        from: signer.address,
+        to,
+        value: "1000000",
+        validAfter: "0",
+        validBefore: "0",
+        nonce,
+      },
+    } as EvmPayload;
+  }
+
+  it("a REFUSED payload does not burn the victim's nonce", async () => {
+    const seenNonces = new Set<string>();
+    const attack = await authFor(account, ATTACKER, NONCE_A);
+    expect((await inspectAuthorization(quote, attack, { seenNonces })).decision)
+      .toBe("refuse");
+
+    // The victim's own, honest payment on the same nonce must still clear.
+    const honest = await authFor(account, MERCHANT, NONCE_A);
+    expect((await inspectAuthorization(quote, honest, { seenNonces })).decision)
+      .toBe("allow");
+  });
+
+  it("but a GENUINE replay is still caught", async () => {
+    // The whole point of the set. Committing only on allow must not cost this.
+    const seenNonces = new Set<string>();
+    const honest = await authFor(account, MERCHANT, NONCE_B);
+    expect((await inspectAuthorization(quote, honest, { seenNonces })).decision)
+      .toBe("allow");
+    const again = await inspectAuthorization(quote, honest, { seenNonces });
+    expect(again.decision).toBe("refuse");
+    expect(again.findings.some((f) => f.code === "X402-107")).toBe(true);
+  });
+
+  it("two different payers may use the same nonce bytes", async () => {
+    // A nonce belongs to the wallet that signed it, not to the token.
+    const seenNonces = new Set<string>();
+    const a = await authFor(account, MERCHANT, NONCE_A);
+    const b = await authFor(other, MERCHANT, NONCE_A);
+    expect((await inspectAuthorization(quote, a, { seenNonces })).decision)
+      .toBe("allow");
+    expect((await inspectAuthorization(quote, b, { seenNonces })).decision)
+      .toBe("allow");
+  });
+});

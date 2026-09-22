@@ -17,13 +17,46 @@ STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LOG="$LOG_DIR/audit-$(date -u +%Y%m%d).log"
 
 TARGETS=("$@")
+DISCOVERY_FAILED=0
 if [ ${#TARGETS[@]} -eq 0 ]; then
   # Default: every directory under $HOME holding an agent config.
-  while IFS= read -r d; do TARGETS+=("$d"); done < <(
+  #
+  # AW-62. This piped `find` into `xargs -n1 dirname` with no -print0, and
+  # xargs parses quotes: one apostrophe anywhere under $HOME — "~/Bob's
+  # projects/app/AGENTS.md" — aborts the ENTIRE pipeline with "xargs:
+  # unterminated quote" and discards every target. The cron audit then logged
+  # "ok (1 targets, no change)" and exited 0 while scanning nothing.
+  # Reproduced against a synthetic HOME: a WORM-001 payload under "Bob's
+  # projects" gave exit 0 and "ok"; the identical payload elsewhere gave ALERT
+  # and exit 1. Attacker cost: one mkdir, or nothing at all.
+  #
+  # NUL-delimited, no xargs, dedupe in bash.
+  # Associative arrays need bash 4 and macOS ships 3.2, so dedupe by scanning
+  # what is already collected. Target counts here are small.
+  while IFS= read -r -d '' f; do
+    d=$(dirname "$f")
+    dup=0
+    for seen in ${TARGETS[@]+"${TARGETS[@]}"}; do
+      if [ "$seen" = "$d" ]; then dup=1; break; fi
+    done
+    if [ "$dup" -eq 0 ]; then TARGETS+=("$d"); fi
+  done < <(
     find "$HOME" -maxdepth 3 \( -name AGENTS.md -o -name CLAUDE.md -o -name claude.md \) \
-      -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null \
-      | xargs -n1 dirname | sort -u
+      -not -path '*/node_modules/*' -not -path '*/.git/*' -print0 2>/dev/null
   )
+  # A discovery that found nothing is not a clean audit. Saying "ok" here is
+  # how the failure above stayed invisible: silence and success looked the
+  # same.
+  if [ ${#TARGETS[@]} -eq 0 ]; then
+    DISCOVERY_FAILED=1
+  fi
+fi
+
+if [ "$DISCOVERY_FAILED" -eq 1 ]; then
+  echo "ALERT: target discovery found no agent configuration under \$HOME." >&2
+  echo "  Either there is genuinely none, or discovery failed. Either way this" >&2
+  echo "  run audited nothing, and reporting that as 'ok' would be a lie." >&2
+  exit 1
 fi
 
 alerts=0

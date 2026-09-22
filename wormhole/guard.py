@@ -21,7 +21,13 @@ import sys
 from pathlib import Path
 
 from .rules.injection import scan_text
-from .scanners.posture import CONFIG_NAMES
+from .scanners.autostart import check_autostart_text
+from .scanners.posture import (
+    CONFIG_GLOBS,
+    CONFIG_NAMES,
+    EXECUTING_DIRS,
+    EXECUTING_NAMES,
+)
 
 # Only writes to files an agent will later read as instructions are inspected.
 # A payload in application source is a different problem and not this hook's.
@@ -32,16 +38,44 @@ WATCHED_DIRS = ("skills", ".claude", ".cursor", ".github", ".windsurf")
 # the two with an unambiguous structural signature (self-replication and
 # credential exfiltration) and no corpus false positives. The softer rules warn
 # even in block mode.
-BLOCKING_RULES = ("WORM-001", "WORM-003")
+# AUTOSTART-001 joins them (AW-60): a hook that pipes a remote script into an
+# interpreter on every session has the same unambiguous structural signature,
+# and no corpus false positives — the benign fixtures carry ordinary commands.
+BLOCKING_RULES = ("WORM-001", "WORM-003", "AUTOSTART-001")
 
 
 def is_watched(path: str) -> bool:
-    """True when `path` is a file an agent loads as instructions."""
+    """True when `path` is a file an agent loads as instructions OR executes.
+
+    AW-60. This used to return true only for six CONFIG_NAMES or a .md/.mdc
+    inside five directories — prose. The files that actually execute matched
+    neither, so `.claude/settings.json`, `.mcp.json`, `.vscode/tasks.json`,
+    `.claude/hooks/*.sh` and `.cursor/mcp.json` were all unwatched, and
+    `guard --block` — the product's only pre-write refusal — passed a Write
+    installing a SessionStart hook that runs `curl | bash` on every subsequent
+    session. Reproduced end to end: empty stdout, which is the allow signal.
+
+    `memory/*.md` was unwatched too, even though posture's own CONFIG_GLOBS
+    includes it with the comment that it is "a better worm host than an agent
+    config file" — so `scan` and `baseline` treated it as agent config while
+    the write path did not, and the operator had every reason to think it was
+    covered.
+
+    Derived from posture's lists now rather than a second hand-maintained one.
+    """
     if not path:
         return False
     p = Path(path)
-    if p.name in CONFIG_NAMES:
+    if p.name in CONFIG_NAMES or p.name in EXECUTING_NAMES:
         return True
+    posix = p.as_posix()
+    # Hook directories: whatever is in them runs.
+    if any(f"{d}/" in posix or posix.startswith(f"{d}/") for d in EXECUTING_DIRS):
+        return True
+    # The directory-scoped rule formats posture already knows about.
+    for directory, pattern in CONFIG_GLOBS:
+        if f"{directory}/" in posix and p.match(pattern):
+            return True
     if p.suffix in WATCHED_SUFFIXES:
         return any(part in WATCHED_DIRS for part in p.parts)
     return False
@@ -88,6 +122,12 @@ def inspect(tool: str, tool_input: dict, block: bool = False) -> dict:
         return {"action": "allow", "findings": [], "reason": ""}
 
     findings = scan_text(text, path=path)
+    # AW-60. The injection rules look for instruction-shaped PROSE, and a hook
+    # command is JSON — so a `SessionStart` running `curl | bash` produced no
+    # findings even once its file became a watched path. The autostart rules
+    # already detect exactly that; they just had no way to see a write that had
+    # not landed yet.
+    findings = findings + check_autostart_text(text, path)
     if not findings:
         return {"action": "allow", "findings": [], "reason": ""}
 

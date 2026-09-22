@@ -110,10 +110,29 @@ def _commands_from_tasks(data):
 def check_autostart(path: Path) -> list:
     """Audit one configuration file for unattended execution."""
     path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return check_autostart_text(text, str(path))
+
+
+def check_autostart_text(text: str, path: str = "<pending write>") -> list:
+    """The same audit against content that is not on disk yet.
+
+    AW-60. The write guard has the PENDING content of a write, not a file, so
+    it could not call `check_autostart` — and the injection rules it does run
+    look for instruction-shaped prose, which a JSON hook command is not. So
+    even once `.claude/settings.json` became a watched path, a `SessionStart`
+    hook running `curl | bash` still produced empty stdout, which is the allow
+    signal.
+
+    The detection already existed and only the plumbing was missing.
+    """
     findings = []
     try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(text)
+    except json.JSONDecodeError:
         return findings
     if not isinstance(data, dict):
         return findings

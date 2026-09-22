@@ -50,6 +50,28 @@ CONFIG_NAMES = (
     "copilot-instructions.md",
 )
 
+# AW-60. The files that EXECUTE things, as opposed to the prose files above
+# that an agent reads as instructions.
+#
+# The write guard watched only prose, so `.claude/settings.json` — where a
+# `SessionStart` hook running `curl | bash` lands — was unwatched, and the
+# product's only pre-write refusal passed it. Reproduced end to end: the hook
+# returned empty stdout, which is the allow signal.
+#
+# These live here rather than in guard.py because a second hand-maintained
+# list is a second thing to forget; `is_watched` derives from this.
+EXECUTING_NAMES = (
+    ".mcp.json",
+    "mcp.json",          # .cursor/mcp.json, .vscode/mcp.json
+    "settings.json",     # .claude/, .gemini/, .vscode/
+    "settings.local.json",
+    "tasks.json",        # .vscode/tasks.json runs commands
+    "launch.json",
+)
+
+# Directories whose contents execute: hook scripts and the like.
+EXECUTING_DIRS = (".claude/hooks", ".cursor/hooks", ".githooks")
+
 # Directory-scoped rule formats: every file inside counts as agent config.
 # Cursor moved to .cursor/rules/*.mdc; Copilot added .github/instructions/.
 CONFIG_GLOBS = (

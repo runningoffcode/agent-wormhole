@@ -37,6 +37,23 @@ Stated plainly, because a security tool that overclaims is worse than none:
   reads "injection scanner" as covering the **selection** decision; it covers the
   **obedience** decision.
 
+- **A stale ruleset is the most dangerous way to run this.** An older version's
+  rules answer `allow` on payloads a newer one refuses, and an `allow` from a
+  stale scanner is indistinguishable from an `allow` from a current one. That
+  is worse than running nothing, because an operator who installed a guard
+  stops looking. `mcp-trade-guard` scans a known payload at startup and exits
+  rather than serving if the answer is not a refusal; the library itself cannot
+  do that for you, so pin an exact version and upgrade deliberately.
+
+- **A structural field is scanned, not trusted.** Values under keys like
+  `network`, `asset` or `payTo` used to be exempted from the content rules on
+  the theory that an identifier has no spaces. A dot-joined sentence and a
+  base64 blob both satisfy that shape, so the exemption was granted by the key
+  rather than earned by the value. Every value is now read, and the shape test
+  only decides whether to raise the shape finding. The cost is stated in
+  [x402](x402.md): text carrying an override phrase in joined form now refuses,
+  which reaches a merchant whose own product is injection defence.
+
 Two more limits stated elsewhere in these docs, repeated here because they are
 the ones most likely to be assumed away:
 

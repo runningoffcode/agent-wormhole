@@ -117,7 +117,7 @@ eroding the false-positive rate.
 ```yaml
 # AW-59. Pin to a commit SHA. `@v1` is a mutable tag: whoever can move it
 # chooses what runs in your CI, with your runner's token and your source.
-- uses: runningoffcode/agent-wormhole@REPLACE_WITH_RELEASE_COMMIT_SHA
+- uses: runningoffcode/agent-wormhole@10c2ce66bb1c06fa07787a593e8e96e423e64d1e
   with:
     fail-on: high
 ```

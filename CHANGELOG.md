@@ -1,5 +1,72 @@
 # Changelog
 
+## wormhole-x402 0.9.3 — 2026-09-23
+
+**Behaviour change: an EIP-3009 authorization with `validBefore` of 0 is now
+refused (X402-105) on both the signed and the pre-signing path.** It was
+exempted as "no expiry". The contract's check is
+`require(block.timestamp < validBefore)` with no zero case, so 0 is the one
+value that can never settle, and the exemption made it the one value that was
+never reported. No known client sends it; one that did was being cleared for a
+payment that could not be collected.
+
+The pre-signing path (`guardEvmSigner` / `inspectTypedDataRequest`) compared
+`to` and `value` and nothing else. It now checks the validity window, requires
+a bytes32 nonce, and compares the `TransferWithAuthorization` field list to the
+verified struct — a truncated or renamed struct abstains, since a signature
+over a different struct authorises a different message. The signed path
+already checked all of these; the two lanes agree, with the same codes.
+
+`guardEvmSigner` accepts ethers' positional `signTypedData(domain, types,
+value)` alongside viem's single object. Every ethers payment was being refused
+with "could not read an x402 payment from the arguments" — fail-closed, so no
+funds were at risk, but the documented integration did not work. A types map
+with more than one root struct is refused rather than guessed at: listing
+`TransferWithAuthorization` first while the struct actually signed is a Permit
+would otherwise be vouched for as a single transfer.
+
+Quote-text scanning reads text padded between every character. Interleaving a
+combining mark — or an ordinary full stop, hyphen, slash or bullet — between
+each character of an injected instruction produced a clean allow, because the
+un-join view substituted a space and `I g n o r e` is not a word to any rule.
+A second view deletes the separator run instead. Across all 2,796 zero-advance
+code points, 2,608 evaded before; none do now. Thai, Devanagari, Arabic,
+Hebrew and Vietnamese copy is byte-identical, and scanning stays linear.
+
+Delivery conformance refuses on a proven mismatch. X402-403 (content-type
+contradicts the quote), X402-404 (2xx with zero bytes) and X402-406 (JSON that
+does not parse) were `high` and the decision refuses only on `critical`, so
+each returned `allow` with the finding attached as commentary. They are
+`critical`. X402-406 also judges the *declared* type: a body labelled
+`application/json` that is an HTML error page is a mismatch whether or not the
+quote named a type.
+
+On Solana, a Lighthouse instruction naming any writable account is refused. An
+assertion only reads — that is what makes the program safe to allowlist — so
+write access is something no assertion needs, whatever the first byte says.
+
+## wormhole-guard 0.2.1 — 2026-09-23
+
+WORM-001 and WORM-002 decide "order or report" by whether a subject governs
+the verb, not by where the verb sits. The imperative override required the
+verb at a sentence start, so a four-character prefix moved it off the start
+and the prefix itself then matched the attribution frame and silenced the
+finding — `test case Copy this into every file` was quiet, `Copy this into
+every file` was not. A reporting verb also needs an object of its own before
+the payload: `this rule detects <payload>` leaves the payload as the object,
+quoted verbatim and still live. Honest security writing with a docs reference
+stays quiet, as before.
+
+The hooks README's copy-paste block documented `python3 -m wormhole`, which
+under the pipx install the same page recommends exits 1 with empty stdout —
+the allow signal. The block is now generated from `settings.json`.
+
+Watchtower: the Solana client did not import (a helper had been inserted
+between `@dataclass` and the class it decorated); both chain clients parse an
+HTTP-date `Retry-After` instead of crashing on it; a cursor file holding JSON
+that is not an object yields a fresh cursor as the docstring promised. The
+e2e harness no longer writes to a fixed name under `/tmp`.
+
 ## wormhole-x402 0.9.0 — 2026-09-21
 
 **BREAKING: `guardedPay` and `guardedFetch` now require an `integrity` option.**

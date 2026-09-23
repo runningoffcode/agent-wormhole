@@ -40,7 +40,7 @@ jobs:
       # pin against the repository and fails unless the commit it names
       # actually contains the hardened action.yml — so this cannot be filled
       # in with any 40 hex characters, and cannot be left unfilled at release.
-      - uses: runningoffcode/agent-wormhole@10c2ce66bb1c06fa07787a593e8e96e423e64d1e # see note above
+      - uses: runningoffcode/agent-wormhole@051a213b146796c4cb1100a4ff001463f4a046e3 # see note above
         with:
           path: '.'
           fail-on: 'high'

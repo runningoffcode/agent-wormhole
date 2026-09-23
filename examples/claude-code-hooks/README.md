@@ -47,13 +47,19 @@ already merged, with `guard` in block mode:
       {
         "matcher": "Write|Edit|MultiEdit",
         "hooks": [
-          { "type": "command", "command": "python3 -m wormhole guard --hook --block" }
+          {
+            "type": "command",
+            "command": "out=$(wormhole guard --hook --block 2>/dev/null); rc=$?; if [ -n \"$out\" ]; then printf %s \"$out\"; exit $rc; fi; if [ $rc -eq 0 ] || [ $rc -eq 2 ]; then exit $rc; fi; printf %s '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"wormhole-guard could not run (the hook command failed to start). Refusing the tool call rather than allowing it unchecked \u2014 a guard that cannot run is not a guard that approves. Fix the hook command, or remove the hook if you meant to disable it.\"}}'"
+          }
         ]
       },
       {
         "matcher": "Agent|SendMessage|Task|Workflow|mcp__.*",
         "hooks": [
-          { "type": "command", "command": "python3 -m wormhole outbound --hook" }
+          {
+            "type": "command",
+            "command": "wormhole outbound --hook"
+          }
         ]
       }
     ],
@@ -61,14 +67,20 @@ already merged, with `guard` in block mode:
       {
         "matcher": "Read|WebFetch|WebSearch|Bash|Grep|Glob|Task",
         "hooks": [
-          { "type": "command", "command": "python3 -m wormhole readguard --hook" }
+          {
+            "type": "command",
+            "command": "wormhole readguard --hook"
+          }
         ]
       }
     ],
     "InstructionsLoaded": [
       {
         "hooks": [
-          { "type": "command", "command": "python3 -m wormhole readguard --instructions" }
+          {
+            "type": "command",
+            "command": "wormhole readguard --instructions"
+          }
         ]
       }
     ]

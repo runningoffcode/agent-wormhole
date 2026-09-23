@@ -25,6 +25,7 @@ stdout. We assert on the real permissionDecision / additionalContext.
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -296,8 +297,17 @@ def main():
         print(f"  {color}{s:10s} {p}/{t}{RST}")
     verdict = f"{G}ALL LAYERS HELD" if passed == total else f"{R}{total-passed} GAP(S)"
     print(f"\n{B}{passed}/{total} checks passed — {verdict}{RST}")
-    # write machine-readable result
-    Path("/tmp/worm-e2e-result.json").write_text(json.dumps(
+    # write machine-readable result. Not a fixed name under /tmp: on a shared
+    # host that is a path anyone can pre-create as a symlink, and this script
+    # runs as whoever invoked it. An explicit path wins when given; otherwise
+    # a fresh file whose name nobody could have guessed, and the path is
+    # printed so the caller can find it.
+    out = os.environ.get("WORM_E2E_RESULT")
+    if not out:
+        fd, out = tempfile.mkstemp(prefix="worm-e2e-result-", suffix=".json")
+        os.close(fd)
+    print(f"result: {out}")
+    Path(out).write_text(json.dumps(
         {"passed": passed, "total": total,
          "results": [{"scenario": s, "layer": l, "expected": e, "actual": a, "passed": ok}
                      for s, l, e, a, ok, _ in results]}, indent=2))

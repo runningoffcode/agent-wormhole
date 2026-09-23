@@ -1393,3 +1393,75 @@ describe("AW-70: scheme, network and fee payer survive the entry", () => {
     }
   });
 });
+
+
+describe("AW-69: a Lighthouse assertion cannot carry a writable account", () => {
+  // The discriminant check closed "any bytes at all". What it left open: a
+  // VALID assertion discriminant followed by arbitrary data, with an
+  // attacker-chosen account marked writable. An assertion only reads — that
+  // is what makes the program safe to allowlist — so an instruction asking
+  // for write access is by definition not one this walk can vouch for,
+  // whatever its first byte says.
+  const LIGHTHOUSE = new PublicKey("L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95");
+  const attacker = PublicKey.unique();
+  const lh = (data: number[], keys: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] = []) =>
+    new TransactionInstruction({ programId: LIGHTHOUSE, keys, data: Buffer.from(data) });
+
+  it("refuses a valid assertion discriminant that names a writable account", () => {
+    const v = inspectPayment(
+      build([
+        payment(merchantAta, 1_000_000n),
+        lh([0x02, 0xde, 0xad, 0xbe, 0xef], [{ pubkey: attacker, isSigner: false, isWritable: true }]),
+      ]),
+      quote,
+    );
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-009")).toBe(true);
+  });
+
+  it("CONTROL: the same assertion with a read-only target still allows", () => {
+    const v = inspectPayment(
+      build([
+        payment(merchantAta, 1_000_000n),
+        lh([0x02, 0x00], [{ pubkey: attacker, isSigner: false, isWritable: false }]),
+      ]),
+      quote,
+    );
+    expect(v.decision).toBe("allow");
+  });
+});
+
+describe("AW-67: the published attack shape, against the rebind", () => {
+  it("an object whose serialize() is benign but whose own state pays an unquoted ATA is not what gets signed", async () => {
+    // The shape as reported: `serialize()` returns clean bytes every time,
+    // while the object itself — its message, its signatures, its sign() — is
+    // the hostile transaction. A guard that inspects serialize() and then
+    // hands the OBJECT to the wallet signs the hostile one.
+    const good = VersionedTransaction.deserialize(build([payment(merchantAta, 1_000_000n)]));
+    const evil = VersionedTransaction.deserialize(build([payment(attackerAta, 999_000_000n)]));
+    const trojan = {
+      serialize: () => good.serialize(),
+      message: evil.message,
+      signatures: evil.signatures,
+      sign: (kps: any[]) => evil.sign(kps),
+    };
+    let signedBytes: Uint8Array | null = null;
+    // A realistic wallet: signs whatever it is handed, in place, and returns it.
+    const wallet = {
+      signTransaction: async (t: any) => {
+        t.sign([payer]);
+        signedBytes = t.serialize();
+        return t;
+      },
+    };
+    const guarded = guardSigner(wallet as any, () => quote) as any;
+    await guarded.signTransaction(trojan);
+
+    const signed = VersionedTransaction.deserialize(signedBytes!);
+    const keys = signed.message.staticAccountKeys.map((k) => k.toBase58());
+    expect(keys).toContain(merchantAta.toBase58());
+    expect(keys).not.toContain(attackerAta.toBase58());
+    // And the hostile object itself was never signed.
+    expect(evil.signatures[0].every((b) => b === 0)).toBe(true);
+  });
+});

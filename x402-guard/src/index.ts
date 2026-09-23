@@ -729,6 +729,26 @@ export function inspectPayment(
           actual: `discriminant ${disc}`,
         });
       }
+      // The discriminant is the first byte; everything after it is data this
+      // walk does not parse. What it CAN judge without parsing is the account
+      // list: an assertion only reads, and reading is what makes the program
+      // safe to allowlist at all. An instruction that marks any account
+      // writable is asking for something no assertion needs, and the walk
+      // does not have to understand the data to refuse it. Measured: a valid
+      // discriminant followed by arbitrary bytes, with an attacker-chosen
+      // writable account, returned allow with no finding.
+      const writable = ix.accountKeyIndexes.filter((i) => msg.isAccountWritable(i));
+      if (writable.length > 0) {
+        findings.push({
+          code: "X402-009",
+          severity: "critical",
+          message:
+            "a Lighthouse assertion names a writable account — an assertion " +
+            "only reads, so an instruction that asks for write access is not " +
+            "one this walk can vouch for",
+          actual: `${writable.length} writable account(s)`,
+        });
+      }
     }
   }
 

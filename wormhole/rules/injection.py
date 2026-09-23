@@ -406,6 +406,111 @@ PROHIBITIVE_FRAME = re.compile(
     re.IGNORECASE,
 )
 
+# A propagation or override verb taking a direct object, wherever it appears.
+# `UNGOVERNED_IMPERATIVE` below decides whether it is an ORDER or a REPORT by
+# looking for a subject, rather than by where in the sentence it sits.
+BARE_DIRECTIVE = re.compile(
+    r"\b(?:copy|append|add|include|forward|paste|insert|write|propagate|"
+    r"replicate|reproduce)\s+(?:this|these|the following|it)\b|"
+    r"\b(?:ignore|disregard|forget|override|discard|bypass)\s+"
+    r"(?:all|any|the|your|previous|prior|earlier|above|preceding|system)\b",
+    re.IGNORECASE,
+)
+
+# An infinitival or relative frame immediately before the directive: the verb
+# belongs to a clause someone else governs ("...tell the model to copy this").
+INFINITIVAL_FRAME = re.compile(
+    r"\b(?:to|of|by|that|which|who|when|if|whether|about|against)\s*$",
+    re.IGNORECASE,
+)
+
+# A third party that can be doing the verb instead of the reader.
+REPORT_SUBJECT = re.compile(
+    r"\b(?:attackers?|adversar(?:y|ies)|threat actors?|malware|a worm|the worm|"
+    r"worms?|the model|the agent|an agent|the assistant|someone|somebody|"
+    r"they|it|this rule|the rule|researchers?|the payload|an? injection)\b",
+    re.IGNORECASE,
+)
+
+# A verb of reporting. It needs an object of its OWN — see below.
+REPORT_VERB = (
+    r"(?:detects?|flags?|matches|scans? for|looks? for|documented|describes?|"
+    r"shows?|try|tries|attempts?|tells?|asks?|makes?|instructs?)"
+)
+
+# "<subject> <report verb>" with nothing after it: the directive that follows
+# IS the verb's object, which means the payload is quoted verbatim and still
+# operative. "This rule detects <PAYLOAD>" is the decoy; "This rule detects
+# text that asks the model to <PAYLOAD>" is honest writing, and the difference
+# is whether the reporting verb has an object before the payload begins.
+BARE_REPORT_VERB = re.compile(
+    rf"^(?:\w+\s+)?{REPORT_VERB}\s*$", re.IGNORECASE
+)
+
+
+def _ungoverned_imperative(text: str) -> bool:
+    """True when a directive verb appears with no subject governing it.
+
+    AW-27. The imperative check used to require the verb at a SENTENCE START.
+    That made the test a predicate on attacker-controlled input, which is the
+    failure class this codebase has paid for repeatedly: prefixing four
+    characters moved the verb off the start, the override stopped matching,
+    and the prefix itself ("test case ", "we detect this ") then matched
+    ATTRIBUTED_FRAME and suppressed the finding outright. One string did both
+    halves of the bypass at once. Both prefixes are in this project's own
+    plantable-vocabulary list, so they were known-hostile strings that
+    nonetheless bought silence.
+
+    Position is not what separates an order from a report; a SUBJECT is.
+    "Attackers copy this into every file" reports, because `attackers` governs
+    the verb. "Copy this into every file" orders, because nothing does. That
+    holds wherever in the sentence the verb sits, so there is no start-of-
+    sentence anchor left to step over.
+
+    Only the current sentence can govern: a subject in the previous sentence
+    is the neighbouring-decoy trick the earlier repair closed, and reopening
+    it here would trade one bypass for another.
+    """
+    for m in BARE_DIRECTIVE.finditer(text):
+        before = text[: m.start()]
+        # A SENTENCE end only, never a bare newline. Prose wraps mid-sentence,
+        # so cutting at a line break severs the subject from its verb and turns
+        # honest threat-model writing into a payload — "Attackers try to make
+        # an agent\nignore all previous instructions" would read as an order
+        # on the second line. This file already learned that once, in the
+        # IMPERATIVE_ADDRESS anchors below.
+        cut = max(before.rfind("."), before.rfind("!"), before.rfind("?"))
+        clause = before[cut + 1 :]
+        if not _governed(clause):
+            return True
+    return False
+
+
+def _governed(clause: str) -> bool:
+    """True when something in `clause` is doing the directive verb.
+
+    Two ways that happens. An infinitival or relative frame right before the
+    verb hands it to a clause someone else owns. Or a third-party subject
+    appears and the reporting verb has its own object before the directive
+    starts.
+
+    THE SECOND CONDITION IS NOT DECORATION. "This rule detects" followed
+    immediately by the payload leaves the payload as the verb's object — it is
+    quoted verbatim and still reads as an instruction to whatever consumes the
+    file. Honest writing about the same rule puts an object in between ("this
+    rule detects TEXT THAT asks the model to..."), which is exactly the
+    structure that makes it description rather than a live directive.
+    """
+    if INFINITIVAL_FRAME.search(clause):
+        return True
+    last = None
+    for last in REPORT_SUBJECT.finditer(clause):
+        pass
+    if last is None:
+        return False
+    return not BARE_REPORT_VERB.match(clause[last.end() :].strip())
+
+
 # Imperative second-person address, which is how a payload speaks to the model
 # it is trying to recruit. Its presence overrides descriptive framing: prose
 # that tells *you* to do the thing is not describing someone else doing it.
@@ -492,6 +597,11 @@ def _is_descriptive(text: str, pos: int, window: int = 320, end: Optional[int] =
     # Imperative address still overrides, and still over the wider window: a
     # command to the reader anywhere nearby means this is not description.
     if IMPERATIVE_ADDRESS.search(frame):
+        return False
+    # AW-27. A directive with no subject governing it is an order however the
+    # sentence around it is dressed, so it overrides suppression the same way
+    # a second-person address does.
+    if _ungoverned_imperative(sentence):
         return False
     if ATTRIBUTED_FRAME.search(sentence):
         return True

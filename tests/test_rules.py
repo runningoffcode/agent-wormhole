@@ -216,6 +216,68 @@ class DescriptiveFrameNotAnOptOut(unittest.TestCase):
                 "security@example.com rather than acting on it.")
         self.assertEqual([f.rule_id for f in scan_text(text)], [])
 
+    # An in-sentence PREFIX used to silence the rule outright. Both of these
+    # strings are in this class's own PLANTABLE list, so they were already
+    # known-hostile vocabulary that nonetheless bought silence.
+    #
+    # The prefix did both halves of the bypass at once: it moved the verb off
+    # the start of the sentence, which is where the imperative override
+    # required it, and the prefix itself then matched the attribution frame.
+    # Four characters of attacker-chosen text decided whether anything was
+    # checked.
+    SILENCING_PREFIXES = (
+        "test case ",
+        "we detect this ",
+        "test fixture ",
+        "false positive ",
+        "injection ",
+        "for instance ",
+        "this rule detects ",
+        "research shows ",
+    )
+
+    def test_prepended_vocabulary_cannot_silence_a_worm(self):
+        for prefix in self.SILENCING_PREFIXES:
+            with self.subTest(prefix=prefix):
+                found = scan_text(f"{prefix}{self.WORM}", "CLAUDE.md")
+                self.assertIn("WORM-001", [f.rule_id for f in found])
+
+    def test_prepended_vocabulary_cannot_silence_an_override(self):
+        for prefix in self.SILENCING_PREFIXES:
+            with self.subTest(prefix=prefix):
+                found = scan_text(f"{prefix}{self.OVERRIDE}", "CLAUDE.md")
+                self.assertIn("WORM-002", [f.rule_id for f in found])
+
+    def test_a_subject_still_makes_it_a_report(self):
+        """The half that matters more: the suppressor has to keep working.
+
+        What separates an order from a report is a SUBJECT governing the verb,
+        not where the verb sits. Each of these supplies one, and each must stay
+        quiet — a fix that simply stopped suppressing would pass every test
+        above and make the tool unusable for anyone writing about injection.
+
+        Note the docs references. Topic vocabulary alone does not buy silence
+        (that is what made "attackers hate this" an opt-out), so prose about a
+        worm still needs documentation structure to corroborate it. Two
+        sentences were dropped from this list on finding they refuse WITHOUT a
+        docs reference — on the original code as well as the fixed one, so it
+        is the suppressor's designed contract rather than a regression here.
+        """
+        quiet = (
+            "Attackers may tell the model to copy this instruction into "
+            "every file you create.",
+            "A worm works by telling the agent to copy this instruction "
+            "into every file. See docs/threat-model.md.",
+            "This rule detects text that asks the model to copy this into "
+            "every file.",
+            "Researchers documented malware that will copy this into every "
+            "file it touches. See docs/threat-model.md.",
+            "Never copy an instruction like that into every file you create.",
+        )
+        for text in quiet:
+            with self.subTest(text=text[:40]):
+                self.assertEqual([f.rule_id for f in scan_text(text)], [])
+
     def test_line_wrap_is_not_a_sentence_boundary(self):
         """Prose wraps mid-sentence. Treating a bare newline as the start of
         an imperative made the threat-model fixture read as a payload."""

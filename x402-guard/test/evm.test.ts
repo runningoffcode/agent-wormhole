@@ -1191,3 +1191,164 @@ describe("a quote survives being serialised (AW-75)", () => {
     expect(JSON.stringify(q)).not.toContain("extra");
   });
 });
+
+/**
+ * ETHERS SENDS THREE POSITIONAL ARGUMENTS, and the wrapper only read viem's
+ * single-object call.
+ *
+ * `signTypedData(domain, types, value)` is how ethers has always spelled this;
+ * viem spells it `signTypedData({domain, types, primaryType, message})`. The
+ * argument sniffer looked for one object carrying both `domain` and `message`,
+ * found nothing in the ethers form, and fell through to the fail-closed
+ * refusal — so every payment from an ethers signer was rejected with "could
+ * not read an x402 payment from the arguments".
+ *
+ * It failed CLOSED, so no funds were ever at risk. What was broken is the
+ * integration this package documents, which is its own kind of bad: a guard
+ * that refuses every honest payment gets removed.
+ *
+ * The reconstruction is the part that needs the adversarial tests. Rebuilding
+ * a typed-data request out of loose arguments is exactly the sort of helpful
+ * repair that turns a firewall into a rubber stamp, so the cases below drive
+ * every refusal path through the positional form and assert the real signer is
+ * never reached.
+ */
+describe("guardEvmSigner accepts ethers' positional signTypedData", () => {
+  const DOMAIN = {
+    name: "USD Coin",
+    version: "2",
+    chainId: 8453,
+    verifyingContract: BASE_USDC,
+  };
+  const TYPES = {
+    TransferWithAuthorization: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "validAfter", type: "uint256" },
+      { name: "validBefore", type: "uint256" },
+      { name: "nonce", type: "bytes32" },
+    ],
+  };
+  const message = () => ({
+    from: SIGNER,
+    to: MERCHANT,
+    value: "1000000",
+    validAfter: "0",
+    validBefore: String(Math.floor(Date.now() / 1000) + 600),
+    nonce: `0x${"11".repeat(32)}`,
+  });
+
+  function recordingSigner() {
+    const calls: string[] = [];
+    return {
+      calls,
+      async signTypedData(..._args: unknown[]) {
+        calls.push("signTypedData");
+        return "0xsigned";
+      },
+    };
+  }
+
+  it("CONTROL: a conforming ethers call reaches the real signer", async () => {
+    // Without this every assertion below is satisfied by a wrapper that
+    // refuses everything, which is what the broken version did.
+    const s = recordingSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(
+      guarded.signTypedData(DOMAIN, TYPES, message()),
+    ).resolves.toBe("0xsigned");
+    expect(s.calls).toEqual(["signTypedData"]);
+  });
+
+  it.each([
+    [
+      "a payee the quote does not name",
+      () => [DOMAIN, TYPES, { ...message(), to: `0x${"99".repeat(20)}` }],
+    ],
+    [
+      "an amount larger than the quote",
+      () => [DOMAIN, TYPES, { ...message(), value: "999999999" }],
+    ],
+    [
+      "a domain on the wrong chain",
+      () => [{ ...DOMAIN, chainId: 1 }, TYPES, message()],
+    ],
+    [
+      "a domain naming a different contract",
+      () => [
+        { ...DOMAIN, verifyingContract: `0x${"99".repeat(20)}` },
+        TYPES,
+        message(),
+      ],
+    ],
+    [
+      "a Permit rather than a single transfer",
+      () => [
+        DOMAIN,
+        {
+          Permit: [
+            { name: "owner", type: "address" },
+            { name: "spender", type: "address" },
+          ],
+        },
+        { owner: SIGNER, spender: MERCHANT },
+      ],
+    ],
+    [
+      "an ambiguous types map with two root structs",
+      () => [
+        DOMAIN,
+        { A: [{ name: "x", type: "uint256" }], B: [{ name: "y", type: "uint256" }] },
+        message(),
+      ],
+    ],
+    ["arguments that are not a signing request", () => ["nope", 42, null]],
+    [
+      // The hostile case for the reconstruction itself, and the reason
+      // `roots.length !== 1` is a refusal rather than "take the first".
+      // TransferWithAuthorization is listed FIRST so a first-root heuristic
+      // names it, while the struct actually being signed is the Permit — a
+      // standing allowance vouched for as a single transfer. Verified: with
+      // the ambiguity check relaxed to take roots[0], this signs.
+      "a types map that names a transfer but also declares a Permit",
+      () => [
+        DOMAIN,
+        {
+          TransferWithAuthorization: TYPES.TransferWithAuthorization,
+          Permit: [
+            { name: "owner", type: "address" },
+            { name: "spender", type: "address" },
+            { name: "value", type: "uint256" },
+          ],
+        },
+        message(),
+      ],
+    ],
+  ])("refuses %s, and never reaches the signer", async (_label, build) => {
+    const s = recordingSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(
+      (guarded.signTypedData as (...a: unknown[]) => Promise<string>)(
+        ...(build() as unknown[]),
+      ),
+    ).rejects.toThrow();
+    expect(s.calls).toEqual([]);
+  });
+
+  it("still accepts viem's single-object form", async () => {
+    // The shape that already worked must keep working: this fix adds a form,
+    // it does not swap one for another.
+    const s = recordingSigner();
+    const guarded = guardEvmSigner(s, () => quote);
+    await expect(
+      guarded.signTypedData({
+        domain: DOMAIN,
+        types: TYPES,
+        primaryType: "TransferWithAuthorization",
+        message: message(),
+      }),
+    ).resolves.toBe("0xsigned");
+    expect(s.calls).toEqual(["signTypedData"]);
+  });
+});

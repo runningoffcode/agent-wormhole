@@ -13,6 +13,7 @@ import {
   inspectAuthorization,
   evmQuoteFromRequirements,
   guardEvmSigner,
+  inspectTypedDataRequest,
   parseNetwork,
   TRUSTED_DOMAINS,
   EIP3009,
@@ -64,7 +65,10 @@ async function signAuth(f: AuthFields = {}): Promise<EvmPayload & { authorizatio
   const to = f.to ?? MERCHANT;
   const value = f.value ?? 1_000_000n;
   const validAfter = f.validAfter ?? 0n;
-  const validBefore = f.validBefore ?? 0n; // 0 = no expiry
+  // Not 0. The contract's check is `require(block.timestamp < validBefore)`
+  // with no zero case, so 0 is the one value that can never pass it — an
+  // honest fixture has to carry a real window.
+  const validBefore = f.validBefore ?? 99999999999n;
   const nonce = f.nonce ?? NONCE_A;
 
   const domain = {
@@ -331,10 +335,15 @@ describe("X402-105 validity window", () => {
     const v = await inspectAuthorization(quote, payload, { nowSeconds: FIXED_NOW });
     expect(v.decision).toBe("allow");
   });
-  it("treats validBefore 0 as no-expiry and ALLOWS", async () => {
+  it("REFUSES validBefore 0 — the contract can never accept it", async () => {
+    // This asserted the opposite, on the belief that 0 meant "no expiry".
+    // The contract's check is `require(block.timestamp < validBefore)` with
+    // no zero case, so 0 is the one value that always fails it — and the old
+    // exemption made it the one value that was never reported.
     const payload = await signAuth({ validBefore: 0n });
     const v = await inspectAuthorization(quote, payload, { nowSeconds: FIXED_NOW });
-    expect(v.decision).toBe("allow");
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.some((f) => f.code === "X402-105")).toBe(true);
   });
 });
 
@@ -848,7 +857,7 @@ describe("guardEvmSigner — the firewall", () => {
           to: MERCHANT,
           value: 1_000_000n,
           validAfter: 0n,
-          validBefore: 0n,
+          validBefore: 99999999999n,
           nonce: NONCE_A,
         },
       } as any),
@@ -874,7 +883,7 @@ describe("guardEvmSigner — the firewall", () => {
           to: ATTACKER,
           value: 1_000_000n,
           validAfter: 0n,
-          validBefore: 0n,
+          validBefore: 99999999999n,
           nonce: NONCE_A,
         },
       } as any),
@@ -1104,7 +1113,7 @@ describe("the session nonce set cannot be poisoned (AW-66)", () => {
         to: to as Hex,
         value: 1_000_000n,
         validAfter: 0n,
-        validBefore: 0n,
+        validBefore: 99999999999n,
         nonce,
       },
     });
@@ -1116,7 +1125,7 @@ describe("the session nonce set cannot be poisoned (AW-66)", () => {
         to,
         value: "1000000",
         validAfter: "0",
-        validBefore: "0",
+        validBefore: "99999999999",
         nonce,
       },
     } as EvmPayload;
@@ -1350,5 +1359,67 @@ describe("guardEvmSigner accepts ethers' positional signTypedData", () => {
       }),
     ).resolves.toBe("0xsigned");
     expect(s.calls).toEqual(["signTypedData"]);
+  });
+});
+
+
+describe("AW-66 / AW-32: the pre-signing path checks what the signed path checks", () => {
+  // inspectTypedDataRequest compared `to` and `value` and nothing else, so a
+  // request that could never succeed on chain — validBefore of 0, a
+  // validAfter in the future, a nonce that is not bytes32 — returned a clean
+  // allow, and a truncated or renamed TransferWithAuthorization struct did
+  // too. The signed path checks all of these; the two lanes now agree.
+  const domain = { name: "USD Coin", version: "2", chainId: 8453, verifyingContract: BASE_USDC };
+  const message = () => ({
+    from: SIGNER,
+    to: MERCHANT,
+    value: "1000000",
+    validAfter: "0",
+    validBefore: "99999999999",
+    nonce: `0x${"11".repeat(32)}`,
+  });
+  const req = (m: Record<string, unknown>, types: unknown = EIP3009.TYPES) => ({
+    domain,
+    types,
+    primaryType: EIP3009.PRIMARY_TYPE,
+    message: m,
+  });
+
+  it("CONTROL: a conforming request allows with no findings", () => {
+    const v = inspectTypedDataRequest(quote, req(message()));
+    expect(v.decision).toBe("allow");
+    expect(v.findings).toEqual([]);
+  });
+
+  it.each([
+    ["a validBefore of 0", { validBefore: "0" }],
+    ["a validAfter in the future", { validAfter: "99999999999" }],
+    ["a validBefore in the past", { validBefore: "1" }],
+  ])("reports %s as X402-105", (_label, over) => {
+    const v = inspectTypedDataRequest(quote, req({ ...message(), ...over }));
+    expect(v.findings.some((f) => f.code === "X402-105")).toBe(true);
+  });
+
+  it("abstains on a nonce that is not bytes32", () => {
+    const v = inspectTypedDataRequest(quote, req({ ...message(), nonce: `0x${"11".repeat(16)}` }));
+    expect(v.decision).toBe("abstain");
+  });
+
+  it("abstains on a truncated type list (AW-32)", () => {
+    const v = inspectTypedDataRequest(
+      quote,
+      req(message(), { TransferWithAuthorization: EIP3009.TYPES.TransferWithAuthorization.slice(0, 3) }),
+    );
+    expect(v.decision).toBe("abstain");
+  });
+
+  it("abstains on a renamed field (AW-32)", () => {
+    // Same length, one field renamed: the typeHash — and so the signature —
+    // commits to a different struct.
+    const renamed = EIP3009.TYPES.TransferWithAuthorization.map((f, i) =>
+      i === 2 ? { ...f, name: "amount" } : f,
+    );
+    const v = inspectTypedDataRequest(quote, req(message(), { TransferWithAuthorization: renamed }));
+    expect(v.decision).toBe("abstain");
   });
 });

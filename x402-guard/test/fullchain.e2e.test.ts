@@ -96,7 +96,7 @@ async function signAuth(f: { to?: string; value?: bigint } = {}): Promise<EvmPay
     to: to as Hex,
     value,
     validAfter: 0n,
-    validBefore: 0n,
+    validBefore: 99999999999n,
     nonce: NONCE_A,
   };
   const signature = await account.signTypedData({
@@ -113,7 +113,7 @@ async function signAuth(f: { to?: string; value?: bigint } = {}): Promise<EvmPay
       to,
       value: value.toString(),
       validAfter: "0",
-      validBefore: "0",
+      validBefore: "99999999999",
       nonce: NONCE_A,
     },
   } as EvmPayload;

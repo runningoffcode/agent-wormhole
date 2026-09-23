@@ -190,7 +190,7 @@ async function signAuth(): Promise<EvmPayload> {
     to: MERCHANT as Hex,
     value: 1_000_000n,
     validAfter: 0n,
-    validBefore: 0n,
+    validBefore: 99999999999n,
     nonce: NONCE,
   };
   const signature = await account.signTypedData({
@@ -207,7 +207,7 @@ async function signAuth(): Promise<EvmPayload> {
       to: MERCHANT,
       value: "1000000",
       validAfter: "0",
-      validBefore: "0",
+      validBefore: "99999999999",
       nonce: NONCE,
     },
   };

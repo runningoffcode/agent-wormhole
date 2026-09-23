@@ -54,7 +54,7 @@ async function signedPayload(to: string, nonce: string) {
       to: to as Hex,
       value: 1_000_000n,
       validAfter: 0n,
-      validBefore: 0n,
+      validBefore: 99999999999n,
       nonce: nonce as Hex,
     },
   });
@@ -66,7 +66,7 @@ async function signedPayload(to: string, nonce: string) {
       to,
       value: "1000000",
       validAfter: "0",
-      validBefore: "0",
+      validBefore: "99999999999",
       nonce,
     },
   };

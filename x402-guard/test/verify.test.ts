@@ -48,7 +48,7 @@ async function signAuth(f: { to?: string; value?: bigint } = {}): Promise<EvmPay
     chainId: BASE_CHAIN,
     verifyingContract: BASE_USDC as Hex,
   } as const;
-  const message = { from: SIGNER as Hex, to: to as Hex, value, validAfter: 0n, validBefore: 0n, nonce: NONCE_A };
+  const message = { from: SIGNER as Hex, to: to as Hex, value, validAfter: 0n, validBefore: 99999999999n, nonce: NONCE_A };
   const signature = await account.signTypedData({
     domain,
     types: EIP3009.TYPES,
@@ -63,7 +63,7 @@ async function signAuth(f: { to?: string; value?: bigint } = {}): Promise<EvmPay
       to,
       value: value.toString(),
       validAfter: "0",
-      validBefore: "0",
+      validBefore: "99999999999",
       nonce: NONCE_A,
     },
   } as EvmPayload;
@@ -291,7 +291,7 @@ describe("a quote-text abstain is not an allow (AW-33)", () => {
         to: to as `0x${string}`,
         value: 1_000_000n,
         validAfter: 0n,
-        validBefore: 0n,
+        validBefore: 99999999999n,
         nonce,
       },
     });
@@ -303,7 +303,7 @@ describe("a quote-text abstain is not an allow (AW-33)", () => {
         to,
         value: "1000000",
         validAfter: "0",
-        validBefore: "0",
+        validBefore: "99999999999",
         nonce,
       },
     };
@@ -430,7 +430,7 @@ describe("verify() scans the whole quote, not five keys (AW-38)", () => {
         to: BASE.payTo as `0x${string}`,
         value: 1_000_000n,
         validAfter: 0n,
-        validBefore: 0n,
+        validBefore: 99999999999n,
         nonce,
       },
     });
@@ -442,7 +442,7 @@ describe("verify() scans the whole quote, not five keys (AW-38)", () => {
         to: BASE.payTo,
         value: "1000000",
         validAfter: "0",
-        validBefore: "0",
+        validBefore: "99999999999",
         nonce,
       },
     };

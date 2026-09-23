@@ -962,14 +962,19 @@ export async function inspectAuthorization(
       actual: `validAfter = ${validAfter.toString()}`,
     });
   }
-  // validBefore == 0 is the EIP-3009 convention for "no expiry"; only enforce
-  // an expiry when validBefore is set.
-  if (validBefore !== 0n && now > validBefore + skew) {
+  // validBefore == 0 was treated here as "no expiry". It is the opposite: the
+  // contract's check is `require(block.timestamp < validBefore)` with no zero
+  // case, so an authorization carrying 0 can never be valid, and the old
+  // exemption turned the one value that always fails into the one value that
+  // was never reported.
+  if (now > validBefore + skew) {
     findings.push({
       code: "X402-105",
       severity: "high",
       message:
-        "authorization has expired (validBefore is in the past) — the payment window has closed",
+        validBefore === 0n
+          ? "validBefore is 0 — the contract requires block.timestamp < validBefore, so this authorization can never be valid"
+          : "authorization has expired (validBefore is in the past) — the payment window has closed",
       expected: `now (${now.toString()}) <= validBefore`,
       actual: `validBefore = ${validBefore.toString()}`,
     });
@@ -1202,6 +1207,36 @@ export function inspectTypedDataRequest(
     );
   }
 
+  // AW-32. The domain was compared and the type LIST was not, so a request
+  // whose TransferWithAuthorization struct had been truncated or had a field
+  // renamed returned allow. The field list is what the typeHash — and so the
+  // signature — commits to. A signature over a different struct authorises
+  // nothing on the real contract, so the money impact is nil; but this
+  // wrapper's whole claim is that it vouches for THE EIP-3009 transfer, and
+  // it cannot vouch for a struct it never compared.
+  const types = r["types"];
+  if (typeof types !== "object" || types === null) {
+    return abstain("typed-data request carries no types map");
+  }
+  const declared = (types as Record<string, unknown>)[EIP3009.PRIMARY_TYPE];
+  const expectedFields: readonly { name: string; type: string }[] =
+    EIP3009.TYPES[EIP3009.PRIMARY_TYPE];
+  const sameStruct =
+    Array.isArray(declared) &&
+    declared.length === expectedFields.length &&
+    expectedFields.every((f, i) => {
+      const d = declared[i] as Record<string, unknown> | null;
+      return (
+        d !== null && typeof d === "object" && d["name"] === f.name && d["type"] === f.type
+      );
+    });
+  if (!sameStruct) {
+    return abstain(
+      `types.${EIP3009.PRIMARY_TYPE} is not the verified EIP-3009 struct — ` +
+        "a signature over a different field list authorises a different message",
+    );
+  }
+
   // The domain binds the signature to a contract and a chain. It must be the
   // one we trust for this (chainId, asset), never one the caller supplied.
   const key = `${chainId}:${quoteAsset.toLowerCase()}`;
@@ -1250,6 +1285,48 @@ export function inspectTypedDataRequest(
     return abstain("typed-data request carries no message object");
   }
   const m = message as Record<string, unknown>;
+
+  // AW-66. This path compared `to` and `value` and nothing else, so a request
+  // that could never succeed on chain — validBefore of 0, a validAfter in the
+  // future, a nonce that is not bytes32 — returned a clean allow. The signed
+  // path checks all of these; the two lanes now agree, with the same codes,
+  // so a finding reads the same whichever produced it.
+  const validAfter = toBig(m["validAfter"]);
+  const validBefore = toBig(m["validBefore"]);
+  if (validAfter === null || validBefore === null) {
+    return abstain("message.validAfter / message.validBefore are not integers");
+  }
+  const nonce = m["nonce"];
+  if (!isHexString(nonce) || nonce.length !== 66) {
+    return abstain(
+      "message.nonce is not a well-formed bytes32 — refusing to report the payment as checked",
+    );
+  }
+  const now = opts.nowSeconds ?? BigInt(Math.floor(Date.now() / 1000));
+  const skew = opts.clockSkewSeconds ?? 0n;
+  if (now + skew < validAfter) {
+    findings.push({
+      code: "X402-105",
+      severity: "high",
+      message:
+        "authorization is not yet valid (validAfter is in the future) — the payment window has not opened",
+      expected: `now (${now.toString()}) >= validAfter`,
+      actual: `validAfter = ${validAfter.toString()}`,
+    });
+  }
+  if (now > validBefore + skew) {
+    findings.push({
+      code: "X402-105",
+      severity: "high",
+      message:
+        validBefore === 0n
+          ? "validBefore is 0 — the contract requires block.timestamp < validBefore, so this authorization can never be valid"
+          : "authorization has expired (validBefore is in the past) — the payment window has closed",
+      expected: `now (${now.toString()}) <= validBefore`,
+      actual: `validBefore = ${validBefore.toString()}`,
+    });
+  }
+
   const to = normAddress(m["to"]);
   if (to === null) return abstain("message.to is not a valid address");
   const value = toBig(m["value"]);

@@ -227,10 +227,12 @@ import { guardEvmSigner } from "wormhole-x402/evm";
 
 const signer = guardEvmSigner(myWalletClient, () => currentQuote);
 
-// The pre-signing shape viem and ethers actually send — this is the call that
-// CREATES the signature, so there is nothing to recover from yet. The wrapper
-// checks the domain against the trusted table for (chainId, asset), requires
-// primaryType TransferWithAuthorization, and compares to/value to the quote.
+// viem sends this single object; ethers sends the same parts positionally —
+// signTypedData(domain, types, value) — and the wrapper recognises both. This
+// is the call that CREATES the signature, so there is nothing to recover from
+// yet. The wrapper checks the domain against the trusted table for (chainId,
+// asset), requires the TransferWithAuthorization struct exactly as verified,
+// and compares to, value, the validity window and the nonce to the quote.
 await signer.signTypedData({ domain, types, primaryType, message });
 ```
 

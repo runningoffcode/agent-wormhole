@@ -16,6 +16,7 @@ Three things, each of which was measured broken:
     ``AttributeError`` from ``.items()`` instead, which nothing caught.
 """
 import dataclasses
+import importlib.util
 import os
 import sys
 import tempfile
@@ -26,10 +27,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from watchtower.ingest import evm_rpc, solana_rpc  # noqa: E402  (import IS the test)
 from watchtower.ingest.base import Cursor, CursorStore, retry_after_seconds  # noqa: E402
 
+# The chain clients import `requests`, which pyproject does not declare: the
+# watchtower is a separate monitor with its own needs. Decided on presence of
+# the dependency, not by catching the import — so where `requests` IS present
+# the import runs unguarded and any error in the modules themselves surfaces
+# (the break this file exists to catch raised AttributeError, which a bare
+# try/except ImportError would have hidden). Where it is absent the client
+# tests are skipped and say so; the parser and cursor tests need only the
+# standard library and always run.
+HAVE_REQUESTS = importlib.util.find_spec("requests") is not None
+if HAVE_REQUESTS:
+    from watchtower.ingest import evm_rpc, solana_rpc  # noqa: E402  (the import IS the test)
+else:  # pragma: no cover - environment-dependent
+    evm_rpc = solana_rpc = None  # type: ignore[assignment]
+NEEDS_CLIENTS = unittest.skipUnless(
+    HAVE_REQUESTS, "requests is not installed, so the chain clients cannot be imported here"
+)
 
+
+@NEEDS_CLIENTS
 class TheModulesImport(unittest.TestCase):
     def test_rpc_stats_is_a_dataclass_with_isolated_state(self):
         # If the decorator ever detaches from the class again, ``by_method``
@@ -88,6 +106,7 @@ class _Session:
         return self._responses.pop(0)
 
 
+@NEEDS_CLIENTS
 class EvmClientSurvivesAnHttpDate(unittest.TestCase):
     def setUp(self):
         self._sleep = evm_rpc.time.sleep

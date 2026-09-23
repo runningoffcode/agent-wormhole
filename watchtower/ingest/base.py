@@ -40,6 +40,38 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterator
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+
+
+def retry_after_seconds(value: object, fallback: float) -> float:
+    """Seconds to wait, from either Retry-After form, never raising.
+
+    RFC-9110 allows both a delta-seconds integer and an HTTP-date. Anything
+    unparseable falls back to the caller's backoff: a header we cannot read is
+    a reason to use our own schedule, not a reason to stop monitoring.
+
+    Shared by both chain clients. It lived in the Solana client only, and the
+    EVM client still did ``float(retry_after)`` — which raises ValueError on
+    an HTTP-date, and ``call()`` catches only ``requests.RequestException``,
+    so a 429 carrying a date crashed the EVM monitor outright.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return fallback
+    raw = value.strip()
+    try:
+        seconds = float(raw)
+        return seconds if seconds >= 0 else fallback
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        delta = (when - datetime.now(timezone.utc)).total_seconds()
+        return delta if delta > 0 else fallback
+    except Exception:
+        return fallback
 
 
 class RpcError(RuntimeError):
@@ -92,6 +124,13 @@ class Cursor:
     @classmethod
     def from_json(cls, raw: str) -> "Cursor":
         data = json.loads(raw)
+        # ``load()`` promises that a corrupt file yields a fresh cursor, and it
+        # catches ValueError to keep that promise. JSON that parses to a null,
+        # a list, a string, a number or a bool is valid JSON and not a cursor;
+        # ``data.items()`` on it raised AttributeError, which nothing caught,
+        # so exactly the corrupt files the docstring names refused to start.
+        if not isinstance(data, dict):
+            raise ValueError("cursor file is not a JSON object")
         known = {f for f in cls.__dataclass_fields__}
         # Unknown keys are dropped rather than raising: a cursor written by a
         # newer build must not brick an older one mid-incident.

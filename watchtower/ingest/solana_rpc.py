@@ -14,7 +14,7 @@ from typing import Callable, Iterable, Iterator
 
 import requests
 
-from .base import RpcError  # shared base class: one `except RpcError` catches both chains
+from .base import RpcError, retry_after_seconds  # shared: one `except RpcError` catches both chains
 
 PUBLIC_MAINNET = "https://api.mainnet-beta.solana.com"
 
@@ -34,34 +34,6 @@ DEFAULT_RPS = 3.0
 
 
 @dataclass
-def _retry_after_seconds(value: object, fallback: float) -> float:
-    """Seconds to wait, from either Retry-After form, never raising.
-
-    RFC-9110 allows both a delta-seconds integer and an HTTP-date. Anything
-    unparseable falls back to the caller's backoff: a header we cannot read is
-    a reason to use our own schedule, not a reason to stop monitoring.
-    """
-    if not isinstance(value, str) or not value.strip():
-        return fallback
-    raw = value.strip()
-    try:
-        seconds = float(raw)
-        return seconds if seconds >= 0 else fallback
-    except ValueError:
-        pass
-    try:
-        from email.utils import parsedate_to_datetime
-        from datetime import datetime, timezone
-
-        when = parsedate_to_datetime(raw)
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        delta = (when - datetime.now(timezone.utc)).total_seconds()
-        return delta if delta > 0 else fallback
-    except Exception:
-        return fallback
-
-
 class RpcStats:
     """Every number the measurement report cites must come from here."""
 
@@ -153,7 +125,7 @@ class SolanaRPC:
                 # endpoints — raises ValueError, which `except RpcError` does
                 # not catch, so the monitor DIED where it documents backing
                 # off.
-                sleep_for = _retry_after_seconds(
+                sleep_for = retry_after_seconds(
                     resp.headers.get("retry-after"), backoff
                 )
                 time.sleep(min(sleep_for, 60))

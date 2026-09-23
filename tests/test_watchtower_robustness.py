@@ -22,13 +22,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from watchtower.canary import Canary, CanaryRegistry, scan_text_for_canaries
 
-# Imported by source so the test does not need `requests` installed.
-_SRC = (
-    Path(__file__).resolve().parent.parent / "watchtower/ingest/solana_rpc.py"
-).read_text()
-_NS: dict = {}
-exec(_SRC[_SRC.index("def _retry_after_seconds") : _SRC.index("class ", _SRC.index("def _retry_after_seconds"))], _NS)
-retry_after_seconds = _NS["_retry_after_seconds"]
+# Imported, not extracted. This used to read solana_rpc.py as TEXT and exec
+# the parser out of it by string-slicing, so the test would not need
+# `requests` installed. The side effect: the parser was "tested" while the
+# module it lived in did not import at all, and nothing noticed. The parser
+# now lives in base.py, which imports nothing beyond the standard library, so
+# the original reason is gone and the import is the honest form.
+from watchtower.ingest.base import retry_after_seconds
 
 A = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
 B = "9yLMug3DX98e08UYKTEqcE6kClifUrB94UASvKptbBtV"

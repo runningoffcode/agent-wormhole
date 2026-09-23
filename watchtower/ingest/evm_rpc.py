@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from .base import RpcError  # shared base class: one `except RpcError` catches both chains
+from .base import RpcError, retry_after_seconds  # shared: one `except RpcError` catches both chains
 
 PUBLIC_BASE = "https://mainnet.base.org"
 
@@ -128,7 +128,9 @@ class EvmRPC:
                 self.stats.rate_limited += 1
                 self.stats.retries += 1
                 retry_after = resp.headers.get("retry-after")
-                sleep_for = float(retry_after) if retry_after else backoff
+                # Both RFC-9110 forms. float() on an HTTP-date raised
+                # ValueError past the only except in this loop.
+                sleep_for = retry_after_seconds(retry_after, backoff)
                 time.sleep(min(sleep_for, 60))
                 backoff = min(backoff * 2, 30)
                 continue

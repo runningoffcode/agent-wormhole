@@ -620,6 +620,61 @@ function unjoinedVariant(text: string): string | null {
   return out === text ? null : out;
 }
 
+/**
+ * The same unjoin, DELETING the separator run instead of spacing it.
+ *
+ * The real shape of this bypass, which is wider than it first looks. The spacing
+ * view above repairs a WORD-joined sentence: `Ignore.all.previous` becomes
+ * `Ignore all previous` and the keyword rules read it. It cannot repair a
+ * CHARACTER-joined one, because spacing `I.g.n.o.r.e` produces `I g n o r e`,
+ * which is not the word "ignore" to any rule. Measured before this existed: a
+ * plain full stop between every character of an injected instruction returned
+ * a clean allow, as did a hyphen, an underscore, a slash, a bullet and a
+ * musical symbol — and so did five zero-advance combining marks, which reach
+ * this rule by the same route once they are treated as separators.
+ *
+ * Both views are needed and neither subsumes the other: deleting repairs
+ * character-joined text and destroys word-joined text (`Ignore.all` becomes
+ * `Ignoreall`), spacing does the reverse. They are cheap, so both are offered
+ * and the rules read whichever one carries a sentence.
+ *
+ * THIS IS ALSO WHAT CLOSES THE COMBINING-MARK BYPASS, which is worth stating
+ * because it is not obvious and a later reader may otherwise re-add a
+ * mark-stripping pass that does nothing. A combining mark is not alphanumeric,
+ * so `JOINER_RUN` already matches a run of them between two letters and this
+ * view deletes them like any other separator. An exhaustive sweep of all 2,796
+ * zero-advance code points — `Mn`, `Me`, `Mc`, `Sk`, `Cf` — evades this view
+ * zero times, against 2,608 before it existed. A spot check of a dozen or so
+ * characters is not enough here: the ones that evaded were spread across four
+ * Unicode categories.
+ *
+ * A dedicated pass that strips marks anchored on an ASCII base was written
+ * first and then deleted: measured with it disabled, the sweep still reported
+ * zero evasions, so it was shipping code that did nothing. It also carried a
+ * real hazard — stripping `\p{Mn}` wholesale mangles Thai and Devanagari,
+ * where marks are spelling (`ค่าบริการรายเดือน` becomes `คาบรการรายเดอน`) —
+ * and the honest-text cases in the tests are what pin that it does not happen.
+ *
+ * A DELETING VIEW IS NOT SAFE TO JUDGE HOSTNAMES ON, and does not: like the
+ * spacing view it is marked `split`, which is what stops a merchant's own
+ * domain reading as an injected one after the dots are removed. That carve-out
+ * is the AW-36 lesson and it is load-bearing here too.
+ */
+const SEPARATOR_AROUND_SPACE = /[^A-Za-z0-9\s]+\s+[^A-Za-z0-9\s]*/g;
+
+function unjoinedDeletedVariant(text: string): string | null {
+  if (!JOINED_GATE.test(text)) return null;
+  // Stage 1 removes the separator between two alphanumerics. That leaves the
+  // separators that sat either side of a real space — `Ignore. .all` — because
+  // the run class excludes whitespace and so cannot span one.
+  let out = text.replace(JOINER_RUN, "$1");
+  // Stage 2 collapses those to the space that was already there. Without it
+  // the view reads `Ignore. .all. .previous`, which matches no keyword rule,
+  // and the whole variant is dead weight.
+  out = out.replace(SEPARATOR_AROUND_SPACE, " ");
+  return out === text ? null : out;
+}
+
 export function normalizeQuoteText(text: string): string {
   // AW-34, gap 1: ORDER. This used to strip the invisible classes and THEN
   // call decodeHtmlEntities, which put them straight back — `&#173;` became
@@ -783,6 +838,12 @@ interface Layer {
    * see X402-203 and `ScanContext.splitView`.
    */
   split?: boolean;
+  /**
+   * The split DELETED the separators rather than spacing them (AW-34), so any
+   * hostname in this view is de-dotted and cannot be compared to the
+   * merchant's own. Destination-judging rules skip it; keyword rules do not.
+   */
+  tight?: boolean;
 }
 
 /**
@@ -1674,6 +1735,19 @@ interface ScanContext {
    * comparison X402-203 depends on cannot be evaluated here.
    */
   splitView?: boolean;
+  /**
+   * The view had its separators DELETED rather than spaced (AW-34).
+   *
+   * That view exists to recover a character-joined WORD — `I.g.n.o.r.e` — and
+   * the same deletion destroys any hostname it passes through:
+   * `https://api.merchant.example.org/rotate` becomes
+   * `httpsapimerchantexampleorgrotate`. So a rule that reasons about a
+   * DESTINATION cannot use this view: it cannot tell the merchant's own host
+   * from a third party's, and firing there refused the merchant's own
+   * rotation URL and their own secrets-product listing. Keyword rules are
+   * unaffected, which is the whole point of the view.
+   */
+  tightView?: boolean;
 }
 
 /** Registrable-ish host of a URL or bare email, lowercased. Never throws. */
@@ -2204,7 +2278,13 @@ function scanOneView(text: string, ctx: ScanContext = {}): RuleHit[] {
   // listing telling the buying agent to pay someone other than the quoted
   // payee. Conformance catches the consequence; this catches the attempt, and
   // catches it before the model has read the text.
-  const red = findMatch(text, REDIRECT);
+  // AW-34. The tight view deletes separators to recover character-joined
+  // words, which also de-dots every hostname in the text. This rule decides
+  // whether an address or destination is FOREIGN to the quote, and it cannot
+  // do that against a de-dotted host — it refused the merchant's own rotation
+  // URL and their own secrets-management listing. The keyword views still
+  // cover the redirection vocabulary.
+  const red = ctx.tightView ? null : findMatch(text, REDIRECT);
   if (red) {
     const lo = Math.max(0, red.index - 200);
     const hi = Math.min(text.length, red.index + red[0].length + 200);
@@ -2772,10 +2852,24 @@ function scanFields(
           split: true,
         });
       }
+      // The deleting view. See `unjoinedDeletedVariant`: spacing repairs
+      // word-joined text, deleting repairs character-joined text, and neither
+      // subsumes the other.
+      const deleted = unjoinedDeletedVariant(base.text);
+      if (deleted !== null) {
+        views.push({
+          text: deleted,
+          via: base.via ? `${base.via}+unjoined-tight` : "unjoined-tight",
+          split: true,
+          tight: true,
+        });
+      }
     }
 
     for (const view of views) {
-      const viewCtx = view.split ? { ...ctx, splitView: true } : ctx;
+      const viewCtx = view.split
+        ? { ...ctx, splitView: true, tightView: view.tight === true }
+        : ctx;
       for (const hit of scanOneView(view.text, viewCtx)) {
         // The `error` field is not merchant marketing copy — it is generated by
         // the facilitator or resource server on the unhappy path, and its

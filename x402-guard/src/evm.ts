@@ -1324,6 +1324,69 @@ export function inspectTypedDataRequest(
  * model becomes unusable rather than unchecked. A caller who needs one back adds
  * it to `allow` explicitly, which is a decision with a name on it.
  */
+/**
+ * Rebuild a viem-shaped typed-data request from ethers' positional arguments.
+ *
+ * Returns `undefined` unless the arguments are unambiguously that call, so an
+ * unrecognised signing request still reaches the fail-closed refusal rather
+ * than being reconstructed into something this wrapper would then vouch for.
+ * Three things must hold: an EIP-712 domain, a types map whose entries are
+ * arrays of `{name, type}`, and a message object.
+ *
+ * `primaryType` is derived the way ethers derives it — the one type no other
+ * type references. With a single entry that is that entry; with more than one
+ * root the shape is ambiguous and this returns `undefined` rather than
+ * guessing, because picking the wrong root would have this wrapper vouch for a
+ * struct nobody is signing.
+ */
+function positionalTypedData(args: unknown[]): unknown | undefined {
+  const objs = args.filter(
+    (a): a is Record<string, unknown> => typeof a === "object" && a !== null,
+  );
+  if (objs.length < 3) return undefined;
+
+  const domain = objs.find(
+    (o) => "verifyingContract" in o || "chainId" in o || "name" in o,
+  );
+  if (!domain) return undefined;
+
+  const types = objs.find(
+    (o) =>
+      o !== domain &&
+      Object.keys(o).length > 0 &&
+      Object.values(o).every(
+        (v) =>
+          Array.isArray(v) &&
+          v.every(
+            (f) =>
+              typeof f === "object" &&
+              f !== null &&
+              typeof (f as Record<string, unknown>).name === "string" &&
+              typeof (f as Record<string, unknown>).type === "string",
+          ),
+      ),
+  );
+  if (!types) return undefined;
+
+  const message = objs.find((o) => o !== domain && o !== types);
+  if (!message) return undefined;
+
+  // EIP712Domain is declared by some callers and is never the struct signed.
+  const named = Object.keys(types).filter((k) => k !== "EIP712Domain");
+  const referenced = new Set<string>();
+  for (const fields of Object.values(types)) {
+    if (!Array.isArray(fields)) continue;
+    for (const f of fields) {
+      const t = (f as Record<string, unknown>).type;
+      if (typeof t === "string") referenced.add(t.replace(/(\[\d*\])+$/, ""));
+    }
+  }
+  const roots = named.filter((k) => !referenced.has(k));
+  if (roots.length !== 1) return undefined;
+
+  return { domain, types, primaryType: roots[0], message };
+}
+
 export function guardEvmSigner<T extends object>(
   signer: T,
   getQuote: () => EvmPaymentQuote | null,
@@ -1372,7 +1435,22 @@ export function guardEvmSigner<T extends object>(
       const o = a as Record<string, unknown>;
       if ("domain" in o && "message" in o) return o;
     }
-    return undefined;
+    // ETHERS SENDS THREE POSITIONAL ARGUMENTS, not one object.
+    //
+    // This wrapper only recognised viem's single-object call, so every
+    // payment from an ethers signer hit the "could not read an x402 payment"
+    // refusal below — confirmed against ethers v5 and v6 with an unguarded
+    // control that signs the same payload correctly. It fails closed, so no
+    // funds were ever at risk, but the integration this package documents did
+    // not work. The README called that object "the pre-signing shape viem and
+    // ethers actually send", which was true of viem only.
+    //
+    // `signTypedData(domain, types, value)`: an object carrying `name` or
+    // `chainId` or `verifyingContract`, then a types map, then the message.
+    // Matched by SHAPE rather than by position, because ethers v5 exposes this
+    // as `_signTypedData` and a wrapper keyed on argument index would break
+    // again on the next signer that adds an options argument.
+    return positionalTypedData(args);
   };
 
   const refuse = (verdict: Verdict, method: string): never => {

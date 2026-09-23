@@ -205,10 +205,18 @@ export function inspectDelivery(
 
   // --- 3. wrong content type (X402-403) ------------------------------------
   const quoted = mediaType(quote.mimeType ?? null);
+  // AW-39. These three findings were `high`, and the decision below refuses
+  // only on `critical` — so a delivery that provably was not the quoted
+  // resource returned `allow` with the finding riding along as commentary.
+  // Measured: a JSON quote answered with text/html, an error page served as
+  // 200, and an empty 2xx body all allowed. Each is a PROVEN mismatch, not a
+  // suspicion: the bytes the agent paid for are not the bytes it was quoted.
+  // An agent trusts paid content BECAUSE it paid, which is the whole reason
+  // this lane exists, so a proven mismatch refuses.
   if (delivered && quoted !== null && contentType !== null && contentType !== quoted) {
     findings.push({
       code: "X402-403",
-      severity: "high",
+      severity: "critical",
       message:
         "delivered content-type contradicts what the quote promised — the bytes " +
         "may be an error page, a decoy, or the wrong resource entirely",
@@ -221,23 +229,32 @@ export function inspectDelivery(
   if (delivered && bytes !== null && bytes.length === 0) {
     findings.push({
       code: "X402-404",
-      severity: "high",
+      severity: "critical",
       message: "a successful status delivered zero bytes — paid for nothing",
       actual: "0 bytes",
     });
   }
 
   // --- 5. quoted JSON that does not parse (X402-406) ------------------------
-  if (delivered && bytes !== null && bytes.length > 0 && quoted !== null &&
-      (quoted === "application/json" || quoted.endsWith("+json"))) {
+  // The DECLARED type is judged too, not only the quoted one. With no
+  // mimeType in the quote there was nothing to compare against, so a body
+  // labelled application/json that was actually an HTML error page produced
+  // no finding at all. The merchant's own header is a claim about the bytes,
+  // and a claim the bytes contradict is a mismatch whoever made it.
+  const isJson = (t: string | null) =>
+    t !== null && (t === "application/json" || t.endsWith("+json"));
+  if (delivered && bytes !== null && bytes.length > 0 &&
+      (isJson(quoted) || isJson(contentType))) {
     try {
       JSON.parse(new TextDecoder("utf-8", { fatal: false }).decode(bytes));
     } catch {
       findings.push({
         code: "X402-406",
-        severity: "high",
+        severity: "critical",
         message:
-          "the quote promised JSON and the delivered body does not parse — " +
+          (isJson(quoted)
+            ? "the quote promised JSON and the delivered body does not parse — "
+            : "the response declared JSON and the delivered body does not parse — ") +
           "whatever arrived, it is not the quoted resource",
       });
     }

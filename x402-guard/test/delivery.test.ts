@@ -289,3 +289,57 @@ describe("findings do not read the payload back to the model (AW-40)", () => {
     }
   });
 });
+
+
+describe("AW-39: a proven mismatch refuses, it does not merely comment", () => {
+  // X402-403, X402-404 and X402-406 were `high`, and the decision refuses only
+  // on `critical`, so every one of these returned `allow` with the finding
+  // riding along as commentary. Each is a PROVEN mismatch — the bytes the
+  // agent paid for are demonstrably not the bytes it was quoted — and an agent
+  // trusts paid content because it paid. That is the whole reason this lane
+  // exists, so a proven mismatch has to be a refusal.
+  const json = { mimeType: "application/json", resource: "https://m.example/v1/x" };
+  const html = "<html><body><h1>500 Internal Server Error</h1></body></html>";
+
+  it("CONTROL: the quoted resource, as quoted, still allows", () => {
+    const v = inspectDelivery(json, { status: 200, contentType: "application/json", body: '{"ok":true}' });
+    expect(v.decision).toBe("allow");
+    expect(v.findings).toEqual([]);
+  });
+
+  it("refuses a content-type that contradicts the quote", () => {
+    const v = inspectDelivery(json, { status: 200, contentType: "text/html", body: '{"ok":true}' });
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.map((f) => f.code)).toContain("X402-403");
+  });
+
+  it("refuses an error page served as 200", () => {
+    const v = inspectDelivery(json, { status: 200, contentType: "application/json", body: html });
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.map((f) => f.code)).toContain("X402-406");
+  });
+
+  it("refuses an empty body on a successful status", () => {
+    const v = inspectDelivery(json, { status: 200, contentType: "application/json", body: "" });
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.map((f) => f.code)).toContain("X402-404");
+  });
+
+  it("judges the DECLARED type when the quote names none", () => {
+    // With no mimeType in the quote there was nothing to compare against, so
+    // a body labelled application/json that was actually an HTML error page
+    // produced no finding at all. The merchant's own header is a claim about
+    // the bytes, and a claim the bytes contradict is a mismatch whoever made it.
+    const v = inspectDelivery({ resource: "https://m.example/v1/x" }, { status: 200, contentType: "application/json", body: html });
+    expect(v.decision).toBe("refuse");
+    expect(v.findings.map((f) => f.code)).toContain("X402-406");
+  });
+
+  it("does not judge a declared type the bytes do not contradict", () => {
+    // The declared-type check must not become a false positive on honest
+    // non-JSON content: text labelled text is fine with no quoted type.
+    const v = inspectDelivery({ resource: "https://m.example/v1/x" }, { status: 200, contentType: "text/plain", body: "monthly report attached" });
+    expect(v.decision).toBe("allow");
+    expect(v.findings.map((f) => f.code)).not.toContain("X402-406");
+  });
+});

@@ -10,7 +10,7 @@ import { inspectQuoteText } from "../src/quotetext.js";
  * guard never tripped either. Measured on the published 0.8.6 dist:
  * 32KB 582ms, 40KB 906ms, 48KB 1,321ms — clean O(n²).
  *
- * Node is single-threaded, so the stall is global. The auditor measured one
+ * Node is single-threaded, so the stall is global. Measured: one
  * 5.18MB /v1/check request blocking an instance for 150.5 SECONDS at HTTP 200,
  * during which a concurrent anonymous request timed out 27 of 28 times.
  */
@@ -91,7 +91,7 @@ describe("the HTML-comment scan is linear, not quadratic", () => {
  *
  * Measured on the shipped code before this fix: 8KB 134ms, 32KB 1,855ms, 48KB
  * 4,186ms, 64KB roughly 8.8 SECONDS of blocking CPU for one request — worse
- * than the 3,652ms the audit measured on 0.8.6, because the first fix made the
+ * than the 3,652ms measured on 0.8.6, because the first fix made the
  * other half faster and left this one to dominate.
  */
 describe("the leet-fold scan is linear, not quadratic (AW-04)", () => {

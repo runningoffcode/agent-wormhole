@@ -571,8 +571,8 @@ describe("scan_text over MCP", () => {
 /**
  * AW-07, the hosted half. `callHosted` returned the 200 body verbatim, so a
  * `{"decision":"allow"}` from anyone who could answer as the verifier became a
- * clearance the model acted on. The audit noted this path had NO test coverage
- * of a hosted allow at all — these are it.
+ * clearance the model acted on. This path had NO test coverage of a hosted
+ * allow at all — these are it.
  */
 describe("hosted verify: an `allow` off the wire must be proven (AW-07)", () => {
   const REAL_FETCH = globalThis.fetch;

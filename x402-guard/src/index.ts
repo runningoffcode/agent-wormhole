@@ -764,7 +764,7 @@ export function inspectPayment(
   }
 
   // --- 2c. the merchant's fee-payer claim vs the signed bytes --------------
-  // AW-70. The audit asked for `extra.feePayer` to be compared against
+  // AW-70. The obvious repair is to compare `extra.feePayer` against
   // `staticAccountKeys[0]`. Taken literally that is the wrong check under this
   // package's own threat model: the README states the quote is attacker-
   // controlled text and the MERCHANT is the adversary. A check whose trigger
@@ -1115,8 +1115,8 @@ export function guardSigner<T extends { signTransaction: Function }>(
    *
    * On Solana a transaction signature is ed25519 over `message.serialize()`
    * with no domain separator, so a message signer is a transaction signer for
-   * anyone who passes it the right bytes. This is the check the audit asked
-   * for: discriminate on whether the bytes deserialize, rather than refusing
+   * anyone who passes it the right bytes. So the check is this:
+   * discriminate on whether the bytes deserialize, rather than refusing
    * the method outright (which makes it useless) or allowing it outright
    * (which re-opens the oracle).
    */

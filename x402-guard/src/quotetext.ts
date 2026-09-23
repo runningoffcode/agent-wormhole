@@ -462,7 +462,7 @@ const LEET_MAP: Record<string, string> = {
  * `@1@1@1...` nothing ever matches — the work is entirely wasted — and the
  * cost is clean O(n^2). Measured on the shipped code: 8KB 134ms, 32KB 1,855ms,
  * 48KB 4,186ms, 64KB ~8.8s of blocking CPU for one request, which is WORSE
- * than the 3,652ms the audit measured before any of this was touched. The
+ * than the 3,652ms measured before any of this was touched. The
  * earlier fix addressed `iterHtmlComments` and left this one alone.
  *
  * Bounding every quantifier fixes it without changing what matches: a leet
@@ -1928,7 +1928,7 @@ function collectOwnHosts(
 /** Collect declared payee addresses so prose addresses can be compared to them. */
 /**
  * AW-14, the same shape on the payee side: `extra.to` disarmed X402-208's
- * foreign-address corroborator. Rated lower by the audit because conformance
+ * foreign-address corroborator. Rated lower because conformance
  * backstops it — `evmQuoteFromRequirements` discards `extra` entirely, so a
  * planted key cannot poison the money comparison — but the content layer
  * should not depend on another layer catching its mistakes.
@@ -2842,7 +2842,7 @@ function scanFields(
     // Unconditional, with no gate on `structuralAnomaly` and none on the key
     // class. Gating it on the shape finding is what left the first repair
     // blind on `description` and `title`, where the same joined bypass is
-    // live and which the audit text does not call out.
+    // live and which is easy to overlook.
     for (const base of [...views]) {
       const unjoined = unjoinedVariant(base.text);
       if (unjoined !== null) {

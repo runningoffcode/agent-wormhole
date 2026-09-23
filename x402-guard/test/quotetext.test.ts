@@ -2136,7 +2136,7 @@ describe("a joined or encoded payload is scanned, not exempted (AW-36)", () => {
   });
 
   it("refuses a joined payload under a prose key too", () => {
-    // The half of the defect the audit text does not call out. The un-joined
+    // The half of the defect that is easy to overlook. The un-joined
     // view is built for every field precisely so this is not key-specific.
     for (const key of PROSE) {
       for (const joiner of [".", "_", "-"]) {

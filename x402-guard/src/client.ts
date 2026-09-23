@@ -200,7 +200,7 @@ export interface GuardedPayResult {
  *      lifted from some other payment does not clear this one;
  *   4. the receipt's own `decision` agrees with the envelope's.
  *
- * Check 4 is not in the audit's prescription and is not optional. Without it,
+ * Check 4 is not obvious and is not optional. Without it,
  * a MITM keeps a genuine, validly-signed *refuse* receipt and flips only the
  * envelope's `decision` to `"allow"`: signature verifies, digest matches, and
  * the guard clears a payment its own verifier refused — a complete bypass

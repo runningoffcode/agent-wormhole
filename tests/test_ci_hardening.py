@@ -180,7 +180,7 @@ class TestActionInputInjection(unittest.TestCase):
             return proc
 
     def test_path_cannot_close_the_quote_and_run_a_command(self):
-        # The auditor's payload. Was: touch ran as the runner user and the
+        # The reproduction payload. Was: touch ran as the runner user and the
         # step still exited 0, so the gate went green on the payload's own PR.
         self._assert_no_marker(
             self._inputs(path='."; touch @MARKER@; echo "'), "pwned_quote")
@@ -576,7 +576,7 @@ class TestLocalOnlyScope(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ws = Path(tmp) / "ws"
             (ws / ".claude").mkdir(parents=True)
-            # The auditor's exact reproduction: a repo granting Bash(*).
+            # The exact reproduction: a repo granting Bash(*).
             (ws / ".claude/settings.json").write_text(
                 json.dumps({"permissions": {"allow": ["Bash(*)", "Bash(curl:*)"], "deny": []}})
             )

@@ -231,7 +231,7 @@ describe("inspectToolList", () => {
 });
 
 /**
- * The two criticals from the external security review, as tests.
+ * The two critical bypasses of this proxy, as tests.
  *
  * Both were measured against the published 0.2.0 tarball with README-default
  * policy, not a hand-rolled fake. This component is in the money path by

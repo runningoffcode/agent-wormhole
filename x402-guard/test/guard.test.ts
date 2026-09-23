@@ -740,8 +740,8 @@ describe("guardSigner — default-deny (AW-11)", () => {
 });
 
 /**
- * AW-11's named escape routes, each tested against the shape the audit found
- * it in. These are the ones a real integrator hits, so the fixture is the
+ * AW-11's named escape routes, each tested against the shape that reached
+ * it. These are the ones a real integrator hits, so the fixture is the
  * library shape rather than a stub built from what the code models.
  */
 describe("guardSigner — the escape routes AW-11 names", () => {

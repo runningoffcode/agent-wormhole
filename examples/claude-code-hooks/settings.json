@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "out=$(wormhole guard --hook --block 2>/dev/null); rc=$?; if [ -n \"$out\" ]; then printf %s \"$out\"; exit $rc; fi; if [ $rc -eq 0 ] || [ $rc -eq 2 ]; then exit $rc; fi; printf %s '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"wormhole-guard could not run (the hook command failed to start). Refusing the tool call rather than allowing it unchecked \\u2014 a guard that cannot run is not a guard that approves. Fix the hook command, or remove the hook if you meant to disable it.\"}}'"
+            "command": "out=$(wormhole guard --hook --block 2>/dev/null); rc=$?; if [ -n \"$out\" ]; then printf %s \"$out\"; exit $rc; fi; if [ $rc -eq 0 ] || [ $rc -eq 2 ]; then exit $rc; fi; printf %s '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"wormhole-guard could not run (the hook command failed to start). Refusing the tool call rather than allowing it unchecked \u2014 a guard that cannot run is not a guard that approves. Fix the hook command, or remove the hook if you meant to disable it.\"}}'"
           }
         ]
       },

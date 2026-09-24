@@ -275,9 +275,6 @@ jobs:
       - name: Use an npm that supports Trusted Publishing
         run: npm install -g npm@^11.5.1
 
-      # What is actually running, and can it see the OIDC endpoint? The lane
-      # failed twice on authentication and both diagnoses were guesses; this
-      # prints the facts into the log instead.
       # SETUP-NODE'S .npmrc SHADOWS OIDC, and this is the whole failure. With
       # `registry-url` it writes `_authToken=${NODE_AUTH_TOKEN}` into the file
       # named by NPM_CONFIG_USERCONFIG. No token is set, so npm sees an empty
@@ -316,8 +313,12 @@ jobs:
 
       # No token. `prepublishOnly` re-runs build and the full suite, so a
       # broken artifact cannot ship even from a tag.
-      # Loud, so the next failure names its own cause. npm reports the OIDC
-      # exchange (or its refusal) only at this verbosity.
+      # If this ever fails with ENEEDAUTH again, re-run it with
+      # `--loglevel verbose`: npm reports the OIDC exchange only at that
+      # verbosity, and the real message is far more specific than the error.
+      # The first working run took five attempts because `ENEEDAUTH` hid
+      # `OIDC token exchange error - package not found`, which was a single
+      # character of case mismatch in the trusted-publisher owner field.
       - name: Publish
-        run: npm publish --provenance --access public --loglevel verbose
+        run: npm publish --provenance --access public
 

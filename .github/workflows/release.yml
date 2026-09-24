@@ -316,6 +316,8 @@ jobs:
 
       # No token. `prepublishOnly` re-runs build and the full suite, so a
       # broken artifact cannot ship even from a tag.
+      # Loud, so the next failure names its own cause. npm reports the OIDC
+      # exchange (or its refusal) only at this verbosity.
       - name: Publish
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --loglevel verbose
 

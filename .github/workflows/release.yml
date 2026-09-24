@@ -250,10 +250,17 @@ jobs:
       # Node 22, not 20: the npm that speaks Trusted Publishing requires it.
       # Pinned rather than `latest`, because `npm@latest` moved to v12 — which
       # needs Node >= 22.22 — and the job failed EBADENGINE on Node 20.
+      #
+      # NO `registry-url`, deliberately. It makes setup-node write an .npmrc
+      # containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`, and
+      # with no token in the environment npm then authenticates as nobody:
+      # the publish reached the registry, signed provenance, and came back
+      # `E404 PUT` — npm's answer for authenticated-but-unauthorised. Without
+      # that file npm falls through to the OIDC exchange, which is the whole
+      # point of Trusted Publishing.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Install
         run: npm ci || npm install

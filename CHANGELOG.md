@@ -1,5 +1,44 @@
 # Changelog
 
+## wormhole-x402 0.9.4 — 2026-09-24
+
+**A character-spaced injection no longer earns a signed allow.** Inserting a
+separator between every character of an instruction defeated the quote-text
+scanner: a space, a tab, a newline, U+00A0, U+3000 and U+2009 each produced
+`allow` with no findings, where the same payload unspaced is X402-202 +
+X402-208. A person reads `i g n o r e   a l l   p r e v i o u s` as the
+sentence it spells, a model reads it as that sentence, and every keyword rule
+here saw a list of single letters.
+
+The un-join views added in 0.9.3 close separator bypasses with the class
+`[^A-Za-z0-9\s]+` — whitespace excluded deliberately, because a view that
+deleted real spaces would fuse honest prose into keywords nobody wrote
+(`we ship. Ignore...` becoming `shipIgnore`). So whitespace, the most obvious
+separator of all, was the one the repair could not touch.
+
+The new repair decides PER GAP rather than per text: a gap with a single
+printable character on both sides is a character separator, anything else is a
+word boundary. That reconstructs the attack while leaving letter-spaced
+branding, ASCII tables, indented code, CJK, Thai, Arabic and ordinary prose
+untouched — `P R E M I U M   A C C E S S` still reads as `PREMIUM ACCESS` and
+still allows.
+
+Two views, because the attacker chooses the word gap. Keeping a wider gap
+between words rebuilds the sentence for the rules directly. Dropping word gaps
+destroys information no repair can restore, so that view re-segments the run
+against the vocabulary the rules are built from; a glue-only view was dead
+code, since every rule is anchored on `\b` and `ignoreallpreviousinstructions`
+matches none of them.
+
+The whitespace pass runs before the un-join pass so the two compose:
+`i g n o r e / a l l` needs both repairs, and a view added after the un-join
+pass is never un-joined. Both new views are `tight`, so destination-judging
+rules do not fire on text whose separators were deleted.
+
+Verified: 150 of 150 spaced payloads across 25 separators and 3 shapes now
+refuse, against 0 of 150 with the views disabled; no false positives across 20
+honest strings in 6 scripts; 100k-character input stays under 400ms.
+
 ## wormhole-x402 0.9.3 — 2026-09-23
 
 **Behaviour change: an EIP-3009 authorization with `validBefore` of 0 is now

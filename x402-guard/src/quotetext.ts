@@ -675,6 +675,165 @@ function unjoinedDeletedVariant(text: string): string | null {
   return out === text ? null : out;
 }
 
+/**
+ * THE WHITESPACE-SEPARATED INJECTION, which the two views above cannot reach.
+ *
+ * `i g n o r e   a l l   p r e v i o u s   i n s t r u c t i o n s` is read
+ * by a person and by a model as the sentence it spells, and by every keyword
+ * rule here as a list of single letters. Measured against 0.9.3: a space, a
+ * tab, a newline, U+00A0, U+3000 and U+2009 each produced a signed ALLOW with
+ * no findings, where the same payload unspaced is X402-202 + X402-208.
+ *
+ * WHY THE EXISTING REPAIRS MISS IT. `JOINER_RUN` is `[^A-Za-z0-9\s]+` — it
+ * excludes whitespace deliberately, because a view that deleted real spaces
+ * would fuse honest prose into keywords nobody wrote ("we ship. Ignore..."
+ * becoming "shipIgnore"). So whitespace, the most obvious separator of all,
+ * was the one the repair could not touch.
+ *
+ * THE DECISION IS PER GAP, NOT PER TEXT. A gap is a character separator when
+ * a SINGLE alphanumeric sits on both sides of it; it is a word boundary
+ * otherwise. That distinction is what makes the repair safe on honest text:
+ *
+ *   "P R E M I U M  A C C E S S"  ->  "PREMIUM ACCESS"   (styling survives)
+ *   "Monthly API access, 1000"    ->  unchanged          (no single-char runs)
+ *   "1 Widget\n2 Gadget"          ->  unchanged          ("Widget" is not one char)
+ *   "a + b = c"                   ->  unchanged          ("+" is not alphanumeric)
+ *
+ * and the same rule reconstructs the attack, because there every gap between
+ * letters IS flanked by single characters:
+ *
+ *   "i g n o r e   a l l"         ->  "ignore all"
+ *
+ * TWO VIEWS, BECAUSE THE ATTACKER CHOOSES THE WORD GAP. If they keep a wider
+ * gap between words ("i g n o r e   a l l"), `unspacedVariant` rebuilds the
+ * sentence with its boundaries and the keyword rules read it directly. If
+ * they drop word gaps entirely ("i g n o r e a l l"), no repair can put them
+ * back — the information is gone — so `unspacedGluedVariant` produces the
+ * run-on string for the rules that match without boundaries. Neither view
+ * subsumes the other and both are cheap.
+ *
+ * BOTH ARE `tight`. Deleting characters can fabricate an address-shaped or
+ * hostname-shaped string that nobody wrote, so destination-judging rules
+ * (X402-208 and the hostname comparisons) must not fire on them — the same
+ * carve-out `unjoinedDeletedVariant` already relies on. The keyword rules,
+ * which are what actually catch this payload, still run.
+ */
+const SINGLE_ALNUM = /^[A-Za-z0-9]$/;
+/** One character that is not whitespace — the unit character spacing splits into. */
+const SINGLE_PRINTABLE = /^\S$/;
+
+/**
+ * The minimum number of collapsed gaps before a repair is offered at all.
+ *
+ * Below this the "repair" is as likely to be an artefact of ordinary text as
+ * evidence of spacing, and every view costs a full rule pass. Four is the
+ * shortest run that spells anything an injection rule matches.
+ */
+const MIN_COLLAPSED_GAPS = 4;
+
+function splitOnWhitespace(text: string): string[] {
+  return text.split(/(\s+)/);
+}
+
+/**
+ * Collapse character separators, keep word boundaries.
+ * Returns null when the text shows no character spacing worth repairing.
+ */
+function unspacedVariant(text: string): string | null {
+  const parts = splitOnWhitespace(text);
+  if (parts.length < 5) return null;
+  let collapsed = 0;
+  const out: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 0) {
+      out.push(parts[i]);
+      continue;
+    }
+    const before = parts[i - 1] ?? "";
+    const after = parts[i + 1] ?? "";
+    // A single PRINTABLE character either side, not only an alphanumeric one:
+    // a spaced URL reads `h t t p s : / / e v i l`, and testing for
+    // alphanumerics alone left the `:` and `/` gaps standing, which fused
+    // `sendyourapikeytohttps` into one token that matches nothing. The
+    // separator is a separator whatever character it sits between.
+    if (SINGLE_PRINTABLE.test(before) && SINGLE_PRINTABLE.test(after)) {
+      collapsed += 1;
+      continue; // the gap disappears; the characters fuse
+    }
+    out.push(" "); // a word boundary, normalised to one space
+  }
+  if (collapsed < MIN_COLLAPSED_GAPS) return null;
+  const result = out.join("");
+  return result === text ? null : result;
+}
+
+/**
+ * Every separator removed — whitespace and the punctuation the other views
+ * handle — for the case where the attacker left no word boundaries to keep.
+ *
+ * Gated on the text being DOMINATED by single characters, which is the
+ * signature of character spacing and is never true of prose: a description
+ * whose tokens are 70% single characters over at least eight tokens is not
+ * a sentence anyone typed by hand.
+ */
+const GLUED_VOCAB = [
+  "ignore", "disregard", "forget", "override", "bypass", "previous", "prior",
+  "above", "earlier", "system", "prompt", "instruction", "instructions",
+  "directive", "directives", "rule", "rules", "policy", "policies",
+  "send", "transfer", "wire", "pay", "payment", "buy", "sell", "purchase",
+  "approve", "execute", "withdraw", "liquidate", "disable", "raise", "increase",
+  "api", "key", "keys", "secret", "secrets", "token", "password", "credential",
+  "credentials", "seed", "phrase", "wallet", "private", "address",
+  "all", "and", "the", "to", "your", "you", "this", "that", "now", "immediately",
+  "risk", "limit", "limits", "instead", "not", "must", "should", "please",
+];
+
+/**
+ * Put word boundaries back into a glued run, against the vocabulary the rules
+ * are built from.
+ *
+ * Gluing alone is dead code and a first cut that stopped there proved it:
+ * every keyword rule is anchored on `\b`, so `ignoreallpreviousinstructions`
+ * matches none of them and the view earned a signed allow exactly as the raw
+ * text did. Measured: 125 of 225 spaced payloads still passed.
+ *
+ * A fixed, small word list rather than a dictionary, deliberately. It
+ * re-spaces the words an injection is built from and nothing else, so it
+ * cannot assemble a sentence out of honest text — a merchant description does
+ * not survive this view as anything rule-matching unless it already contained
+ * those words, in that order, with the spaces removed.
+ */
+function reinsertBoundaries(glued: string): string {
+  const vocab = [...GLUED_VOCAB].sort((a, b) => b.length - a.length);
+  let out = "";
+  let i = 0;
+  while (i < glued.length) {
+    const rest = glued.slice(i).toLowerCase();
+    const hit = vocab.find((w) => rest.startsWith(w)) ?? null;
+    if (hit !== null) {
+      if (out !== "" && !out.endsWith(" ")) out += " ";
+      out += glued.slice(i, i + hit.length) + " ";
+      i += hit.length;
+    } else {
+      out += glued[i];
+      i += 1;
+    }
+  }
+  return out.replace(/ {2,}/g, " ").trim();
+}
+
+function unspacedGluedVariant(text: string): string | null {
+  const parts = splitOnWhitespace(text);
+  const words = parts.filter((t, i) => i % 2 === 0 && t.length > 0);
+  if (words.length < 8) return null;
+  const singles = words.filter((w) => SINGLE_ALNUM.test(w)).length;
+  if (singles / words.length < 0.7) return null;
+  const glued = text.replace(/\s+/g, "");
+  if (glued === text) return null;
+  const result = reinsertBoundaries(glued);
+  return result === text ? null : result;
+}
+
 export function normalizeQuoteText(text: string): string {
   // AW-34, gap 1: ORDER. This used to strip the invisible classes and THEN
   // call decodeHtmlEntities, which put them straight back — `&#173;` became
@@ -2843,6 +3002,36 @@ function scanFields(
     // class. Gating it on the shape finding is what left the first repair
     // blind on `description` and `title`, where the same joined bypass is
     // live and which is easy to overlook.
+    // THE WHITESPACE PASS RUNS FIRST, so the un-join views below derive from
+    // the unspaced text too. Ordering matters: `i g n o r e / a l l` needs
+    // BOTH repairs — unspace it to `ignore/all/previous`, then un-join that
+    // to `ignore all previous` — and a view added after the un-join loop is
+    // never un-joined. Measured: the same payload was `plain=refuse
+    // spaced=allow` until this pass moved ahead of that one.
+    for (const base of [...views]) {
+      // See `unspacedVariant`: the un-join views cannot touch whitespace by
+      // design, so this is the only repair that reaches a spaced sentence.
+      const unspaced = unspacedVariant(base.text);
+      if (unspaced !== null) {
+        views.push({
+          text: unspaced,
+          via: base.via ? `${base.via}+unspaced` : "unspaced",
+          split: true,
+          tight: true,
+        });
+      }
+      // And the same payload with its word boundaries dropped, which no
+      // repair can restore — the rules read a re-segmented string instead.
+      const glued = unspacedGluedVariant(base.text);
+      if (glued !== null) {
+        views.push({
+          text: glued,
+          via: base.via ? `${base.via}+unspaced-glued` : "unspaced-glued",
+          split: true,
+          tight: true,
+        });
+      }
+    }
     for (const base of [...views]) {
       const unjoined = unjoinedVariant(base.text);
       if (unjoined !== null) {

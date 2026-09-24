@@ -278,6 +278,27 @@ jobs:
       # What is actually running, and can it see the OIDC endpoint? The lane
       # failed twice on authentication and both diagnoses were guesses; this
       # prints the facts into the log instead.
+      # SETUP-NODE'S .npmrc SHADOWS OIDC, and this is the whole failure. With
+      # `registry-url` it writes `_authToken=${NODE_AUTH_TOKEN}` into the file
+      # named by NPM_CONFIG_USERCONFIG. No token is set, so npm sees an empty
+      # credential, treats itself as authenticated-as-nobody and never reaches
+      # the OIDC exchange: E404 on PUT. Dropping `registry-url` instead failed
+      # ENEEDAUTH, because then npm had no registry configured at all.
+      #
+      # So: keep the registry, remove the credential line. `npm config set`
+      # writes to the same userconfig, which leaves the registry set and the
+      # auth line gone — and npm then performs the exchange it was configured
+      # for.
+      - name: Clear the placeholder auth line so OIDC is reached
+        run: |
+          set -euo pipefail
+          cfg="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          if [ -f "$cfg" ]; then
+            grep -v '_authToken' "$cfg" > "${cfg}.clean" || true
+            mv "${cfg}.clean" "$cfg"
+          fi
+          npm config set registry https://registry.npmjs.org/
+
       - name: Diagnose the publish environment
         run: |
           echo "npm:  $(npm --version)"
@@ -291,6 +312,7 @@ jobs:
           done
           echo "--- npm config ---"
           npm config get registry
+          echo "auth lines remaining: $(grep -c '_authToken' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}" 2>/dev/null || echo 0)"
 
       # No token. `prepublishOnly` re-runs build and the full suite, so a
       # broken artifact cannot ship even from a tag.

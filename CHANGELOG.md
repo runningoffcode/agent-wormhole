@@ -1,5 +1,44 @@
 # Changelog
 
+## wormhole-x402 0.9.7 — 2026-09-24
+
+**Separator repair rewritten at the root.** A run that mixed whitespace with
+punctuation — `. `, ` .`, tab+hyphen, NBSP+dot — was caught by nothing, while
+the single-character forms `.`, `..` and ` ` each refused. That was the fifth
+variant of one bug, and the cause was structural rather than missing coverage:
+every repair named a character class UP FRONT — `[^A-Za-z0-9\s]+` for
+punctuation, whitespace for spacing — so a run containing both belonged to
+neither and survived every view.
+
+One pass over `[^A-Za-z0-9]+` now finds every run whatever it contains, and
+the decision is made PER GAP from what sits either side of it:
+
+```
+single character | single character   ->  delete    (I.g, i g, a. b)
+run contains whitespace, longer tokens ->  one space (a real word gap)
+punctuation only, longer tokens        ->  delete    (Ign.ore)
+```
+
+Where that fuses words the result is re-segmented against the rule vocabulary,
+because every keyword here is anchored on a word boundary and
+`Ignoreallprevious` matches none of them.
+
+Verified across 428 distinct separator runs — every punctuation character
+alone, doubled, and combined with six whitespace characters in both orders —
+against an override and a redirect payload: 856 cases, 0 sign allow. Honest
+copy is unaffected: `Fast. Cheap. Reliable.`, `1. quote 2. pay`, `U.S. only`
+and the merchant-host corpus stay clean, because their runs are word gaps by
+the same per-gap test.
+
+**Re-segmentation is bounded.** The first cut lowercased and copied the whole
+remaining string at every position: 8KB took 50ms, 32KB 295ms, 64KB 1,059ms —
+quadratic on a field an attacker controls, and it failed this package's own
+AW-04 linear-cost regression. Now 7ms and 10ms respectively, with a test whose
+budget is set where it discriminates rather than where it merely passes.
+
+1014 tests pass. The 19x6 placement matrix stays at 0 of 114 and the earlier
+rounds stay closed.
+
 ## wormhole-x402 0.9.6 — 2026-09-24
 
 **Separator view composition.** Each text repair was built as a separate view of

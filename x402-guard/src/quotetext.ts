@@ -840,13 +840,35 @@ const GLUED_VOCAB = [
  * not survive this view as anything rule-matching unless it already contained
  * those words, in that order, with the spaces removed.
  */
+/** Longest vocabulary entry, so the per-position probe is bounded. */
+const GLUED_MAX_WORD = Math.max(...GLUED_VOCAB.map((w) => w.length));
+/**
+ * How much text is worth re-segmenting. Beyond this the payload is not a
+ * sentence anyone will read, and the cost is what matters: this runs per
+ * field, per view.
+ */
+const GLUED_SCAN_CAP = 4096;
+
 function reinsertBoundaries(glued: string): string {
+  // BOUNDED, because the first cut was quadratic and measurably so. It called
+  // `glued.slice(i).toLowerCase()` at every position, copying and lowercasing
+  // the whole remainder each time: 8KB took 50ms, 32KB 278ms, 64KB 1,052ms —
+  // 4x the input for 20x the time, which is a denial-of-service lever on a
+  // field an attacker controls, and it failed this package's own AW-04
+  // linear-cost regression test.
+  //
+  // Now: lowercase once, probe a window no longer than the longest vocabulary
+  // entry, and stop after a cap. The cap is not a coverage decision — a
+  // payload longer than 4KB of unbroken glued text is past the point where
+  // re-segmenting recovers a readable sentence.
+  if (glued.length > GLUED_SCAN_CAP) return glued;
+  const lower = glued.toLowerCase();
   const vocab = [...GLUED_VOCAB].sort((a, b) => b.length - a.length);
   let out = "";
   let i = 0;
   while (i < glued.length) {
-    const rest = glued.slice(i).toLowerCase();
-    const hit = vocab.find((w) => rest.startsWith(w)) ?? null;
+    const window = lower.slice(i, i + GLUED_MAX_WORD);
+    const hit = vocab.find((w) => window.startsWith(w)) ?? null;
     if (hit !== null) {
       if (out !== "" && !out.endsWith(" ")) out += " ";
       out += glued.slice(i, i + hit.length) + " ";
@@ -897,40 +919,96 @@ const HOSTLIKE =
   /\b(?:[a-z][a-z0-9+.-]*:\/\/\S+|(?:[a-z0-9-]{3,}\.)+(?:com|org|net|io|dev|app|co|ai|xyz|eth|cloud|info|biz|test|example|localhost)\b(?:\/\S*)?)/gi;
 
 function composedRepairVariant(text: string): string | null {
-  // NO SENTINEL MASKING. The first cut replaced each host with a `\u0000N\u0000`
-  // marker and restored it afterwards; the repairs then treated the marker's
-  // digits as ordinary characters and fused them into the surrounding words —
-  // `instruct.io.n.s` came back as `0ns`, destroying the very keyword the view
-  // exists to recover. Measured in the view dump: `previous 0ns`.
+  // ONE PASS OVER EVERY SEPARATOR RUN, deciding per gap AFTER the run is
+  // found rather than choosing a character class before it.
   //
-  // The hold-out is unnecessary here anyway. This view is marked `tight`, so
-  // the destination rules that care about hostnames already skip it; the
-  // keyword rules, which are what this view is for, do not read hosts. A
-  // de-dotted host in a tight view is exactly what `tight` is declared to
-  // mean, and the raw view still carries the intact one for the rules that
-  // judge destinations.
+  // WHY THIS REPLACED A SEQUENCE OF REPAIRS. Each earlier repair fixed a
+  // class it defined up front: `[^A-Za-z0-9\s]+` for punctuation runs,
+  // whitespace for spacing. A run that MIXES the two — `. `, ` .`, tab plus
+  // hyphen, NBSP plus full stop — belongs to neither class and was matched by
+  // none of them, so it survived every view. Measured against 0.9.6, eight
+  // mixed separators produced a signed allow on both an override and a
+  // redirect payload, while the single-character forms `.`, `..` and ` `
+  // each refused. That was the fifth variant of one bug, which is the signal
+  // that the class was the defect and not the coverage.
   //
-  // TO A FIXPOINT, because deleting a separator creates new adjacencies the
-  // same repairs can act on: `.pre.vious` needs the intra-word delete to run
-  // again after the boundary delete has removed its leading dot.
+  // `[^A-Za-z0-9]+` finds every run whatever it contains. The decision then
+  // depends only on what sits either side of it, which is the same rule the
+  // per-gap whitespace repair already used and the reason it was safe:
   //
-  // Measured honestly: with the redirect gate also reading this view, one
-  // pass already closes the whole sprinkle corpus, so the extra rounds are
-  // not load-bearing for any test today — a mutation to a single pass keeps
-  // every suite green. They are kept because convergence is the property
-  // this function claims and a single pass only accidentally satisfies it,
-  // and because the cost is bounded: 4 rounds, the corpus converging in at
-  // most 2, and a `before === out` break so honest text pays for one.
-  let out = text;
-  for (let round = 0; round < 4; round++) {
-    const before = out;
-    for (const step of [unjoinedDeletedVariant, edgeUnjoinedVariant, unspacedVariant]) {
-      const next = step(out);
-      if (next !== null) out = next;
+  //   single character | single character  ->  DELETE   (`I.g`, `i g`, `a. b`)
+  //   otherwise, run contains whitespace  ->  one space (a real word gap)
+  //   otherwise                           ->  DELETE   (`Ign.ore`, intra-word)
+  //
+  // Honest copy is untouched because its runs are word gaps by that test:
+  // `Fast. Cheap. Reliable.` keeps its spaces, `1. quote 2. pay` keeps its
+  // spaces, and `U.S. only` loses only the intra-word dots, which spells
+  // `US only` and matches no rule.
+  //
+  // HOSTNAMES ARE NOT PROTECTED HERE, deliberately. Deleting separators
+  // de-dots them, which is exactly what `tight` declares about this view:
+  // the destination rules skip it and the raw view still carries the intact
+  // host for the rules that judge one. An earlier attempt to mask hosts
+  // before repairing fused the mask's own digits into the payload.
+  const parts = text.split(/([^A-Za-z0-9]+)/);
+  let collapsed = 0;
+  // Separators deleted BETWEEN two multi-character tokens — `Ign.ore`. Prose
+  // does not join words that way, so one is evidence where four ordinary
+  // gaps are not.
+  let intraWord = 0;
+  let out = "";
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 0) {
+      out += parts[i];
+      continue;
     }
-    if (out === before) break;
+    const run = parts[i];
+    const before = parts[i - 1] ?? "";
+    const after = parts[i + 1] ?? "";
+    // The gap between two single characters is a separator whatever it is
+    // made of: `I.g`, `I g`, `I. g`, `I .g` are the same payload.
+    if (before.length === 1 && after.length === 1 && before !== "" && after !== "") {
+      collapsed += 1;
+      continue;
+    }
+    // A run carrying whitespace between longer tokens is a word boundary —
+    // normalised to one space so the keyword rules read words, not a blob.
+    if (/\s/.test(run)) {
+      out += " ";
+      continue;
+    }
+    // Punctuation only, between longer tokens: the intra-word join.
+    collapsed += 1;
+    intraWord += 1;
   }
-  return out === text ? null : out;
+  // The floor exists so ordinary punctuation does not buy a full rule pass,
+  // but counting RAW gaps was too blunt: `Se.nd .the pay.ment .to` collapses
+  // only three and was discarded, losing a case that already worked before
+  // this repair replaced the sequence. What matters is whether the repair
+  // CHANGED anything structural, so an intra-word join — the shape prose
+  // does not produce — counts on its own, and the plain floor still applies
+  // to the rest.
+  if (intraWord === 0 && collapsed < MIN_COLLAPSED_GAPS) return null;
+  if (out === text) return null;
+  // WHEN THE GAPS WERE ALL SEPARATORS the word boundaries are gone and what
+  // is left is a run-on token — `Ignoreallpreviousinstructions` — which
+  // matches no rule here, since every keyword is anchored on `\b`. Same trap
+  // the glued whitespace view hit, same answer: re-segment against the
+  // vocabulary the rules are built from.
+  //
+  // ALWAYS OFFER THE RE-SEGMENTED FORM when it differs. Choosing by token
+  // LENGTH was wrong twice: at 24 characters it skipped every payload that
+  // kept one real word gap, and at 15 it still missed `Ignoreall` — nine
+  // characters, and the whole evasion, because the keyword is fused to the
+  // word after it.
+  //
+  // The honest test is not how long a token is but whether the VOCABULARY
+  // can split it. `reinsertBoundaries` only ever inserts a boundary where a
+  // rule word actually starts, so on text it cannot segment it returns its
+  // input unchanged and this returns the plain repair. It costs one bounded
+  // pass over text that is already capped.
+  const segmented = reinsertBoundaries(out);
+  return segmented === out ? out : segmented;
 }
 
 function unspacedGluedVariant(text: string): string | null {

@@ -251,16 +251,20 @@ jobs:
       # Pinned rather than `latest`, because `npm@latest` moved to v12 — which
       # needs Node >= 22.22 — and the job failed EBADENGINE on Node 20.
       #
-      # NO `registry-url`, deliberately. It makes setup-node write an .npmrc
-      # containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`, and
-      # with no token in the environment npm then authenticates as nobody:
-      # the publish reached the registry, signed provenance, and came back
-      # `E404 PUT` — npm's answer for authenticated-but-unauthorised. Without
-      # that file npm falls through to the OIDC exchange, which is the whole
-      # point of Trusted Publishing.
+      # `registry-url` IS required, per npm's own Trusted Publishing docs: it
+      # is what points the CLI at the registry it should perform the OIDC
+      # exchange against. Removing it (an earlier attempt at the E404 below)
+      # left npm with no registry to authenticate to and it failed ENEEDAUTH
+      # instead. `NODE_AUTH_TOKEN` is deliberately NOT set — OIDC replaces it.
+      #
+      # `package-manager-cache: false` because the cache step reads a
+      # lockfile relative to the repository root, not this job's
+      # working-directory, and fails the job before publish runs.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
       - name: Install
         run: npm ci || npm install
@@ -269,7 +273,7 @@ jobs:
       # runner's bundled npm is older. Pinned to a major that supports Node 22
       # so a future `latest` cannot break the release lane the way v12 did.
       - name: Use an npm that supports Trusted Publishing
-        run: npm install -g npm@^11
+        run: npm install -g npm@^11.5.1
 
       # What is actually running, and can it see the OIDC endpoint? The lane
       # failed twice on authentication and both diagnoses were guesses; this

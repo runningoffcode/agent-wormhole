@@ -1,5 +1,40 @@
 # Changelog
 
+## wormhole-x402 0.9.8 — 2026-09-24
+
+**Re-cut fragments reach the glued view.** Stripping the spaces from a payload
+and re-cutting it into fixed-width fragments —
+`Q.replace(/\s+/g,"").match(/.{1,3}/g).join(" ")` — produced `Ign ore all pre
+vio usi nst ruc tio ns.` and signed allow, while the one-character form
+refused. The view that recovers this already existed (glue, then re-segment
+against the rule vocabulary); it was gated on 70% of tokens being exactly ONE
+character, so nothing wider ever reached it.
+
+The gate is uniformity now. Measured over the corpus, the share of tokens at
+the modal length is 86-100% for re-cut text at widths 2 through 10 and 18-50%
+for prose. Average fragment length was tried first and rejected: honest copy
+overlaps a re-cut payload badly there (`Vol I II III IV V VI` averages 2.18
+characters, `Size: S M L XL XXL` 2.60, while width-5 fragments average 4.85),
+so no threshold separated them. The redirect gate also reads the re-glued
+sentence for the EVM address question, the same narrow split already made for
+the composed view.
+
+Every re-cut width from 2 to 8 now refuses, on both an override and a
+redirect payload, joined by a space or by any of five other separators.
+Honest copy is unchanged: 0 false positives across the 22-string corpus, the
+merchant-host corpus, the 428-run separator sweep and the 19x6 placement
+matrix. 1027 tests pass.
+
+**Still open, and worth stating plainly.** A sweep that cuts the payload into
+fragments of RANDOM width joined by random separators is not meaningfully
+improved: 993 of 1000 such samples still sign allow. Those samples are
+statistically indistinguishable from prose by every token measure tried —
+modal share 18-19%, mean length 4.75-6.91, against 18-50% and 1.10-8.14 for
+honest listings — so no gate on token shape separates them. Closing that
+class needs a different mechanism than a shape heuristic, not a wider
+threshold. Conformance is unaffected and still guards the payment being
+signed.
+
 ## wormhole-x402 0.9.7 — 2026-09-24
 
 **Separator repair rewritten at the root.** A run that mixed whitespace with

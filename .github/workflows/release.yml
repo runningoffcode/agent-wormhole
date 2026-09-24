@@ -271,6 +271,23 @@ jobs:
       - name: Use an npm that supports Trusted Publishing
         run: npm install -g npm@^11
 
+      # What is actually running, and can it see the OIDC endpoint? The lane
+      # failed twice on authentication and both diagnoses were guesses; this
+      # prints the facts into the log instead.
+      - name: Diagnose the publish environment
+        run: |
+          echo "npm:  $(npm --version)"
+          echo "node: $(node --version)"
+          echo "which npm: $(which npm)"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "NODE_AUTH_TOKEN set: ${NODE_AUTH_TOKEN:+yes}"
+          echo "--- npmrc files ---"
+          for f in "$HOME/.npmrc" "$NPM_CONFIG_USERCONFIG" ./.npmrc ../.npmrc; do
+            [ -n "$f" ] && [ -f "$f" ] && { echo "== $f"; sed -e 's/_authToken=.*/_authToken=<redacted>/' "$f"; }
+          done
+          echo "--- npm config ---"
+          npm config get registry
+
       # No token. `prepublishOnly` re-runs build and the full suite, so a
       # broken artifact cannot ship even from a tag.
       - name: Publish

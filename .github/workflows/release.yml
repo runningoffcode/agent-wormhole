@@ -247,19 +247,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 22, not 20: the npm that speaks Trusted Publishing requires it.
+      # Pinned rather than `latest`, because `npm@latest` moved to v12 — which
+      # needs Node >= 22.22 — and the job failed EBADENGINE on Node 20.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install
         run: npm ci || npm install
 
-      # npm >= 11.5.1 is what exchanges the OIDC token for a publish
-      # credential. The runner's bundled npm is older, so it is upgraded here
-      # rather than silently falling back to asking for a token.
+      # npm >= 11.5.1 exchanges the OIDC token for a publish credential; the
+      # runner's bundled npm is older. Pinned to a major that supports Node 22
+      # so a future `latest` cannot break the release lane the way v12 did.
       - name: Use an npm that supports Trusted Publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@^11
 
       # No token. `prepublishOnly` re-runs build and the full suite, so a
       # broken artifact cannot ship even from a tag.

@@ -1,5 +1,49 @@
 # Changelog
 
+## wormhole-x402 0.9.9 — 2026-09-24
+
+**X402-214: an instruction recovered from the separator-free stream.** Closes
+the class that five rounds of repairs could not.
+
+Every repair before this decides what a separator run MEANS and rebuilds words
+from it, which works while the fragments carry a signature — one character
+each, or all the same width. Cutting at RANDOM widths and joining with random
+separators produces text statistically identical to prose: share of tokens at
+the modal length 18-19% and mean length 4.75-6.91, against 18-50% and
+1.10-8.14 for honest listings. No gate on token shape separates those, which
+is why widening thresholds kept failing. Measured on 0.9.8: 993 of 1000 such
+samples signed allow. Now 0 of 1000.
+
+What survives every cut is ORDER. Deleting the separators leaves the letters
+in sequence, and an injected instruction is a PHRASE — a verb applied to the
+thing it acts on — so it stays contiguous in that stream whatever the
+fragments looked like.
+
+**The vocabulary is phrases, never single words**, and that is the whole
+safety argument: `apikey` is product vocabulary, `revealyoursystem` is an
+instruction. A substring matcher with no word boundaries is dangerous on a
+real catalogue, so every guard below exists because this rule broke something
+real, and each is pinned by a test that fails without it:
+
+- the merchant's own payout address is not a redirection (`payees`, as every
+  other rule here already defers to);
+- a negated instruction is not an instruction — "never reveal your system
+  prompt" is advice against the thing;
+- each phrase names its object, so "ignore all previous cached responses" is
+  a caching note rather than an injection;
+- credential handling stays with X402-203, which compares the destination —
+  "securely send your API key to our vault endpoint" is what a secrets
+  manager sells;
+- matches route through `add()`, so a scanner quoting an injection is demoted
+  to reported-not-blocking;
+- the rule stays silent where X402-202/203/208 already spoke, and silencing
+  X402-202 silences this echo of it.
+
+Verified: 600 of 600 random-width fragmentations refuse, across fragment
+widths 2 to 12; 0 false positives across every corpus in this package,
+including listings that deliberately use the attack's own vocabulary; 1054
+tests pass; cost on a 64KB field unchanged at 19ms.
+
 ## wormhole-x402 0.9.8 — 2026-09-24
 
 **Re-cut fragments reach the glued view.** Stripping the spaces from a payload

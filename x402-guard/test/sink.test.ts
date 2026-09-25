@@ -355,10 +355,11 @@ describe("vocabulary does not drift from the guard modules", () => {
       const text = fs.readFileSync(path.join(src, f), "utf8");
       for (const m of text.matchAll(/X402-\d{3}/g)) found.add(m[0]);
     }
-    // Measured at the time of writing: 38 codes. The number is pinned on
-    // purpose — adding a code without registering it in KNOWN_CODES means
-    // sink.ts drops the event, so the count has to be updated deliberately.
-    expect(found.size).toBe(38);
+    // Measured at the time of writing: 39 codes, X402-214 being the newest.
+    // The number is pinned on purpose — adding a code without registering it
+    // in KNOWN_CODES means sink.ts drops the event, so the count has to be
+    // updated deliberately.
+    expect(found.size).toBe(39);
     expect([...found].sort()).toEqual([...KNOWN_CODES].sort());
   });
 

@@ -1621,6 +1621,78 @@ function isQuotedContext(text: string, index: number): boolean {
  * fabricable by gluing a sentence, so it is judged on the raw view only.
  */
 const EVM_ADDRESS_SRC = String.raw`0x[a-fA-F0-9]{40}\b`;
+/**
+ * X402-214 — AN INSTRUCTION RECOVERED FROM THE SEPARATOR-FREE STREAM.
+ *
+ * WHY A SEPARATE RULE RATHER THAN ANOTHER REPAIR. Every repair so far decides
+ * what a separator run MEANS and rebuilds words from it, which works while
+ * the fragments carry a signature — one character each, or all the same
+ * width. An attacker who cuts at RANDOM widths and joins with random
+ * separators produces text that is statistically identical to prose:
+ * measured over the corpus, share of tokens at the modal length 18-19% and
+ * mean length 4.75-6.91, against 18-50% and 1.10-8.14 for honest listings.
+ * No gate on token shape separates those, so no repair can be reached
+ * safely, and widening a threshold only trades the bypass for false
+ * positives on real merchants.
+ *
+ * What survives every cut is ORDER. Deleting the separators entirely leaves
+ * the letters in sequence, and an injected instruction is a phrase — a verb
+ * applied to the thing it acts on — so the phrase is contiguous in that
+ * stream whatever the fragments looked like.
+ *
+ * THE VOCABULARY IS PHRASES, NOT WORDS, and that is the whole safety
+ * argument. `apikey` is product vocabulary; `revealyoursystem` is an
+ * instruction. A merchant selling key management says the first constantly
+ * and never the second. Single words are kept out of the blocking set for
+ * exactly the reason X402-208 requires a foreign address: a bare keyword is
+ * what a catalogue is made of.
+ *
+ * Matches go through `add()` like every other rule, so a security product
+ * that QUOTES an injection ("we detect 'ignore all previous instructions'")
+ * is demoted to reported-not-blocking by the descriptive and quoted guards
+ * rather than refused. That demotion is load-bearing here: six of the
+ * adversarially honest listings in the corpus are scanners, firewalls and
+ * red-team datasets that name the attack on purpose.
+ */
+const GLUED_DIRECTIVE_SRC = [
+  // Displacing the instructions the agent already has.
+  // EACH PHRASE NAMES ITS OBJECT. `ignoreallprevious` alone matched "Ignore
+  // all previous cached responses; this endpoint is not idempotent" — an
+  // honest caching note. What makes this an injection is WHAT is displaced,
+  // so the instruction noun is part of the phrase.
+  "ignoreallpreviousinstruction", "ignoreallpriorinstruction",
+  "ignorepreviousinstruction", "ignorepriorinstruction",
+  "ignoreallpreviousdirective", "ignorepreviousdirective",
+  "ignoreallpreviousprompt", "ignorepreviousprompt",
+  "ignoreyourinstruction", "ignoreyoursystem", "ignoretheaboveinstruction",
+  "ignoreallotherinstruction", "ignoreeverythingabovethis",
+  "disregardallpreviousinstruction", "disregardpreviousinstruction",
+  "disregardtheaboveinstruction", "disregardallpreviousdirective",
+  "disregardyourinstruction", "disregardthesystemprompt",
+  "forgetallpreviousinstruction", "forgetpreviousinstruction",
+  "forgeteverythingabovethis",
+  "overrideyourinstruction", "overridethesystem", "overrideyoursystem",
+  "bypassyourinstruction", "bypassthesystem", "bypassyoursafety",
+  // Extracting the instructions or the secrets.
+  "revealyoursystem", "revealthesystem", "revealyourinstruction",
+  "printyoursystem", "printyourinstruction", "outputyoursystem",
+  "showyoursystem", "showmeyoursystem", "tellmeyoursystem",
+  "repeatyoursystem", "repeatyourinstruction", "disclosesyoursystem",
+  // NO CREDENTIAL-EXFILTRATION PHRASES HERE. "Securely send your API key to
+  // our vault endpoint" is what a secrets manager sells, and the thing that
+  // separates it from an attack is the DESTINATION — the merchant's own host
+  // or somebody else's. X402-203 already asks that question, with the host
+  // comparison to answer it; repeating the verb here without the comparison
+  // refused four honest listings in this package's own corpus. The glued
+  // stream adds nothing to that rule, so it stays out of this one.
+  // Redirecting the payment. The address is part of the phrase, so a
+  // merchant naming their OWN payout address does not match it.
+  "sendthepaymentto0x", "sendpaymentto0x", "sendthefundsto0x",
+  "transferthepaymentto0x", "transferthefundsto0x", "transferfundsto0x",
+  "paythe0x", "remitto0x", "routethepaymentto0x",
+  "insteadsendto0x", "insteadtransferto0x",
+];
+
 const ADDRESS_SRC = String.raw`(?:0x[a-fA-F0-9]{40}\b|\b[1-9A-HJ-NP-Za-km-z]{32,44}\b)`;
 
 /**
@@ -2850,6 +2922,78 @@ function scanOneView(text: string, ctx: ScanContext = {}): RuleHit[] {
     }
   }
 
+  // X402-214 — an instruction recovered from the separator-free stream. See
+  // GLUED_DIRECTIVE_SRC: this is the one reading that survives fragments cut
+  // at random widths, because deleting every separator preserves ORDER even
+  // when it destroys word boundaries.
+  //
+  // Only on the RAW view. Every repaired view is a different arrangement of
+  // the same letters, so running this on each of them finds the same phrase
+  // several times and reports it several times.
+  // ONLY WHERE THE PLAIN TEXT DOES NOT ALREADY SAY IT. This rule exists for
+  // an instruction that is ONLY visible once separators are removed. When the
+  // sentence reads as an instruction on its own, X402-202 and X402-208 have
+  // already reported it with their own corroboration, demotions and `ignore`
+  // handling — and emitting a second code for the same words breaks all
+  // three: a caller who silenced X402-202 on a listing got X402-214 on the
+  // identical text and no way to reach it.
+  const alreadySeen = hits.some(
+    (h) => h.code === "X402-202" || h.code === "X402-208" || h.code === "X402-203",
+  );
+  if (!ctx.splitView && !alreadySeen) {
+    // Map each glued index back to where that character came from, so the
+    // offset handed to `add()` points into the text a human reads and the
+    // descriptive/quoted guards have real context to judge.
+    const origin: number[] = [];
+    let glued = "";
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (/[A-Za-z0-9]/.test(ch)) {
+        glued += ch.toLowerCase();
+        origin.push(i);
+      }
+    }
+    // A NEGATED INSTRUCTION IS NOT AN INSTRUCTION. "you should never reveal
+    // your system prompt" is advice against the thing; "never send your API
+    // keys to third parties" is a promise not to. Both spell the phrase in
+    // the glued stream and neither is an injection, so a negation in the
+    // dozen characters before the match suppresses it. An attacker gains
+    // nothing by prepending one: it inverts the instruction they are trying
+    // to give.
+    const NEGATED = /(?:never|don'?t|donot|dont|cannot|can'?t|willnot|wont|shouldnot|shouldnt|must ?not|refuseto|neverever|without|avoid|prohibit|forbid)$/;
+    for (const phrase of GLUED_DIRECTIVE_SRC) {
+      const at = glued.indexOf(phrase);
+      if (at < 0) continue;
+      if (NEGATED.test(glued.slice(Math.max(0, at - 14), at))) continue;
+      // THE MERCHANT'S OWN PAYOUT ADDRESS IS NOT A REDIRECTION. The payment
+      // phrases end in `0x`, so they match whatever address follows — and a
+      // bridge or payout API naming the address the quote already declares
+      // was refused for describing its own product. Every other rule here
+      // defers to `payees` for exactly this; so does this one.
+      if (phrase.endsWith("0x") && ctx.payees && ctx.payees.size > 0) {
+        const tail = glued.slice(at + phrase.length - 2, at + phrase.length + 40);
+        const named = /^0x[a-f0-9]{40}/.exec(tail);
+        if (named && ctx.payees.has(named[0])) continue;
+      }
+      const from = origin[at] ?? 0;
+      const to = (origin[at + phrase.length - 1] ?? from) + 1;
+      add(
+        {
+          code: "X402-214",
+          severity: "critical",
+          message:
+            "quote text spells an agent instruction once its separators are removed — " +
+            "the words are split by punctuation or spacing that a reader skips and a " +
+            "model does not, which is a way of writing an instruction that the " +
+            "surface text does not appear to contain",
+          offset: from,
+        },
+        to - from,
+      );
+      break;
+    }
+  }
+
   // X402-209 — role/delimiter spoofing. A description containing "</system>"
   // is not describing a product.
   //
@@ -3492,8 +3636,18 @@ function scanFields(
 
   // Findings whose code the CALLER chose to ignore still appear; they simply
   // stop forcing a refuse. Nothing in the quote can reach this set.
+  //
+  // X402-214 IS AN ECHO OF X402-202: it reports the same instruction, read
+  // out of the separator-free stream instead of the surface text. A caller
+  // who has silenced the override rule for their catalogue — the documented
+  // escape hatch, and the reason `config: ignore_all_previous_instructions`
+  // is allowed to exist as a settings key — has silenced that judgement, not
+  // one spelling of it. Without this, silencing X402-202 left the identical
+  // text blocking under a code the caller had no way to anticipate.
+  const silenced = (code: string) =>
+    cfg.ignore.has(code) || (code === "X402-214" && cfg.ignore.has("X402-202"));
   const blocking = findings.some(
-    (f) => f.severity === "critical" && !cfg.ignore.has(f.code),
+    (f) => f.severity === "critical" && !silenced(f.code),
   );
 
   if (blocking) {

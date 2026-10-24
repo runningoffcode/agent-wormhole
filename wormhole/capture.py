@@ -21,6 +21,7 @@ import shutil
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from .baseline import sha256, _write_atomic
 from .rules.injection import scan_text
@@ -66,7 +67,9 @@ def _save_index(entries: list):
 
 def _entry_id(path: Path, digest: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    return f"{stamp}-{digest[:8]}-{path.name}"
+    # Matching files, or repeated captures within one second, still need
+    # separate restore handles and quarantine paths.
+    return f"{stamp}-{digest[:8]}-{uuid4().hex}-{path.name}"
 
 
 def excise_until_clean(text: str, max_passes: int = 5) -> tuple:

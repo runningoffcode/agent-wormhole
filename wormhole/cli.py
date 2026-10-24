@@ -461,8 +461,10 @@ def main(argv=None):
         "addresses",
         help="the address-provenance ledger: where each wallet address "
              "entered the agent's context")
-    ad.add_argument("trust", nargs="?", default=None, metavar="ADDRESS",
-                    help="record an address as operator-trusted")
+    ad.add_argument("trust", nargs="?", default=None, metavar="trust|ADDRESS",
+                    help="use trust ADDRESS to record an address; a bare ADDRESS also works")
+    ad.add_argument("address", nargs="?", metavar="ADDRESS",
+                    help="address following the trust subcommand")
     ad.add_argument("--ledger", default=None,
                     help="ledger path (default ~/.wormhole/addresses.jsonl)")
 
@@ -476,6 +478,12 @@ def main(argv=None):
     c = _paint(color)
 
     if args.cmd == "addresses":
+        if args.trust == "trust":
+            if args.address is None:
+                ad.error("trust requires an address")
+            args.trust = args.address
+        elif args.address is not None:
+            ad.error("use 'trust ADDRESS' or a single ADDRESS")
         from .addresses import run as addresses_run
         return addresses_run(args)
 

@@ -952,13 +952,13 @@ export async function inspectAuthorization(
   // --- 9. validity window (X402-105) --------------------------------------
   const now = opts.nowSeconds ?? BigInt(Math.floor(Date.now() / 1000));
   const skew = opts.clockSkewSeconds ?? 0n;
-  if (now + skew < validAfter) {
+  if (now + skew <= validAfter) {
     findings.push({
       code: "X402-105",
       severity: "high",
       message:
-        "authorization is not yet valid (validAfter is in the future) — the payment window has not opened",
-      expected: `now (${now.toString()}) >= validAfter`,
+        "authorization is not yet valid — the payment window has not opened",
+      expected: `now + tolerance (${(now + skew).toString()}) > validAfter`,
       actual: `validAfter = ${validAfter.toString()}`,
     });
   }
@@ -967,15 +967,15 @@ export async function inspectAuthorization(
   // case, so an authorization carrying 0 can never be valid, and the old
   // exemption turned the one value that always fails into the one value that
   // was never reported.
-  if (now > validBefore + skew) {
+  if (now >= validBefore + skew) {
     findings.push({
       code: "X402-105",
       severity: "high",
       message:
         validBefore === 0n
           ? "validBefore is 0 — the contract requires block.timestamp < validBefore, so this authorization can never be valid"
-          : "authorization has expired (validBefore is in the past) — the payment window has closed",
-      expected: `now (${now.toString()}) <= validBefore`,
+          : "authorization has expired — the payment window has closed",
+      expected: `now - tolerance (${(now - skew).toString()}) < validBefore`,
       actual: `validBefore = ${validBefore.toString()}`,
     });
   }
@@ -1304,25 +1304,25 @@ export function inspectTypedDataRequest(
   }
   const now = opts.nowSeconds ?? BigInt(Math.floor(Date.now() / 1000));
   const skew = opts.clockSkewSeconds ?? 0n;
-  if (now + skew < validAfter) {
+  if (now + skew <= validAfter) {
     findings.push({
       code: "X402-105",
       severity: "high",
       message:
-        "authorization is not yet valid (validAfter is in the future) — the payment window has not opened",
-      expected: `now (${now.toString()}) >= validAfter`,
+        "authorization is not yet valid — the payment window has not opened",
+      expected: `now + tolerance (${(now + skew).toString()}) > validAfter`,
       actual: `validAfter = ${validAfter.toString()}`,
     });
   }
-  if (now > validBefore + skew) {
+  if (now >= validBefore + skew) {
     findings.push({
       code: "X402-105",
       severity: "high",
       message:
         validBefore === 0n
           ? "validBefore is 0 — the contract requires block.timestamp < validBefore, so this authorization can never be valid"
-          : "authorization has expired (validBefore is in the past) — the payment window has closed",
-      expected: `now (${now.toString()}) <= validBefore`,
+          : "authorization has expired — the payment window has closed",
+      expected: `now - tolerance (${(now - skew).toString()}) < validBefore`,
       actual: `validBefore = ${validBefore.toString()}`,
     });
   }

@@ -34,6 +34,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Union
 
 from .rules.injection import Finding
 
@@ -74,7 +75,7 @@ def load_baseline() -> dict:
         raise CorruptBaseline(str(exc)) from exc
 
 
-def _write_atomic(path: Path, data: str, mode: int = 0o600) -> None:
+def _write_atomic(path: Path, data: Union[str, bytes], mode: int = 0o600) -> None:
     """Write via a temp file in the same directory, then os.replace.
 
     Every writer here used a plain write_text(), which truncates before it
@@ -84,8 +85,10 @@ def _write_atomic(path: Path, data: str, mode: int = 0o600) -> None:
     """
     tmp = path.with_name(f".{path.name}.tmp{os.getpid()}")
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(data)
+        # Binary writes preserve captured bytes and avoid platform newline
+        # conversion changing the hash of an encoded text snapshot.
+        with open(tmp, "wb") as f:
+            f.write(data.encode("utf-8") if isinstance(data, str) else data)
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp, mode)

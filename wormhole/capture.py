@@ -22,7 +22,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .baseline import sha256, _write_atomic
+from .baseline import _write_atomic
 from .rules.injection import scan_text
 
 WORMHOLE_DIR = Path.home() / ".wormhole" / "captured"
@@ -184,7 +184,11 @@ def excise(text: str, findings: list) -> tuple:
 def swallow(path: Path, findings: list, dry_run: bool = False) -> dict:
     """Excise payloads from one file, preserving the original in the jail."""
     path = Path(path)
-    original = path.read_text(encoding="utf-8", errors="replace")
+    original_bytes = path.read_bytes()
+    # Scan the same normalized text as before, but keep the reversible copy
+    # separate from decoding and universal-newline conversion.
+    original = original_bytes.decode("utf-8", errors="replace")
+    original = original.replace("\r\n", "\n").replace("\r", "\n")
     worm_findings = [f for f in findings if f.rule_id.startswith("WORM")]
     if not worm_findings:
         return {"status": "no_payload", "path": str(path)}
@@ -207,7 +211,7 @@ def swallow(path: Path, findings: list, dry_run: bool = False) -> dict:
     WORMHOLE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     WORMHOLE_DIR.chmod(0o700)
 
-    orig_digest = sha256(path)
+    orig_digest = hashlib.sha256(original_bytes).hexdigest()
     entry_id = _entry_id(path, orig_digest)
     payload_file = WORMHOLE_DIR / f"{entry_id}.quarantined"
 
@@ -216,7 +220,7 @@ def swallow(path: Path, findings: list, dry_run: bool = False) -> dict:
     # Preserved copy first, atomically, and verified readable before the
     # source is touched: a truncated quarantine file plus an excised original
     # loses the payload permanently, and the payload is the evidence.
-    _write_atomic(payload_file, original, mode=0o400)
+    _write_atomic(payload_file, original_bytes, mode=0o400)
 
     # The source rewrite is the one write in the codebase that destroys
     # operator data if it is interrupted. os.replace makes it all-or-nothing.
@@ -308,8 +312,9 @@ def restore(entry_id: str) -> dict:
         # The payload must still be the file that was captured. A quarantined
         # original is attacker-authored content; if the quarantine store has
         # been tampered with, restoring is writing something new, not undoing.
+        original_bytes = payload.read_bytes()
         expected = e.get("original_sha256")
-        if expected and sha256(payload) != expected:
+        if expected and hashlib.sha256(original_bytes).hexdigest() != expected:
             return {
                 "status": "payload_tampered",
                 "id": entry_id,
@@ -320,7 +325,7 @@ def restore(entry_id: str) -> dict:
         target.parent.mkdir(parents=True, exist_ok=True)
         # os.replace() under the hood: replaces a link rather than following
         # one, and lands the file atomically.
-        _write_atomic(target, payload.read_text(encoding="utf-8"))
+        _write_atomic(target, original_bytes)
         e["restored"] = True
         e["restored_at"] = _now()
         _save_index(entries)

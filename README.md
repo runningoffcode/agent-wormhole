@@ -149,8 +149,14 @@ verification: **[docs.agentwormhole.com#launchpad-kit](https://docs.agentwormhol
 | Token verification, badges, attestation pages, signing key | free, no key |
 | Local tools (`wormhole-guard`, `wormhole-x402` core) | free, offline |
 
-Prepaid USDC via x402 on Base or Solana. No subscription, no minimum. When
+Prepaid via x402: USDC on Base or Solana, or USDG on Robinhood Chain. No
+subscription, no minimum. When
 credit runs out the endpoint answers 402 with an exact, signed-payable quote.
+
+All of this revenue buys back $WORM on Robinhood Chain, and the $WORM bought
+is burned. The free tools never need the token. The wallets, and how
+Wormbook's fees are used, are in the
+[docs](https://agentwormhole.com/docs#worm).
 
 ## Why
 

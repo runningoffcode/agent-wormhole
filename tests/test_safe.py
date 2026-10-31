@@ -71,7 +71,9 @@ class TestStructuralGuarantee(unittest.TestCase):
 
     def test_replace_cannot_introduce_a_plaintext_field(self):
         sf = SafeFinding(rule_id="WORM-001", severity="critical")
-        with self.assertRaises(ValueError):
+        # NamedTuple._replace raises ValueError for an unknown field up to
+        # Python 3.12 and TypeError from 3.13 on; either way it is refused.
+        with self.assertRaises((ValueError, TypeError)):
             sf._replace(excerpt="secret plaintext")
 
     def test_severity_rank_matches_finding(self):

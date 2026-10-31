@@ -129,8 +129,22 @@ def check_permissions(settings_path: Path) -> list:
             detail=str(e), path=str(settings_path),
             remediation="Verify the file exists and is valid JSON.")]
 
-    perms = data.get("permissions", {}) or {}
+    # Valid JSON is not necessarily a settings object. `[]`, a bare string or
+    # `"permissions": "x"` used to raise here and abort the whole scan, so
+    # every other file's findings were lost with it.
+    perms = (data.get("permissions", {}) or {}) if isinstance(data, dict) else None
+    if not isinstance(perms, dict):
+        return [Finding(
+            rule_id="POSTURE-000", severity="info",
+            title="Settings file unreadable",
+            detail="settings or its `permissions` block is not a JSON object",
+            path=str(settings_path),
+            remediation="Verify the file exists and is valid JSON.")]
     allow = perms.get("allow", []) or []
+    # Only string entries can grant anything; a stray number or object must
+    # not raise and take the wildcard check down with it.
+    allow = [a for a in allow if isinstance(a, str)] \
+        if isinstance(allow, list) else []
     deny = perms.get("deny", []) or []
     p = str(settings_path)
 

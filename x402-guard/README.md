@@ -556,6 +556,17 @@ instructions nobody has catalogued yet.
 | `X402-108` | Payer binding (opt-in `expectedPayer`) — the proven signer is not the named wallet |
 | `X402-110` | `erc7710` delegation — opaque `permissionContext`, no offline destination or amount → abstain |
 
+**The opt-in spending policy and sign-in requests, both rails (0.10.0):**
+
+| Code | Check |
+|---|---|
+| `X402-501` | The payment moves more than the policy's per-payment cap for its asset |
+| `X402-502` | The asset is not one the policy allows (or has no cap once caps are set) |
+| `X402-503` | The payee is not one the policy allows |
+| `X402-504` | The guard would pass the policy's lifetime total for the asset |
+| `X402-601` | A sign-in request names a site other than the one the agent contacted |
+| `X402-602` | A sign-in request with no known site to bind it to, or one that does not parse |
+
 Verified today: EIP-3009 `transferWithAuthorization`, for the tokens below.
 Each EIP-712 domain was read from the deployed contract, not taken from
 documentation. Any other (chain, token) pair abstains.
@@ -648,7 +659,99 @@ The receipt's `resource_digest` + the verify receipt's `request_digest` are
 the paid-a-got-a chain: a third party holding the response bytes replays both
 with no access to anyone's servers. Codes and digests only — no content.
 
+### A budget the quote cannot set
+
+Every check above asks whether the payment is the one the merchant quoted.
+When the merchant is the attacker, the quote **is** the attack: a hostile API
+that quotes your wallet's whole balance gets a payment that matches its quote
+exactly, and conformance allows it. That was the first critical finding in
+V12's review of the x402 SDKs (October 2026). Only a budget refuses it, and only
+the payer can set one:
+
+```ts
+const spendPolicy = {
+  // the most one payment may move, per asset, in base units (USDC: 6 decimals)
+  maxPerPayment: { "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913": "1000000" }, // $1
+  payees: [merchant],          // optional: the only payees allowed
+  // guards only: the most one guard signs in total over its lifetime
+  maxTotal: { "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913": "25000000" },     // $25
+};
+inspectAuthorization(quote, payload, { spendPolicy });       // EVM
+inspectPayment(tx, quote, { spendPolicy });                  // Solana
+guardEvmSigner(account, getQuote, { spendPolicy });          // caps + lifetime total
+verify({ network, quote, payload, options: { spendPolicy } }, ctx);
+```
+
+`X402-501` refuses a payment over its cap, `X402-502` an asset the policy does
+not allow (once `maxPerPayment` is set, an asset with no entry is not allowed),
+`X402-503` a payee it does not allow, and `X402-504` a guard past its lifetime
+total. The guards reserve a payment against the total before the wallet signs
+and release exactly that hold if the wallet does not, so concurrent payments
+cannot both slip under it; a total counts the payments signed while it is set.
+A policy that cannot be read **abstains**: a misspelt `maxPerPaymnet` must not
+read as "no cap". That covers an unknown key (a symbol or a non-enumerable one
+included), an amount that is not a non-negative integer, an address that does
+not parse, a list that is not a plain array, a getter that throws (on the
+policy or on `spendPolicy` itself), and a value deeper or larger than a policy
+can be. A policy is read once, into data, and everything after works on that
+reading. A guard reads it once per signing, so the check and the lifetime
+total see the same numbers. `verify()` gives its check and its receipt the
+same reading, and the request digest hashes the policy as the request's chain
+reads it: `"0010"` and `10n` are one cap, and a policy that abstains never
+shares a digest with one that reads.
+
+**This is the one control here that is off by default.** A cap needs the
+payer's own numbers, and a default that guessed them would either refuse
+honest traffic or bound nothing. Without a `spendPolicy` the guard does not cap
+amounts. Set one: a per-payment cap a little above your largest expected price
+is the recommended minimum.
+
+### Sign-in requests
+
+The guarded signers refuse message signing by default, which also blocks
+Sign-In-With-X logins. An application that allows message signing to use them
+— `allow: ["signMessage"]` on EVM; `"signMessage"`, `"signMessages"` or
+`"signIn"` on Solana — gets the check x402's own fix adopted, not a bare
+pass-through: a sign-in request (EIP-4361 / Sign-In-With-Solana) is signed only
+when it names the site the agent contacted, by its domain and its URI.
+
+```ts
+guardEvmSigner(account, getQuote, { allow: ["signMessage"], origin: "https://api.example" });
+guardSigner(wallet, getQuote, { allow: ["signIn"], origin: () => currentApiOrigin });
+```
+
+`X402-601` refuses a login for another site — the relay V12 reported, where a
+server hands the agent a fresh challenge from a site it wants into. `X402-602`
+refuses a sign-in request when no site is known (no `origin`, and no `resource`
+on the quote) or when it looks like one and does not parse strictly. Anything
+that reads as a sign-in request — the header phrase, even behind lookalike or
+invisible characters, or its `URI:` and `Nonce:` fields — must parse, so a
+message a lenient verifier would accept as a login is refused rather than
+signed unread. Messages that are not sign-in requests are signed as before. A
+login in some other format is not recognised: keep message signing off unless
+you need it.
+
+What the check reads is what gets signed. A message is read once, the way the
+signer reads it — viem's `{ message }` or `{ message: { raw } }`, ethers' string
+or bytes, a Solana wallet's bytes or the Wallet Standard's `{ account, message }`
+— and the signer is handed that reading, never the caller's object, so a getter
+or a buffer changed afterwards cannot reach the wallet. An argument two signers
+would read differently (`message` beside a top-level `raw`) is refused. Every
+argument is checked: the Wallet Standard's `signMessage` and `signIn` take
+several inputs, and each must pass, including the transaction-bytes check on
+Solana. Sites are compared as origins, so `api.example:443` is
+`https://api.example`; a sign-in request with a line break other than `\n`, a
+URI with credentials in it, or a `signIn` field with a line break in it is
+refused. CRLF counts as such a line break: the siwe library and the Wallet
+Standard's parser refuse it too. Every `signIn` field a wallet writes into its
+message must be text, and `resources` a list of text. A wallet converts
+anything else itself, so an array or an object with its own `toString` could
+come out as lines the check never read.
+
 ## What it does not do
+
+**Without a `spendPolicy` it does not cap amounts.** A payment that matches a
+quote for your whole balance is allowed; see *A budget the quote cannot set*.
 
 **It is not a simulator and does not replace one.** Run both; they answer
 different questions. Simulation tells you what a transaction does. This tells
@@ -686,7 +789,10 @@ No quote means refuse.
 
 Every optional security parameter with a permissive default ends up unset in
 production, and then the guard reports green on 100% of traffic and nobody
-notices. This one has no permissive default.
+notices. This one has no permissive default — with one named exception, the
+spending policy, because a cap needs the payer's own numbers (see *A budget the
+quote cannot set*). Leaving it unset is a choice to cap nothing; make it on
+purpose.
 
 ## Offline
 

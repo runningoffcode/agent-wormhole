@@ -1,5 +1,65 @@
 # Changelog
 
+## wormhole-x402 0.10.0 — 2026-11-01
+
+Two gaps that V12's review of the x402 SDKs (2026-10-22) exposed, measured
+against 0.9.9 for the case study at agentwormhole.com/cases/x402-sdk.
+
+**An opt-in spending policy (X402-501..504).** A hostile API that quotes a
+wallet's whole balance passes every conformance check, because the quote is the
+attack: measured on 0.9.9, a matched 25,000 USDC authorization to the API's own
+address returned allow. `spendPolicy` refuses it. It caps each payment per
+asset (`maxPerPayment`, X402-501), limits the assets and payees allowed
+(X402-502, X402-503) and, in `guardEvmSigner` and `guardSigner`, a lifetime
+total per asset (`maxTotal`, X402-504), reserved before the wallet signs and
+released if it does not, so concurrent payments cannot both fit under it. It is
+read by `inspectAuthorization`, `inspectTypedDataRequest`, `inspectPayment`,
+both guards and `verify()`, whose request digest now covers it as the
+request's lane reads it: two spellings of one policy share a digest, and a
+policy that cannot be read never shares one with a policy that can. **Off
+unless given**, so no existing caller's answers change. A policy that cannot
+be read abstains. That includes a getter that throws, an unknown key (symbol
+and non-enumerable keys included) and a list that is not a plain array. A
+policy is read once, into data. A guard reads its policy once per signing,
+for both the check and the lifetime total. `verify()` gives its check and its
+receipt one reading of the request. A lifetime total counts the payments
+signed while it is set, and a call the wallet refuses releases exactly what
+that call held.
+
+**Sign-in requests bound to the site contacted (X402-601, X402-602).** The
+guarded signers refuse message signing by default. An application that allowed
+it to use Sign-In-With-X got a bare pass-through, so a login a server relayed
+for another site was signed: measured on 0.9.9 on both rails. An allowed
+`signMessage` (EVM), and `signMessage`, `signMessages` and `signIn` (Solana),
+now sign a sign-in request only when it names the site the agent contacted by
+its domain and URI — from the new `origin` option, or the quote's `resource`
+when the 402 entry carried one. With no known site, or a request that does not
+parse strictly, it is refused. Recognition is wider than parsing: the header
+phrase behind lookalike or invisible characters, or a request's `URI:` and
+`Nonce:` fields without it, must parse or be refused. Sites are compared as
+origins, so an explicit default port is the same site. Messages that are not
+sign-in requests are signed as before.
+
+**Behaviour that changed for an allowed message signer:** a sign-in request is
+now checked, and an argument that cannot be read as a message is refused
+(X402-602) rather than signed unread, as is one two signers would read
+differently (viem's `message` beside a top-level `raw`). The signer is handed
+the message as the check read it — a copy of any bytes, a fresh object — rather
+than the caller's argument. A sign-in request with a line break other than
+`\n` (CRLF included, which the siwe library refuses too), a URI with
+credentials, a `signIn` field that is not text, or one with a line break is
+refused. An application signing in through the guard passes `origin`.
+
+**Also fixed:** an allowed `signMessages` read its argument only as a single
+message, so an array carrying transaction bytes reached the wallet without the
+check that refuses signing a transaction as a "message". On Solana every
+argument is checked now — each message in an array, each input of the Wallet
+Standard's variadic `signMessage` and `signIn`, and the `{ account, message }`
+input, which skipped the transaction check.
+
+The opt-in codes are registered in the event sink's vocabulary. 174 new cases;
+50 deliberate breaks of the fixes are each caught.
+
 ## wormhole-x402 0.9.9 — 2026-09-24
 
 **X402-214: an instruction recovered from the separator-free stream.** Closes

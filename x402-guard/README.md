@@ -236,6 +236,12 @@ const signer = guardEvmSigner(myWalletClient, () => currentQuote);
 await signer.signTypedData({ domain, types, primaryType, message });
 ```
 
+The typed-data request is what the wallet signs, so it is the one checked. A
+call that carries an already-signed payment beside a typed-data request is
+refused, with the typed request's own findings when it has any: which of the
+two a wallet would sign is the wallet's choice, and one cannot be checked for
+the other.
+
 Both wrappers are **default-deny**. Every function property is wrapped, not a
 named subset: the ones the wrapper knows how to check are checked, and
 everything else is *refused* rather than handed back. Object properties that
@@ -323,7 +329,11 @@ of clock allowance, and never longer than a day; a quote that names no timeout
 gets the day, and one whose timeout cannot be read gets no verdict. Past that,
 `X402-105` refuses. On a signed payment (`inspectAuthorization`, `verify()`), a
 window over a day is reported as a medium `X402-105` instead: the signature
-already exists, and the payer's guard is the place to refuse it.
+already exists, and the payer's guard is the place to refuse it. The caller's
+`clockSkewSeconds` widens the other window checks, never these caps.
+`evmQuoteFromRequirements` carries the 402 entry's timeout as a whole number of
+seconds, and leaves out any other value, so a converted quote's request digest
+is what it was without it.
 
 ## The one design constraint
 

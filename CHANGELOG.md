@@ -15,12 +15,24 @@ collectable long after the one request it paid for.
 - On a signed payment (`inspectAuthorization`, `verify()`), a window over a day
   is reported as a medium X402-105 and does not refuse. The quote's timeout is
   not read there, because the request digest does not cover it.
-- `evmQuoteFromRequirements` carries `maxTimeoutSeconds`. Receipt digests are
-  unchanged.
+- The caller's `clockSkewSeconds` widens the other window checks, never these
+  caps.
+- `evmQuoteFromRequirements` carries `maxTimeoutSeconds` as a whole number of
+  seconds and leaves out any other value, so a converted quote's request digest
+  is unchanged.
+
+**Also fixed, in 0.10.0 and earlier: `guardEvmSigner` checked an attached
+signed payment instead of the typed message the wallet signs.** A signing call
+carrying both an already-signed payment and a typed-data request had the
+payment checked and the typed message passed to the wallet unchecked, so plain
+JSON could have the wallet sign a different payee, amount or window. The
+typed-data request is now checked first, and a call carrying both is refused,
+with the typed request's own findings when it has any.
 
 **Behaviour that changed:** an agent whose code signs EIP-3009 authorizations
 valid for longer than the quote's timeout (or a day) is now refused before
-signing. x402's own clients sign `now + maxTimeoutSeconds`, which passes.
+signing. x402's own clients sign `now + maxTimeoutSeconds`, which passes when
+that timeout is under a day.
 
 ## wormhole-x402 0.10.0 — 2026-11-01
 

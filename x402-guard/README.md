@@ -556,11 +556,31 @@ instructions nobody has catalogued yet.
 | `X402-108` | Payer binding (opt-in `expectedPayer`) — the proven signer is not the named wallet |
 | `X402-110` | `erc7710` delegation — opaque `permissionContext`, no offline destination or amount → abstain |
 
-Verified today: EIP-3009 `transferWithAuthorization`, on the chains in the
-trusted domain table (Base first, on-chain verified). Permit2 *positive*
-verification is deferred — a Permit2 payload abstains or refuses rather than
-being green-lit, until its witness type is checked against a real facilitator
-signature.
+Verified today: EIP-3009 `transferWithAuthorization`, for the tokens below.
+Each EIP-712 domain was read from the deployed contract, not taken from
+documentation. Any other (chain, token) pair abstains.
+
+| Chain | Chain ID | Token | Contract | EIP-712 name | Version |
+|---|---|---|---|---|---|
+| Base | 8453 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | USD Coin | 2 |
+| Ethereum | 1 | USDC | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | USD Coin | 2 |
+| Arbitrum One | 42161 | USDC | `0xaf88d065e77c8cC2239327C5EDb3A432268e5831` | USD Coin | 2 |
+| Polygon PoS | 137 | USDC | `0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359` | USD Coin | 2 |
+| Robinhood Chain | 4663 | USDG | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` | Global Dollar | 1 |
+| Arc | 5042 | USDC | `0x3600000000000000000000000000000000000000` | USDC | 2 |
+| Kite | 2366 | USDC.e | `0x7aB6f3ed87C42eF0aDb67Ed95090f8bF5240149e` | Bridged USDC (Kite AI) | 2 |
+| Base Sepolia (testnet) | 84532 | USDC | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | USDC | 2 |
+| Arc Testnet | 5042002 | USDC | `0x3600000000000000000000000000000000000000` | USDC | 2 |
+| Robinhood Chain Testnet | 46630 | USDG | `0x7E955252E15c84f5768B83c41a71F9eba181802F` | Global Dollar | 1 |
+
+The quote's network is read as CAIP-2 (`eip155:4663`, as in x402 v2) or as one
+of the v1 names `base`, `base-sepolia`, `ethereum`, `mainnet`,
+`ethereum-mainnet`, `arbitrum`, `arbitrum-one`, `polygon` and
+`polygon-mainnet`. Any other network name abstains.
+
+Permit2 *positive* verification is deferred — a Permit2 payload abstains or
+refuses rather than being green-lit, until its witness type is checked against
+a real facilitator signature.
 
 ### Whose funds moved
 

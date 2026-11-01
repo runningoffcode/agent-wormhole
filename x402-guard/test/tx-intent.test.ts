@@ -281,6 +281,18 @@ describe("what the check cannot read, it does not allow", () => {
     expect(inspectTransaction(intent, tx).decision).toBe("abstain");
   });
 
+  it("answers with a verdict, not an exception, for an object that throws when read", () => {
+    const revoked = () => {
+      const { proxy, revoke } = Proxy.revocable({}, {});
+      revoke();
+      return proxy;
+    };
+    expect(inspectTransaction(intent, revoked()).decision).toBe("abstain");
+    expect(inspectTransaction(revoked() as TxIntent, { to: MERCHANT, value: 1n }).decision).toBe("abstain");
+    const throwing = { kind: "native.transfer", chainId: CHAIN, to: MERCHANT, get amount(): never { throw new Error("boom"); } };
+    expect(inspectTransaction(throwing as unknown as TxIntent, { to: MERCHANT, value: 1n }).decision).toBe("abstain");
+  });
+
   it("refuses a contract creation", () => {
     expect(codes(inspectTransaction(intent, { value: 1n, data: "0x60" }))).toContain("X402-701");
   });

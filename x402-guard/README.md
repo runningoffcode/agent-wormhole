@@ -587,8 +587,8 @@ instructions nobody has catalogued yet.
 | `X402-502` | The asset is not one the policy allows (or has no cap once caps are set) |
 | `X402-503` | The payee is not one the policy allows |
 | `X402-504` | The guard would pass the policy's lifetime total for the asset |
-| `X402-601` | A sign-in request names a site other than the one the agent contacted |
-| `X402-602` | A sign-in request with no known site to bind it to, or one that does not parse |
+| `X402-601` | A sign-in request, or a credential line such as an Orbio wallet key, for a site other than the one the agent contacted |
+| `X402-602` | A sign-in request or credential line with no known site to bind it to, or a sign-in request that does not parse |
 
 **Transactions held to an intent, EVM (0.11.0), `wormhole-x402/tx`:**
 
@@ -779,7 +779,14 @@ Solana. Sites are compared as origins, so `api.example:443` is
 `https://api.example`; a sign-in request with a line break other than `\n`, a
 URI with credentials in it, or a `signIn` field with a line break in it is
 refused. CRLF counts as such a line break: the siwe library and the Wallet
-Standard's parser refuse it too. Every `signIn` field a wallet writes into its
+Standard's parser refuse it too.
+
+Some services make the signature of a fixed line into an API key. An Orbio
+wallet key is the signature of `Orbio API key · chain 4663 · epoch 0`, which
+names no site, so whatever gets an agent to sign that line holds its key until
+the wallet rotates it. A guarded wallet signs that line only while the agent is
+talking to orbio.so, or a subdomain of it, over https. Elsewhere it is refused
+with `X402-601`, or with `X402-602` when no site is known. Every `signIn` field a wallet writes into its
 message must be text, and `resources` a list of text. A wallet converts
 anything else itself, so an array or an object with its own `toString` could
 come out as lines the check never read.
@@ -833,9 +840,26 @@ An intent is one of:
 
 A constraint is `{ eq }`, `{ oneOf }`, `{ lte, gte }`, `{ tuple }` for a
 struct's components, `{ items }` for an array's, `{ abi, args }` for bytes that
-hold ABI-encoded values, or `{ any: true }`. There is no default: an argument
-left open is written `{ any: true }`, so a reader of the intent sees every
-gap.
+hold ABI-encoded values, `{ signature: true }` for 64- or 65-byte signature
+bytes the called contract verifies, or `{ any: true }`. There is no default: an
+argument left open is written `{ any: true }`, so a reader of the intent sees
+every gap.
+
+**Permit2 allowances.** A router client often asks the wallet to sign a
+Permit2 `PermitSingle` before the swap: typed data, not a transaction, and
+standing authority, because the spender can pull the token until it expires.
+With `intentFor`, the guard asks for its intent too, and signs it only when it
+matches a `permit2.permit` intent:
+
+- the domain is Permit2's own on the intent's chain;
+- the struct is Permit2's exact `PermitSingle`;
+- the token, spender and amount are the intent's exactly, and an unlimited
+  amount only when the intent says `"unlimited"`;
+- the expiration and the signature deadline are within the intent's bounds.
+
+The wallet signs the request as read. Without `intentFor`, a permit is refused
+as before (`X402-106`). `inspectPermit(intent, request)` runs the same check on
+its own.
 
 - **The calldata must be what it decodes to.** It must re-encode to the same
   bytes, nested bytes included. Trailing bytes, non-zero padding and
@@ -864,17 +888,33 @@ gap.
   covers transfer, transferFrom, approve and Permit2's approve and
   transferFrom, plus native value, which the policy names as `NATIVE_ASSET`.
 
-Presets build `call` intents for common protocols:
+Presets build intents for common protocols:
 
 - `presets.morpho.borrow`: Morpho Blue, an asset-denominated borrow from an
   exact market.
 - `presets.uniswapV4.swapExactInSingle`: one exact-input swap through a
-  UniversalRouter, with SWAP_EXACT_IN_SINGLE, SETTLE_ALL and TAKE_ALL. `fields`
-  names the router's swap parameters: 6 for routers with v4-periphery's
-  per-hop slippage (March 2026), including both on Robinhood Chain; 5 for
-  earlier ones.
-- `presets.permit2.approve`: Permit2's `approve`, with an exact amount and a
-  bounded expiration.
+  UniversalRouter, with SWAP_EXACT_IN_SINGLE, SETTLE_ALL and TAKE_ALL.
+  - `fields` names the router's swap parameters: 6 for routers with
+    v4-periphery's per-hop slippage (March 2026), including both on Robinhood
+    Chain; 5 for earlier ones.
+  - `permit` adds the router's PERMIT2_PERMIT command, an allowance for the
+    input token with the router as spender. Sign that allowance under
+    `presets.permit2.permit`.
+- `presets.permit2.approve` and `presets.permit2.permit`: Permit2's on-chain
+  `approve` and its signed `PermitSingle`, each with an exact amount and
+  bounded times.
+- `presets.layerZero.oftSend`: a LayerZero v2 OFT `send`. It fixes the
+  destination and recipient, sends no compose message, and bounds the native
+  fee. `extraOptions` is exact, `"0x"` unless given, because an executor
+  option can deliver gas to any address on the destination, paid from this
+  fee.
+- `presets.orbio`: Orbio's contracts on Robinhood Chain (`ORBIO`):
+  - `buy` and `buyAndActivate` on its exchange, with a USDG bound, a positive
+    CREDIT floor and an exact recipient or beneficiary;
+  - `activate`, which burns CREDIT into a service balance for good, the
+    agent's own or an exact beneficiary's;
+  - `approveUsdg` and `approveBridge`, exact approvals;
+  - `bridge` to Ethereum or Solana through its LayerZero adapters.
 
 ## What it does not do
 

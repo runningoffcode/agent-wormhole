@@ -27,7 +27,12 @@ carrying both an already-signed payment and a typed-data request had the
 payment checked and the typed message passed to the wallet unchecked, so plain
 JSON could have the wallet sign a different payee, amount or window. The
 typed-data request is now checked first, and a call carrying both is refused,
-with the typed request's own findings when it has any.
+with the typed request's own findings when it has any. The request is also read
+at the positions the signer reads it, viem's first argument or ethers' first
+three: the guard used to take the first argument anywhere that looked like a
+whole request, so one carried inside an ethers value, or passed after the
+three, was checked while ethers signed the three. A call that could be read
+either way is refused.
 
 **Behaviour that changed:** an agent whose code signs EIP-3009 authorizations
 valid for longer than the quote's timeout (or a day) is now refused before

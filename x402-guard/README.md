@@ -236,11 +236,13 @@ const signer = guardEvmSigner(myWalletClient, () => currentQuote);
 await signer.signTypedData({ domain, types, primaryType, message });
 ```
 
-The typed-data request is what the wallet signs, so it is the one checked. A
-call that carries an already-signed payment beside a typed-data request is
-refused, with the typed request's own findings when it has any: which of the
-two a wallet would sign is the wallet's choice, and one cannot be checked for
-the other.
+The typed-data request is what the wallet signs, so it is the one checked, read
+where the signer reads it: viem's one request object, the first argument, or
+ethers' domain, types and value, the first three. A call that could be read
+either way, or that carries an already-signed payment beside a typed-data
+request, is refused, with the typed request's own findings when it has any:
+which one a wallet would sign is the wallet's choice, and one cannot be checked
+for the other.
 
 Both wrappers are **default-deny**. Every function property is wrapped, not a
 named subset: the ones the wrapper knows how to check are checked, and

@@ -46,6 +46,35 @@ import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
+import {
+  checkSpendPolicy,
+  createSpendTracker,
+  pinPolicyOption,
+  readPolicyOption,
+  type ReadPolicy,
+  type SpendPolicy,
+} from "./policy.js";
+import {
+  inspectSignIn,
+  inspectSignInInput,
+  readSignInInput,
+  type OriginSource,
+} from "./signin.js";
+
+export {
+  type SpendPolicy,
+  type PolicyFinding,
+  readSpendPolicy,
+  checkSpendPolicy,
+} from "./policy.js";
+export {
+  inspectSignIn,
+  inspectSignInInput,
+  isSignInText,
+  resolveOrigin,
+  type SignInVerdict,
+  type OriginSource,
+} from "./signin.js";
 
 /** The quote, parsed from the server's 402 response. Never agent-authored. */
 export interface PaymentQuote {
@@ -73,6 +102,10 @@ export interface PaymentQuote {
   /** The entry's `extra.feePayer`, verbatim: who the merchant CLAIMS pays the
    *  fee. Only ever the last conjunct of a finding-adding test. */
   feePayer?: string;
+  /** The URL the entry answers for, verbatim (0.10.0). Read only by
+   *  `guardSigner`'s sign-in check, as the site the agent contacted when no
+   *  `origin` option is given; no payment rule reads it. */
+  resource?: string;
 }
 
 export type Decision = "allow" | "refuse" | "abstain";
@@ -191,7 +224,28 @@ export interface InspectOptions {
    * offline is not something to report as payer-checked.
    */
   expectedPayer?: string;
+  /**
+   * An opt-in spending policy (0.10.0; ./policy): a per-payment cap per mint
+   * (X402-501), the mints allowed (X402-502) and the payees allowed
+   * (X402-503). It refuses a payment that matches its quote when the quote is
+   * itself more than the payer allows. Absent, nothing changes; present and
+   * unreadable, the verdict is abstain.
+   */
+  spendPolicy?: SpendPolicy;
 }
+
+/**
+ * The Solana lane's spelling of an address in a spending policy: canonical
+ * base58, or null when it is not one. Exported so a request digest reads a
+ * policy exactly as this lane does (verify.ts).
+ */
+export const svmPolicyAddress = (a: string): string | null => {
+  try {
+    return new PublicKey(a.trim()).toBase58();
+  } catch {
+    return null;
+  }
+};
 
 // --- helpers ---------------------------------------------------------------
 
@@ -271,6 +325,19 @@ export function inspectPayment(
       decision: "abstain",
       findings,
       reason: `could not deserialize the transaction (${err}) — refusing to report it as safe`,
+    };
+  }
+
+  // A spending policy that cannot be read is an abstain, never a policy
+  // silently skipped (0.10.0): a caller who set a cap and got an allow
+  // believes the cap was applied.
+  // Read once, and never thrown out of (./policy, readPolicyOption).
+  const policy = readPolicyOption(opts, svmPolicyAddress);
+  if (typeof policy === "string") {
+    return {
+      decision: "abstain",
+      findings,
+      reason: `${policy} — refusing to report the payment as checked against it`,
     };
   }
 
@@ -963,6 +1030,23 @@ export function inspectPayment(
         actual: transferredAmount.toString(),
       });
     }
+
+    // --- 4b. the payer's own spending policy (X402-501..503) ---------------
+    // On what the transfer actually moves, after conformance, so a payment
+    // that does not match its quote keeps its own findings; the policy adds
+    // the case conformance cannot see, a quote that is itself the attack.
+    if (policy !== null) {
+      const asset = svmPolicyAddress(quote.asset);
+      const payTo = svmPolicyAddress(quote.payTo);
+      if (asset === null || payTo === null) {
+        return {
+          decision: "abstain",
+          findings,
+          reason: "the quote's mint or payee cannot be read for the spending policy",
+        };
+      }
+      findings.push(...checkSpendPolicy(policy, { asset, payTo, amount: transferredAmount }));
+    }
   }
 
   // --- 5. memo directive scan ---------------------------------------------
@@ -1029,6 +1113,11 @@ const SIGNING_METHODS = new Set([
  */
 const MESSAGE_SIGNING_METHODS = new Set(["signMessage", "signMessages", "signIn"]);
 
+/** A Wallet Standard message input: an object carrying a `message` field. */
+function carriesMessageField(v: unknown): boolean {
+  return typeof v === "object" && v !== null && !(v instanceof Uint8Array) && !Array.isArray(v) && "message" in v;
+}
+
 /** Decode base64 without throwing; null when it is not base64. */
 function tryDecodeBase64(s: string): Uint8Array | null {
   try {
@@ -1092,12 +1181,95 @@ export function guardSigner<T extends { signTransaction: Function }>(
      * path, e.g. `"provider.connect"`.
      */
     allow?: readonly string[];
+    /**
+     * The site the agent contacted, read at signing time (0.10.0; ./signin).
+     * When `allow` names `signMessage`, `signMessages` or `signIn`, a sign-in
+     * request (Sign-In-With-Solana) is signed only if it names this site; with
+     * no origin here and no `resource` on the quote, every sign-in request is
+     * refused. Messages that are not sign-in requests are unaffected.
+     */
+    origin?: OriginSource;
   } = {},
 ): T {
   const allowed = new Set(opts.allow ?? []);
+  // The spending policy's lifetime totals (X402-504), one ledger per guard.
+  const tracker = createSpendTracker();
 
-  const check = (tx: VersionedTransaction, method: string): Uint8Array => {
-    const quote = getQuote();
+  /** The quote's `resource`, the sign-in check's site when no origin is given. */
+  const resourceOf = (): unknown => {
+    try {
+      return getQuote()?.resource;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * Read the spending policy ONCE for this signing (./policy, pinPolicyOption).
+   * The check gets a plain copy of the reading, which reads back identically,
+   * and the lifetime total gets the reading itself: a policy read twice could
+   * check one cap and count against another.
+   */
+  const pinPolicy = (method: string): { opts: InspectOptions; policy: ReadPolicy | null } => {
+    const pinned = pinPolicyOption(opts, svmPolicyAddress);
+    if (typeof pinned === "string") {
+      throw new Error(
+        `x402-guard: refusing to sign via ${method}() (abstain). ` +
+          `${pinned} — refusing to report the payment as checked against it`,
+      );
+    }
+    return pinned;
+  };
+
+  /**
+   * Hold an allowed payment against the policy's lifetime totals before the
+   * wallet signs (X402-504), and hand back its release for a wallet that does
+   * not. Reserving first keeps two concurrent payments from both passing;
+   * releasing keeps a refused signature from counting.
+   */
+  const reserveTotal = (quote: PaymentQuote, method: string, policy: ReadPolicy | null): (() => void) => {
+    if (policy === null) return () => {};
+    const asset = svmPolicyAddress(quote.asset);
+    let amount: bigint | null = null;
+    try {
+      amount = BigInt(quote.amount);
+    } catch {
+      amount = null;
+    }
+    if (asset === null || amount === null) {
+      throw new Error(
+        `x402-guard: refusing to sign via ${method}() (abstain). ` +
+          "the quote's mint or amount cannot be read for the spending policy's totals",
+      );
+    }
+    const held = tracker.reserve(policy, asset, amount);
+    if (typeof held !== "function") {
+      throw new Error(
+        `x402-guard: refusing to sign via ${method}() (refuse). ${held.code}: ${held.message}`,
+      );
+    }
+    return held;
+  };
+
+  /** Call the wallet, and give every reservation back if it does not sign. */
+  const signHeld = async (fn: Function, self: unknown, args: unknown[], releases: (() => void)[]) => {
+    try {
+      return await fn.apply(self, args);
+    } catch (e) {
+      for (const release of releases) release();
+      throw e;
+    }
+  };
+
+  // The quote is read ONCE per signing, by guardFn, and handed to both the
+  // check and the lifetime total: a getter read twice could check one amount
+  // and count another.
+  const check = (
+    tx: VersionedTransaction,
+    method: string,
+    quote: PaymentQuote | null,
+    checkOpts: InspectOptions,
+  ): Uint8Array => {
     if (!quote) {
       throw new Error(
         `x402-guard: refusing to sign via ${method}() — no payment quote was ` +
@@ -1115,7 +1287,7 @@ export function guardSigner<T extends { signTransaction: Function }>(
           "serializable transaction, so it cannot be checked against the quote.",
       );
     }
-    const verdict = inspectPayment(serialized, quote, opts);
+    const verdict = inspectPayment(serialized, quote, checkOpts);
     if (verdict.decision !== "allow") {
       const detail = verdict.findings
         .map((f) => `${f.code}: ${f.message}`)
@@ -1139,25 +1311,117 @@ export function guardSigner<T extends { signTransaction: Function }>(
    * discriminate on whether the bytes deserialize, rather than refusing
    * the method outright (which makes it useless) or allowing it outright
    * (which re-opens the oracle).
+   *
+   * One message value — bytes or a string — checked, and handed back as what
+   * the wallet signs: a copy of the bytes that were checked, so a buffer the
+   * caller still holds cannot change between the check and the signature.
    */
-  const signMessageGuard = (fn: Function, method: string, self: unknown) =>
-    async (first: unknown, ...rest: unknown[]) => {
-      const bytes =
-        first instanceof Uint8Array
-          ? first
-          : typeof first === "string"
-            ? tryDecodeBase64(first)
-            : null;
-      if (bytes !== null && looksLikeTransaction(bytes)) {
+  const checkMessageValue = (value: unknown, method: string, fallback: unknown): Uint8Array | string => {
+    let bytes: Uint8Array | null;
+    let signed: Uint8Array | string;
+    if (value instanceof Uint8Array) {
+      signed = new Uint8Array(value);
+      bytes = signed;
+    } else if (typeof value === "string") {
+      signed = value;
+      bytes = tryDecodeBase64(value);
+    } else {
+      throw new Error(
+        `x402-guard: refusing ${method}() (refuse). X402-602: the message handed ` +
+          "to the signer is neither bytes nor text, so neither the transaction " +
+          "check nor the sign-in check can run on it",
+      );
+    }
+    if (bytes !== null && looksLikeTransaction(bytes)) {
+      throw new Error(
+        `x402-guard: refusing ${method}() — the bytes handed to it deserialize ` +
+          "as a Solana transaction message, and a transaction signature IS " +
+          "ed25519 over exactly those bytes. Signing them as a 'message' " +
+          "produces a valid transaction signature that no quote was ever " +
+          "checked against.",
+      );
+    }
+    // 0.10.0: the sign-in check (./signin). A string is read both as the text
+    // it is and as the base64 it may carry, since which one a wallet signs is
+    // the wallet's choice; either reading that is a sign-in request must name
+    // the site the agent contacted.
+    const readings: (Uint8Array | string)[] = [signed];
+    if (typeof signed === "string" && bytes !== null) readings.push(bytes);
+    for (const reading of readings) {
+      const v = inspectSignIn(reading, opts.origin, fallback);
+      if (v.decision !== "allow") {
         throw new Error(
-          `x402-guard: refusing ${method}() — the bytes handed to it deserialize ` +
-            "as a Solana transaction message, and a transaction signature IS " +
-            "ed25519 over exactly those bytes. Signing them as a 'message' " +
-            "produces a valid transaction signature that no quote was ever " +
-            "checked against.",
+          `x402-guard: refusing ${method}() (refuse). ` +
+            v.findings.map((f) => `${f.code}: ${f.message}`).join("; "),
         );
       }
-      return fn.apply(self, [first, ...rest]);
+    }
+    return signed;
+  };
+
+  /**
+   * One message as a wallet receives it: bytes, a string, or the Wallet
+   * Standard's `{ account, message }`. The object form gets the same checks
+   * as the others — it used to skip the transaction check, so an allowed
+   * `signMessage({ account, message: tx.message.serialize() })` signed a
+   * transaction no quote was checked against (AWG-010-02).
+   */
+  const checkMessage = (one: unknown, method: string, fallback: unknown): unknown => {
+    if (carriesMessageField(one)) {
+      // One pass over the input reads each own enumerable property once,
+      // `message` included, so no getter runs twice (AWG-010-08).
+      const o = one as Record<string, unknown>;
+      const copy: Record<string, unknown> = { ...o };
+      const value = Object.prototype.hasOwnProperty.call(copy, "message") ? copy["message"] : o["message"];
+      return { ...copy, message: checkMessageValue(value, method, fallback) };
+    }
+    return checkMessageValue(one, method, fallback);
+  };
+
+  const signMessageGuard = (fn: Function, method: string, self: unknown) =>
+    async (...args: unknown[]) => {
+      // The site is read once per call, for every message in it.
+      const fallback = resourceOf();
+      // EVERY argument (AWG-010-03). The Wallet Standard's signMessage takes
+      // its inputs variadically, `signMessages` takes an array, a wallet
+      // adapter one message; reading only the first let a second input —
+      // transaction bytes, or another site's login — be signed unchecked. An
+      // argument that cannot carry a message (a display hint is a string and
+      // is checked; a public key is not a message) passes as it was.
+      if (args.length === 0) checkMessage(undefined, method, fallback);
+      const checked = args.map((a, i) => {
+        if (Array.isArray(a)) return a.map((one) => checkMessage(one, method, fallback));
+        if (i === 0 || a instanceof Uint8Array || typeof a === "string" || carriesMessageField(a)) {
+          return checkMessage(a, method, fallback);
+        }
+        return a;
+      });
+      return fn.apply(self, checked);
+    };
+
+  /**
+   * An allowed Wallet Standard `signIn`, with its input held to the site the
+   * agent contacted (0.10.0). Its input IS a sign-in request: no domain, a
+   * domain for another site or a URI for another site is refused. Every input
+   * is checked — the method is variadic, and a second input for another site
+   * was signed unchecked (AWG-010-03) — and the wallet gets the copies that
+   * were checked. No input at all is refused: the wallet would pick the site.
+   */
+  const signInInputGuard = (fn: Function, method: string, self: unknown) =>
+    async (...inputs: unknown[]) => {
+      const fallback = resourceOf();
+      const checked = (inputs.length === 0 ? [undefined] : inputs).map((input) => {
+        const copy = readSignInInput(input);
+        const v = inspectSignInInput(copy ?? input, opts.origin, fallback);
+        if (v.decision !== "allow") {
+          throw new Error(
+            `x402-guard: refusing ${method}() (refuse). ` +
+              v.findings.map((f) => `${f.code}: ${f.message}`).join("; "),
+          );
+        }
+        return copy;
+      });
+      return fn.apply(self, checked);
     };
 
   /**
@@ -1187,20 +1451,33 @@ export function guardSigner<T extends { signTransaction: Function }>(
 
   const guardFn = (fn: Function, method: string, self: unknown) =>
     async (first: unknown, ...rest: unknown[]) => {
+      const quote = getQuote();
+      const pinned = pinPolicy(method);
       // The wallet receives the REBUILT transaction, never the caller's
       // object: a guard that checks one thing and signs another is not a
       // guard.
       if (Array.isArray(first)) {
         const rebuilt = first.map((tx) =>
-          rebind(check(tx as VersionedTransaction, method), method),
+          rebind(check(tx as VersionedTransaction, method, quote, pinned.opts), method),
         );
-        return fn.apply(self, [rebuilt, ...rest]);
+        // Every transaction checked first, then each held against the
+        // lifetime totals; one that does not fit releases the ones before it.
+        const releases: (() => void)[] = [];
+        try {
+          for (let i = 0; i < rebuilt.length; i++) {
+            releases.push(reserveTotal(quote as PaymentQuote, method, pinned.policy));
+          }
+        } catch (e) {
+          for (const release of releases) release();
+          throw e;
+        }
+        return signHeld(fn, self, [rebuilt, ...rest], releases);
       }
       const rebuilt = rebind(
-        check(first as VersionedTransaction, method),
+        check(first as VersionedTransaction, method, quote, pinned.opts),
         method,
       );
-      return fn.apply(self, [rebuilt, ...rest]);
+      return signHeld(fn, self, [rebuilt, ...rest], [reserveTotal(quote as PaymentQuote, method, pinned.policy)]);
     };
 
 
@@ -1222,6 +1499,9 @@ export function guardSigner<T extends { signTransaction: Function }>(
           // So the escape hatch is scoped rather than total: the method is
           // permitted, but bytes that deserialize AS A TRANSACTION are still
           // refused. A caller signing genuine messages is unaffected.
+          if (prop === "signIn" && typeof value === "function") {
+            return signInInputGuard(value as Function, qualified, target);
+          }
           if (MESSAGE_SIGNING_METHODS.has(prop) && typeof value === "function") {
             return signMessageGuard(value as Function, qualified, target);
           }
@@ -1372,6 +1652,7 @@ export function quoteFromRequirements(req: PaymentRequirements): PaymentQuote {
   };
   if (typeof req.scheme === "string") quote.scheme = req.scheme;
   if (typeof req.network === "string") quote.network = req.network;
+  if (typeof req.resource === "string") quote.resource = req.resource;
   // Read the single literal key `feePayer` and require a string. NOT a prefix
   // or keyword match: a `startsWith("feePayer")` heuristic turns
   // `feePayerRequired: false` — an entry DENYING gaslessness — into a critical

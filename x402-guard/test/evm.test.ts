@@ -824,10 +824,23 @@ describe("guardEvmSigner — the firewall", () => {
   it("honours an explicit allow, so an unmodelled method stays usable", async () => {
     // The escape hatch is an allowlist with a name on it rather than a silent
     // pass-through.
+    //
+    // 0.10.0 (these lines changed): an allowed signMessage now carries the
+    // sign-in check (signin.ts), so the call here is a plain message, which it
+    // signs exactly as before. The old `{ nonsense: true }` argument cannot be
+    // read as a message at all, and an allowed message signer now refuses
+    // that rather than signing it unread — asserted in the next case.
     const s = fakeSigner();
     const guarded = guardEvmSigner(s, () => quote, { allow: ["signMessage"] });
-    await expect(guarded.signMessage({ nonsense: true } as any)).resolves.toBe("0xsigned");
+    await expect(guarded.signMessage({ message: "hello" } as any)).resolves.toBe("0xsigned");
     expect(s.calls).toEqual(["signMessage"]);
+  });
+
+  it("0.10.0: an allowed signMessage refuses an argument it cannot read as a message (X402-602)", async () => {
+    const s = fakeSigner();
+    const guarded = guardEvmSigner(s, () => quote, { allow: ["signMessage"] });
+    await expect(guarded.signMessage({ nonsense: true } as any)).rejects.toThrow(/X402-602/);
+    expect(s.calls).toEqual([]);
   });
 
   it("accepts a REAL viem/ethers pre-signing typed-data call (AW-10)", async () => {

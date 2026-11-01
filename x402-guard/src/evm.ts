@@ -1070,13 +1070,15 @@ export async function inspectAuthorization(
   // quote's maxTimeoutSeconds is not read here: verify() hashes a request
   // without it, and a finding must not turn on a field the receipt's digest
   // leaves out.
-  if (validBefore > now + MAX_VALIDITY_SECONDS + skew) {
+  // The caller's clockSkewSeconds widens the other window checks, not this
+  // cap: a day is a day.
+  if (validBefore > now + MAX_VALIDITY_SECONDS) {
     findings.push({
       code: "X402-105",
       severity: "medium",
       message:
         "authorization stays valid for more than a day — a standing authorization that can be collected long after the request; the payer's guard refuses this before signing",
-      expected: `validBefore <= ${(now + MAX_VALIDITY_SECONDS + skew).toString()}`,
+      expected: `validBefore <= ${(now + MAX_VALIDITY_SECONDS).toString()}`,
       actual: `validBefore = ${validBefore.toString()}`,
     });
   }
@@ -1231,9 +1233,15 @@ export function evmQuoteFromRequirements(
     q.resource = req.resource;
   }
   // The window the merchant asked for, which the pre-signing check holds the
-  // authorization to (X402-105). Carried as given and read where it is used.
-  if (req.maxTimeoutSeconds !== undefined) {
-    q.maxTimeoutSeconds = req.maxTimeoutSeconds;
+  // authorization to (X402-105). Carried only as a whole number of seconds, so
+  // a converted quote hashes and scans as it did without it: verify() reads
+  // every string in a quote (its text digest and the quote-text scan), and a
+  // timeout written as a string or an object would have changed a request's
+  // digest, or its verdict, with nothing else changed. Anything else is
+  // dropped, which leaves the day.
+  const timeout = readTimeout(req.maxTimeoutSeconds);
+  if (typeof timeout === "bigint" && timeout <= BigInt(Number.MAX_SAFE_INTEGER)) {
+    q.maxTimeoutSeconds = Number(timeout);
   }
   return q;
 }
@@ -1476,8 +1484,10 @@ export function inspectTypedDataRequest(
   const quoted = timeout === undefined ? undefined : timeout + TIMEOUT_SLACK_SECONDS;
   const allowed = quoted === undefined || quoted > MAX_VALIDITY_SECONDS ? MAX_VALIDITY_SECONDS : quoted;
   // Critical, so it refuses here: this path refuses on critical findings only,
-  // and the window is the one thing to stop before the signature exists.
-  if (validBefore > now + allowed + skew) {
+  // and the window is the one thing to stop before the signature exists. The
+  // caller's clockSkewSeconds widens the other window checks, not this one:
+  // the ten minutes above are its clock allowance, and the day is a cap.
+  if (validBefore > now + allowed) {
     findings.push({
       code: "X402-105",
       severity: "critical",
@@ -1485,7 +1495,7 @@ export function inspectTypedDataRequest(
         allowed === quoted
           ? "authorization would stay valid longer than the quote's maxTimeoutSeconds allows — a standing authorization the merchant did not ask for"
           : "authorization would stay valid for more than a day — a standing authorization that can be collected long after the request",
-      expected: `validBefore <= ${(now + allowed + skew).toString()}`,
+      expected: `validBefore <= ${(now + allowed).toString()}`,
       actual: `validBefore = ${validBefore.toString()}`,
     });
   }
@@ -1795,17 +1805,31 @@ export function guardEvmSigner<T extends object>(
         );
       }
       const pinned = pinPolicy(method);
-      // A signed payload takes the signed path; a pre-signing typed-data
-      // request takes the pre-signing one. Both are real caller shapes.
+      // A pre-signing typed-data request takes the pre-signing path, a signed
+      // payload the signed one. Both are real caller shapes. The typed-data
+      // request is what a wallet signs, so it is looked for first: an
+      // already-signed payment attached beside it used to take precedence, and
+      // the guard checked that while the wallet signed the typed message next
+      // to it unchecked, a different payee, amount or window, from plain JSON.
+      // A call carrying both is refused: which one the wallet signs is the
+      // wallet's choice, and the guard cannot check one for the other.
+      const typed = typedDataFrom(args);
       const signed = signedPayloadFrom(args);
-      if (signed !== undefined) {
-        const v = await inspectAuthorization(quote, signed, pinned.opts);
+      if (typed !== undefined && signed !== undefined) {
+        refuse(
+          abstain(
+            "the call carries both a typed-data request and an already-signed payment, so which one the wallet would sign cannot be told",
+          ),
+          method,
+        );
+      }
+      if (typed !== undefined) {
+        const v = inspectTypedDataRequest(quote, typed, pinned.opts);
         if (v.decision !== "allow") refuse(v, method);
         return signHeld(fn, self, args, reserveTotal(quote, method, pinned.policy));
       }
-      const typed = typedDataFrom(args);
-      if (typed !== undefined) {
-        const v = inspectTypedDataRequest(quote, typed, pinned.opts);
+      if (signed !== undefined) {
+        const v = await inspectAuthorization(quote, signed, pinned.opts);
         if (v.decision !== "allow") refuse(v, method);
         return signHeld(fn, self, args, reserveTotal(quote, method, pinned.policy));
       }

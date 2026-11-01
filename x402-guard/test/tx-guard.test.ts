@@ -84,6 +84,13 @@ describe("signTransaction with an intent", () => {
     expect(seen!.data).toBe(transfer(MERCHANT, 1n));
   });
 
+  it("keeps viem's own chain assertion: assertChainId: false is not handed on", async () => {
+    const s = localSigner();
+    const g = guardEvmSigner(s, () => null, { intentFor: () => pay });
+    await g.signTransaction({ to: USDC, data: transfer(MERCHANT, 1n), assertChainId: false, ...fees });
+    expect(s.handed[0]).not.toHaveProperty("assertChainId");
+  });
+
   it("hands the wallet what it checked, not the caller's object read again", async () => {
     const s = localSigner();
     const g = guardEvmSigner(s, () => null, { intentFor: () => pay });

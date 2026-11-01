@@ -156,6 +156,11 @@ const isPlain = (v: unknown): v is object => {
   return proto === Object.prototype || proto === null;
 };
 
+/** An array's items, each read once (its length too); null when it is not an array. */
+function listOf(v: unknown): unknown[] | null {
+  return Array.isArray(v) ? (Array.prototype.slice.call(v) as unknown[]) : null;
+}
+
 /**
  * An object's own string-keyed properties, each read once, enumerable or not.
  * A signer reads `tx.to` whether or not it is enumerable, so the check reads it
@@ -317,10 +322,11 @@ function normalize(p: AbiParameter, v: unknown, depth = 0): Norm | null {
   if (depth > MAX_DEPTH) return null;
   const arr = arrayOf(p);
   if (arr !== null) {
-    if (!Array.isArray(v)) return null;
-    if (arr.length !== null && v.length !== arr.length) return null;
+    const list = listOf(v);
+    if (list === null) return null;
+    if (arr.length !== null && list.length !== arr.length) return null;
     const out: Norm[] = [];
-    for (const item of v) {
+    for (const item of list) {
       const n = normalize(arr.element, item, depth + 1);
       if (n === null) return null;
       out.push(n);
@@ -330,7 +336,8 @@ function normalize(p: AbiParameter, v: unknown, depth = 0): Norm | null {
   const parts = componentsOf(p);
   if (parts !== null) {
     let values: unknown[];
-    if (Array.isArray(v)) values = v;
+    const list = listOf(v);
+    if (list !== null) values = list;
     else if (isPlain(v) && parts.every((c) => typeof c.name === "string" && c.name !== "")) {
       const s = snapshot(v);
       if (typeof s === "string" || s.symbols > 0 || s.props.size !== parts.length) return null;
@@ -389,8 +396,8 @@ function readRule(p: AbiParameter, c: unknown, where: string, depth: number): Ru
       return v === null ? `${where}.eq is not a value of type ${p.type}` : { k: "eq", v };
     }
     case "oneOf": {
-      const list = get("oneOf");
-      if (!Array.isArray(list) || list.length === 0) return `${where}.oneOf must be a non-empty array`;
+      const list = listOf(get("oneOf"));
+      if (list === null || list.length === 0) return `${where}.oneOf must be a non-empty array`;
       const v: Norm[] = [];
       for (const item of list) {
         const n = normalize(p, item);
@@ -420,9 +427,9 @@ function readRule(p: AbiParameter, c: unknown, where: string, depth: number): Ru
       return get("any") === true ? { k: "any" } : `${where}.any must be exactly true`;
     case "tuple": {
       const parts = componentsOf(p);
-      const list = get("tuple");
+      const list = listOf(get("tuple"));
       if (parts === null) return `${where} is a tuple rule on a ${p.type}`;
-      if (!Array.isArray(list) || list.length !== parts.length) {
+      if (list === null || list.length !== parts.length) {
         return `${where}.tuple must hold one constraint per component (${parts.length})`;
       }
       const rules: Rule[] = [];
@@ -435,9 +442,9 @@ function readRule(p: AbiParameter, c: unknown, where: string, depth: number): Ru
     }
     case "items": {
       const arr = arrayOf(p);
-      const list = get("items");
+      const list = listOf(get("items"));
       if (arr === null) return `${where} is an items rule on a ${p.type}`;
-      if (!Array.isArray(list)) return `${where}.items must be an array`;
+      if (list === null) return `${where}.items must be an array`;
       if (arr.length !== null && list.length !== arr.length) return `${where}.items must hold ${arr.length} constraints`;
       const rules: Rule[] = [];
       for (let i = 0; i < list.length; i++) {
@@ -450,7 +457,7 @@ function readRule(p: AbiParameter, c: unknown, where: string, depth: number): Ru
     case "abi,args": {
       if (p.type !== "bytes") return `${where} decodes a ${p.type}; only bytes can hold encoded values`;
       const abi = get("abi");
-      const list = get("args");
+      const list = listOf(get("args"));
       let params: readonly AbiParameter[];
       try {
         if (typeof abi !== "string") throw new Error("not a string");
@@ -458,7 +465,7 @@ function readRule(p: AbiParameter, c: unknown, where: string, depth: number): Ru
       } catch {
         return `${where}.abi is not a list of ABI types`;
       }
-      if (!Array.isArray(list) || list.length !== params.length) {
+      if (list === null || list.length !== params.length) {
         return `${where}.args must hold one constraint per decoded value (${params.length})`;
       }
       const rules: Rule[] = [];
@@ -516,7 +523,7 @@ function readIntent(intent: unknown): ReadIntent | string {
   if (k === "erc20.transfer") {
     if (token === null) return "the intent's token is not an address";
     const raw = s.props.get("to");
-    const list = Array.isArray(raw) ? raw : [raw];
+    const list = listOf(raw) ?? [raw];
     const recipients = new Set<string>();
     for (const r of list) {
       const a = intentAddressOf(r);
@@ -546,8 +553,8 @@ function readIntent(intent: unknown): ReadIntent | string {
   if (target === null) return "the intent's target is not an address";
   const fn = functionOf(s.props.get("signature"));
   if (fn === null) return "the intent's signature is not a function signature";
-  const args = s.props.get("args");
-  if (!Array.isArray(args) || args.length !== fn.inputs.length) {
+  const args = listOf(s.props.get("args"));
+  if (args === null || args.length !== fn.inputs.length) {
     return `the intent's args must hold one constraint per argument (${fn.inputs.length})`;
   }
   const rules: Rule[] = [];
@@ -629,6 +636,14 @@ const readOnce = new WeakSet<object>();
  * exactly once.
  */
 export function readTransaction(tx: unknown): ReadTransaction | Finding[] {
+  try {
+    return readTransactionOnce(tx);
+  } catch (e) {
+    return [{ code: "X402-709", severity: "high", message: `the transaction cannot be read (${e instanceof Error ? e.message : String(e)})` }];
+  }
+}
+
+function readTransactionOnce(tx: unknown): ReadTransaction | Finding[] {
   if (typeof tx === "object" && tx !== null && readOnce.has(tx)) return tx as ReadTransaction;
   const unreadable = (message: string): Finding[] => [{ code: "X402-709", severity: "high", message }];
   if (!isPlain(tx)) return unreadable("the transaction is not a plain object, so what a signer reads from it cannot be told");
@@ -719,7 +734,9 @@ export function readTransaction(tx: unknown): ReadTransaction | Finding[] {
 
   const fields = new Map<string, unknown>();
   for (const [k, v] of p) {
-    if (SIGNER_FIELDS.has(k)) fields.set(k, v);
+    // viem's assertChainId: false would let a wallet that changed chains
+    // since the guard asked sign anyway; the wallet keeps its own check.
+    if (SIGNER_FIELDS.has(k) && k !== "assertChainId") fields.set(k, v);
   }
   fields.set("to", rawTo);
   fields.set("data", data);
@@ -976,6 +993,15 @@ const TOKEN_MOVES = new Map(
  * caller's transaction or a `readTransaction` reading of it.
  */
 export function checkTransaction(intent: unknown, tx: unknown, opts: InspectTransactionOptions = {}): TransactionCheck {
+  try {
+    return checkOnce(intent, tx, opts);
+  } catch (e) {
+    const reason = `the intent or the transaction cannot be read (${e instanceof Error ? e.message : String(e)})`;
+    return { verdict: { decision: "abstain", reason, findings: [{ code: "X402-709", severity: "high", message: reason }] }, chainId: null, movements: [], tx: null };
+  }
+}
+
+function checkOnce(intent: unknown, tx: unknown, opts: InspectTransactionOptions): TransactionCheck {
   const none = (verdict: Verdict, chainId: bigint | null = null): TransactionCheck => ({ verdict, chainId, movements: [], tx: null });
   const read = readIntent(intent);
   if (typeof read === "string") {

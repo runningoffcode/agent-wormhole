@@ -316,7 +316,8 @@ describe("X402-104 signature recovery", () => {
 
 describe("X402-105 validity window", () => {
   it("REFUSES an authorization not yet valid", async () => {
-    const payload = await signAuth({ validAfter: FIXED_NOW + 1000n });
+    // A window that opens later and closes later still: only its start is wrong.
+    const payload = await signAuth({ validAfter: FIXED_NOW + 1000n, validBefore: FIXED_NOW + 2000n });
     const v = await inspectAuthorization(quote, payload, { nowSeconds: FIXED_NOW });
     expect(v.decision).toBe("refuse");
     expect(v.findings.some((f) => f.code === "X402-105")).toBe(true);

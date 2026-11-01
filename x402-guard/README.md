@@ -88,6 +88,7 @@ function of its request and replays identically later.
 | `wormhole-x402/mcp` | the verifier as an MCP tool server — `npx wormhole-x402-mcp` |
 | `wormhole-x402/provenance` | X402-301 — was this payee introduced by anything legitimate? |
 | `wormhole-x402/delivery` | X402-4xx — did the paid response deliver the quoted resource? |
+| `wormhole-x402/tx` | X402-7xx — is this transaction the one the agent meant to send? |
 
 `guardedPay` takes the transport as an argument rather than a URL, so the same
 call runs against the local verifier or a remote one and the two cannot drift.
@@ -589,6 +590,19 @@ instructions nobody has catalogued yet.
 | `X402-601` | A sign-in request names a site other than the one the agent contacted |
 | `X402-602` | A sign-in request with no known site to bind it to, or one that does not parse |
 
+**Transactions held to an intent, EVM (0.11.0), `wormhole-x402/tx`:**
+
+| Code | Check |
+|---|---|
+| `X402-701` | Another chain or contract than the intent's, a contract creation, or a signer on another chain |
+| `X402-702` | Another function than the intent's, or calldata on a plain native transfer |
+| `X402-703` | An argument outside its constraint: a recipient, an amount, a market, a floor |
+| `X402-704` | Native value outside the intent's bound (none, unless the intent names one) |
+| `X402-705` | Standing authority the intent does not grant: loose terms, an unlimited grant without `unlimited: true`, an EIP-7702 delegation |
+| `X402-706` | The spending policy refuses a movement the check can read |
+| `X402-707` | The intent cannot be read → abstain |
+| `X402-709` | The transaction cannot be read: non-canonical calldata, inner calls left open, a delegatecall, blobs, a field it does not model → abstain |
+
 Verified today: EIP-3009 `transferWithAuthorization`, for the tokens below.
 Each EIP-712 domain was read from the deployed contract, not taken from
 documentation. Any other (chain, token) pair abstains.
@@ -770,6 +784,98 @@ message must be text, and `resources` a list of text. A wallet converts
 anything else itself, so an array or an object with its own `toString` could
 come out as lines the check never read.
 
+### Transactions that are not payments
+
+An agent that borrows, swaps or approves signs transactions, and the
+counterparty usually builds them: an MCP tool or an API answers with calldata
+for the agent to sign. The guarded signer refuses those by default, because
+there is no payment in them to check, and naming the method in `allow` used
+to be the only way through. That signed whatever the other side built.
+
+`intentFor` replaces that. Before `signTransaction` or `sendTransaction`
+signs, the guard reads the transaction once, asks your code what it should be,
+and checks it against that intent:
+
+```ts
+import { guardEvmSigner, presets } from "wormhole-x402/evm";
+
+const guarded = guardEvmSigner(walletClient, getQuote, {
+  // From your own code, never from the counterparty: what this transaction must be.
+  intentFor: (tx) =>
+    String(tx.to).toLowerCase() === MORPHO.toLowerCase()
+      ? presets.morpho.borrow({ chainId: 8453, morpho: MORPHO, market, assets: { lte: 500_000_000n }, onBehalf: me, receiver: me })
+      : null, // anything else is refused
+  spendPolicy, // applies to the token amounts it can read
+});
+await guarded.sendTransaction(txFromTheTool);
+```
+
+The same check runs on its own, offline and synchronous:
+
+```ts
+import { inspectTransaction } from "wormhole-x402/tx";
+
+inspectTransaction(
+  { kind: "erc20.transfer", chainId: 8453, token: USDC, to: merchant, amount: { lte: 5_000_000n } },
+  { to: USDC, data },
+); // { decision: "allow" | "refuse" | "abstain", findings, reason? }
+```
+
+An intent is one of:
+
+- `native.transfer`: `to` and an `amount` bound, with no calldata;
+- `erc20.transfer`: `token`, the recipient (`to`, or a list of them) and an
+  `amount` bound;
+- `erc20.approve`: `token`, `spender`, and the exact `amount` or
+  `"unlimited"`;
+- `call`: `target`, the function `signature`, one constraint per argument,
+  and an optional native `value` bound (none otherwise).
+
+A constraint is `{ eq }`, `{ oneOf }`, `{ lte, gte }`, `{ tuple }` for a
+struct's components, `{ items }` for an array's, `{ abi, args }` for bytes that
+hold ABI-encoded values, or `{ any: true }`. There is no default: an argument
+left open is written `{ any: true }`, so a reader of the intent sees every
+gap.
+
+- **The calldata must be what it decodes to.** It must re-encode to the same
+  bytes, nested bytes included. Trailing bytes, non-zero padding and
+  overlapping offsets decode in a lenient decoder, and a contract can read
+  them differently. That abstains.
+- **Standing authority needs exact terms.** An approval, an EIP-2612 or
+  Permit2 permit, an operator grant, Morpho's authorization or an ownership
+  transfer is allowed only when the intent fixes who, what and how much with
+  `{ eq }`. An unlimited one also needs `unlimited: true`. An EIP-7702
+  delegation is refused.
+- **A call that carries other calls is readable only when they are fixed.**
+  That covers a multicall, a router's or an account's `execute`, a Safe
+  transaction and a bundler's `handleOps`. Inner calls in bytes the intent
+  leaves open abstain, and so does a delegatecall.
+- **Fields it does not model abstain.** That covers blobs, viem's
+  `dataSuffix` (bytes appended after the checked calldata), zkSync's
+  `customData` (a paymaster can pull tokens for fees), a recipient given as a
+  name to resolve, and a transaction that is not a plain object.
+- **The signer signs what was checked.** It gets the fields as read, never
+  the caller's object again. The intent's chain is pinned on it: an ethers
+  wallet otherwise signs a transaction that names no chain for chain 0. When
+  the signer says which chain it is on (viem's wallet client, ethers through
+  its provider), that must be the intent's.
+- **Lifetime totals count transactions too.** With a `spendPolicy`, the token
+  amounts the check can read are held against `maxTotal` like payments. That
+  covers transfer, transferFrom, approve and Permit2's approve and
+  transferFrom, plus native value, which the policy names as `NATIVE_ASSET`.
+
+Presets build `call` intents for common protocols:
+
+- `presets.morpho.borrow`: Morpho Blue, an asset-denominated borrow from an
+  exact market.
+- `presets.uniswapV4.swapExactInSingle`: one exact-input swap through a
+  UniversalRouter, with SWAP_EXACT_IN_SINGLE, SETTLE_ALL and TAKE_ALL. `fields`
+  names the router's swap parameters: 6 for routers with v4-periphery's
+  per-hop slippage (March 2026), including both on Robinhood Chain; 5 for
+  earlier ones.
+- `presets.permit2.approve`: Permit2's `approve`, with an exact amount and a
+  bounded expiration.
+
 ## What it does not do
 
 **Without a `spendPolicy` it does not cap amounts.** A payment that matches a
@@ -777,7 +883,13 @@ quote for your whole balance is allowed; see *A budget the quote cannot set*.
 
 **It is not a simulator and does not replace one.** Run both; they answer
 different questions. Simulation tells you what a transaction does. This tells
-you whether it is the one you asked for.
+you whether it is the one you asked for. A transaction's intent says which call
+it is, not what the contract does inside it, and not whether the intent is
+wise.
+
+**It does not check a transaction's gas, fees or nonce.** Those are the
+signer's. Set them yourself or let the signer estimate them; a supplied
+transaction can set a high fee.
 
 **It abstains rather than guessing.** A versioned transaction can hide accounts
 behind an address lookup table, and those pubkeys live in on-chain account data

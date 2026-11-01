@@ -155,7 +155,8 @@ describe("before signing: the window the quote asked for", () => {
     const attached = await signed(NOW + 300n);
     // Plain JSON: the typed message is wide, the attached authorization valid.
     const mixed = JSON.parse(JSON.stringify({ ...typed(NOW + 86_400n), ...attached }));
-    await expect(g.signTypedData(mixed)).rejects.toThrow(/typed-data request and an already-signed payment/);
+    // The typed request's own finding first: its window is too wide.
+    await expect(g.signTypedData(mixed)).rejects.toThrow(/X402-105/);
     const honest = JSON.parse(JSON.stringify({ ...typed(NOW + 300n), ...attached }));
     await expect(g.signTypedData(honest)).rejects.toThrow(/typed-data request and an already-signed payment/);
     expect(calls).toBe(0);

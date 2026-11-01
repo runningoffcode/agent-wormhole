@@ -1816,6 +1816,10 @@ export function guardEvmSigner<T extends object>(
       const typed = typedDataFrom(args);
       const signed = signedPayloadFrom(args);
       if (typed !== undefined && signed !== undefined) {
+        // The typed request's own findings first, so a caller sees what is
+        // wrong with it; refused either way.
+        const v = inspectTypedDataRequest(quote, typed, pinned.opts);
+        if (v.decision !== "allow") refuse(v, method);
         refuse(
           abstain(
             "the call carries both a typed-data request and an already-signed payment, so which one the wallet would sign cannot be told",

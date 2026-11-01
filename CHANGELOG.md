@@ -1,5 +1,43 @@
 # Changelog
 
+## wormhole-x402 0.11.0 — 2026-11-01
+
+**Transactions held to the agent's intent (X402-701 to 707, 709).**
+`guardEvmSigner` checked x402 payments and refused every other transaction,
+because there was no payment in it to check. An agent that needed a borrow,
+a swap or an approval had to name the method in `allow`, which signed
+whatever the counterparty built.
+- `inspectTransaction(intent, tx)` (`wormhole-x402/tx`, also exported from
+  `wormhole-x402/evm`) compares a transaction with a declared intent from the
+  agent's own code:
+  - the chain, the contract, the function, each argument and the native
+    value;
+  - constraints `eq`, `oneOf`, `lte`/`gte`, `tuple`, `items`, nested
+    `abi` bytes, and an explicit `any`, which is never the default.
+- Calldata must re-encode to the same bytes, nested bytes included.
+- Standing authority (approvals, EIP-2612 and Permit2 permits, operator
+  grants, ownership, Morpho authorizations) needs exact terms. An unlimited
+  grant also needs `unlimited: true`. An EIP-7702 delegation is refused.
+- These abstain: a multicall, execute or Safe transaction whose inner calls
+  the intent leaves open, a delegatecall, blobs, viem's `dataSuffix`,
+  zkSync's `customData`, a name to resolve, and a field the check does not
+  model.
+- `spendPolicy` applies to the movements it can read: native value (named
+  `NATIVE_ASSET`), and transfer, transferFrom, approve and Permit2 amounts.
+- `guardEvmSigner` takes `intentFor`:
+  - `signTransaction` and `sendTransaction` are read once and checked
+    against the intent it names;
+  - they are confirmed against the signer's own chain where the signer says
+    it, and held against the lifetime totals;
+  - the signer gets the transaction as checked, with the intent's chain
+    pinned. Unguarded, an ethers wallet signs a transaction that names no
+    chain for chain 0.
+  - Without `intentFor`, nothing changes: these methods are refused as
+    before.
+- Presets: `presets.morpho.borrow`, `presets.uniswapV4.swapExactInSingle`
+  (five- or six-field swap parameters) and `presets.permit2.approve`.
+- Gas, fees and nonce stay the signer's and are not checked.
+
 ## wormhole-x402 0.10.1 — 2026-11-01
 
 **The validity window too wide (X402-105).** The README listed "too wide" under

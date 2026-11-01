@@ -1,6 +1,6 @@
 {
   "name": "wormhole-x402",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "Refuse an agent payment (Solana or EVM x402) that does not match what the agent was quoted, and scan the quote's own text for prompt injection before the model reads it. Offline, no RPC.",
   "main": "./dist/index.js",
   "scripts": {
@@ -85,6 +85,10 @@
     "./delivery": {
       "types": "./dist/delivery.d.ts",
       "import": "./dist/delivery.js"
+    },
+    "./tx": {
+      "types": "./dist/tx.d.ts",
+      "import": "./dist/tx.js"
     }
   },
   "bin": {

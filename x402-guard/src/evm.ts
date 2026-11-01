@@ -1591,8 +1591,13 @@ export function inspectTypedDataRequest(
  * Returns `undefined` unless the arguments are unambiguously that call, so an
  * unrecognised signing request still reaches the fail-closed refusal rather
  * than being reconstructed into something this wrapper would then vouch for.
- * Three things must hold: an EIP-712 domain, a types map whose entries are
- * arrays of `{name, type}`, and a message object.
+ * Three things must hold, at the positions ethers reads them: an EIP-712
+ * domain first, a types map whose entries are arrays of `{name, type}`
+ * second, and the message object third. By position, not by shape: matching
+ * by shape found the three among any arguments, so a value carrying a domain
+ * and a message of its own, or a request passed after the three, was what got
+ * checked while ethers signed the three it reads. Anything after the third
+ * argument is ignored, as ethers ignores it.
  *
  * `primaryType` is derived the way ethers derives it — the one type no other
  * type references. With a single entry that is that entry; with more than one
@@ -1601,36 +1606,24 @@ export function inspectTypedDataRequest(
  * struct nobody is signing.
  */
 function positionalTypedData(args: unknown[]): unknown | undefined {
-  const objs = args.filter(
-    (a): a is Record<string, unknown> => typeof a === "object" && a !== null,
-  );
-  if (objs.length < 3) return undefined;
-
-  const domain = objs.find(
-    (o) => "verifyingContract" in o || "chainId" in o || "name" in o,
-  );
-  if (!domain) return undefined;
-
-  const types = objs.find(
-    (o) =>
-      o !== domain &&
-      Object.keys(o).length > 0 &&
-      Object.values(o).every(
-        (v) =>
-          Array.isArray(v) &&
-          v.every(
-            (f) =>
-              typeof f === "object" &&
-              f !== null &&
-              typeof (f as Record<string, unknown>).name === "string" &&
-              typeof (f as Record<string, unknown>).type === "string",
-          ),
-      ),
-  );
-  if (!types) return undefined;
-
-  const message = objs.find((o) => o !== domain && o !== types);
-  if (!message) return undefined;
+  const isObject = (a: unknown): a is Record<string, unknown> => typeof a === "object" && a !== null;
+  const [domain, types, message] = args;
+  if (!isObject(domain) || !isObject(types) || !isObject(message)) return undefined;
+  if (!("verifyingContract" in domain || "chainId" in domain || "name" in domain)) return undefined;
+  const isTypes =
+    Object.keys(types).length > 0 &&
+    Object.values(types).every(
+      (v) =>
+        Array.isArray(v) &&
+        v.every(
+          (f) =>
+            typeof f === "object" &&
+            f !== null &&
+            typeof (f as Record<string, unknown>).name === "string" &&
+            typeof (f as Record<string, unknown>).type === "string",
+        ),
+    );
+  if (!isTypes) return undefined;
 
   // EIP712Domain is declared by some callers and is never the struct signed.
   const named = Object.keys(types).filter((k) => k !== "EIP712Domain");
@@ -1700,11 +1693,16 @@ export function guardEvmSigner<T extends object>(
    * EvmPayload from it and carry a `signature` across that does not exist yet,
    * which is why every correct payment was refused.
    */
-  const typedDataFrom = (args: unknown[]): unknown | undefined => {
-    for (const a of args) {
-      if (typeof a !== "object" || a === null) continue;
-      const o = a as Record<string, unknown>;
-      if ("domain" in o && "message" in o) return o;
+  const typedDataFrom = (args: unknown[]): unknown | null | undefined => {
+    // viem's single request object comes FIRST, and viem signs that argument
+    // alone. Looking through every argument let a request placed later, or
+    // one carried inside an ethers value, be the one checked while the signer
+    // signed what it actually reads. An ethers signer would read objects after
+    // a first request as its types and value, so such a call could be signed
+    // either way: null, which is refused.
+    const first = args[0];
+    if (typeof first === "object" && first !== null && "domain" in first && "message" in first) {
+      return args.slice(1).some((a) => typeof a === "object" && a !== null) ? null : first;
     }
     // ETHERS SENDS THREE POSITIONAL ARGUMENTS, not one object.
     //
@@ -1717,10 +1715,9 @@ export function guardEvmSigner<T extends object>(
     // ethers actually send", which was true of viem only.
     //
     // `signTypedData(domain, types, value)`: an object carrying `name` or
-    // `chainId` or `verifyingContract`, then a types map, then the message.
-    // Matched by SHAPE rather than by position, because ethers v5 exposes this
-    // as `_signTypedData` and a wrapper keyed on argument index would break
-    // again on the next signer that adds an options argument.
+    // `chainId` or `verifyingContract`, then a types map, then the message,
+    // read at the positions ethers reads them (see positionalTypedData). A
+    // signer that adds an options argument after the three still matches.
     return positionalTypedData(args);
   };
 
@@ -1814,6 +1811,14 @@ export function guardEvmSigner<T extends object>(
       // A call carrying both is refused: which one the wallet signs is the
       // wallet's choice, and the guard cannot check one for the other.
       const typed = typedDataFrom(args);
+      if (typed === null) {
+        refuse(
+          abstain(
+            "the call could be read as more than one typed-data request — a viem request first, with more objects an ethers signer would read as its types and value — so what the wallet would sign cannot be told",
+          ),
+          method,
+        );
+      }
       const signed = signedPayloadFrom(args);
       if (typed !== undefined && signed !== undefined) {
         // The typed request's own findings first, so a caller sees what is

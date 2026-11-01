@@ -166,6 +166,8 @@ const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" 
 const account = privateKeyToAccount(PK);
 const SIGNER = account.address;
 const OTHER_WALLET = "0x9999999999999999999999999999999999999999";
+// An hour from the real clock, as a real authorization is (a window over a day is X402-105).
+const VALID_BEFORE = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const MERCHANT = "0x1111111111111111111111111111111111111111";
@@ -190,7 +192,7 @@ async function signAuth(): Promise<EvmPayload> {
     to: MERCHANT as Hex,
     value: 1_000_000n,
     validAfter: 0n,
-    validBefore: 99999999999n,
+    validBefore: VALID_BEFORE,
     nonce: NONCE,
   };
   const signature = await account.signTypedData({
@@ -207,7 +209,7 @@ async function signAuth(): Promise<EvmPayload> {
       to: MERCHANT,
       value: "1000000",
       validAfter: "0",
-      validBefore: "99999999999",
+      validBefore: VALID_BEFORE.toString(),
       nonce: NONCE,
     },
   };

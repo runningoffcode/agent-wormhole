@@ -15,13 +15,14 @@
  * have refused.
  */
 
-import { inspectPayment, inspectPaymentPayload, quoteFromRequirements } from "./index.js";
+import { inspectPayment, inspectPaymentPayload, quoteFromRequirements, svmPolicyAddress } from "./index.js";
 import type { PaymentQuote, Verdict, Finding, InspectOptions } from "./index.js";
-import { inspectAuthorization, evmQuoteFromRequirements } from "./evm.js";
+import { inspectAuthorization, evmQuoteFromRequirements, evmPolicyAddress } from "./evm.js";
 import type { EvmPaymentQuote, EvmPayload } from "./evm.js";
 import { inspectQuoteText } from "./quotetext.js";
 import { parseNetwork } from "./network.js";
 import { amountBucket } from "./sink.js";
+import { pinSpendPolicy, plainSpendPolicy } from "./policy.js";
 import { createHash } from "node:crypto";
 
 /** Which rail a request is on. Resolved from the quote's network string. */
@@ -124,10 +125,14 @@ export function laneFor(network: string): { lane: Lane | null; chainId: number |
 const MAX_CALLER_PRIORITY_FEE_LAMPORTS = 100_000_000n; // 0.1 SOL
 
 export async function verify(
-  req: VerifyRequest,
+  request: VerifyRequest,
   ctx: VerifyContext,
 ): Promise<VerifyResult> {
   const findings: Finding[] = [];
+  // The request is read once. The lane is given that reading and the receipt
+  // hashes the same reading (see pinRequest).
+  const pinned = pinRequest(request);
+  const req = pinned.req;
 
   // 0. The quote text itself, before it is trusted for anything. A quote that
   //    carries an injected directive or invisible unicode is refused here so it
@@ -152,7 +157,7 @@ export async function verify(
     if (textVerdict.decision === "refuse") {
       // A poisoned quote is decisive on its own — do not proceed to compare
       // against a quote we already do not trust.
-      return finalize("refuse", textVerdict.findings, req, ctx, null, null);
+      return finalize("refuse", textVerdict.findings, pinned, ctx, null, null);
     }
     if (textVerdict.decision === "abstain") {
       // AW-33. This used to fall through, and `verify()` then minted and
@@ -191,6 +196,12 @@ export async function verify(
       findings,
       reason: `unresolved network "${String(req.network)}" — refusing to guess a rail`,
     };
+  }
+
+  // Options or a spending policy that cannot be read: what the lane would have
+  // answered, from the one reading, without giving the lane a second one.
+  if (pinned.unreadable !== null) {
+    return { decision: "abstain", findings, reason: pinned.unreadable };
   }
 
   // 1b. SANITISE CALLER OPTIONS (AW-09).
@@ -364,7 +375,7 @@ export async function verify(
       ? "refuse"
       : laneVerdict.decision;
 
-  return finalize(decision, merged, req, ctx, lane, chainId);
+  return finalize(decision, merged, pinned, ctx, lane, chainId);
 }
 
 /** Context the transport supplies. Kept out of the request so the core stays pure. */
@@ -381,24 +392,24 @@ export interface VerifyContext {
 function finalize(
   decision: Verdict["decision"],
   findings: Finding[],
-  req: VerifyRequest,
+  pinned: PinnedRequest,
   ctx: VerifyContext,
   lane: Lane | null,
   chainId: number | null,
 ): VerifyResult {
-  const receipt = buildReceipt(decision, findings, req, ctx, lane, chainId);
+  const receipt = buildReceipt(decision, findings, pinned, ctx, lane, chainId);
   return { decision, findings, receipt };
 }
 
 function buildReceipt(
   decision: Verdict["decision"],
   findings: Finding[],
-  req: VerifyRequest,
+  pinned: PinnedRequest,
   ctx: VerifyContext,
   lane: Lane | null,
   chainId: number | null,
 ): Receipt {
-  const amount = readAmount(req.quote);
+  const amount = readAmount(pinned.req.quote);
   return {
     v: 1,
     decision,
@@ -407,7 +418,7 @@ function buildReceipt(
     chain_id: chainId,
     lane,
     quote_provenance: ctx.quoteProvenance,
-    request_digest: requestDigest(req),
+    request_digest: digestOf(pinned),
     issued_at: ctx.issuedAt,
   };
 }
@@ -434,32 +445,110 @@ export function requestDigest(req: VerifyRequest): string {
   // question. Options are canonicalised by sorted key so ordering cannot
   // fork the digest, and BigInt is stringified because JSON.stringify throws
   // on it.
-  const canonicalOptions = (() => {
-    const o = req.options as Record<string, unknown> | undefined;
-    if (!o || typeof o !== "object") return null;
-    // Only the options that can actually STEER the verdict. My first version
-    // hashed the raw object, which had it backwards in both directions: two
-    // byte-identical verdicts got different digests because one carried a
-    // nowSeconds the verifier had already discarded, and a key the verifier
-    // ignores could fork the digest of an otherwise identical request.
-    //
-    // The digest answers "is it this exact request?", so it must cover
-    // exactly what the answer depends on — no more, no less.
-    const STEERING = ["expectedPayer", "maxPriorityFeeLamports"];
-    const out: Record<string, unknown> = {};
-    for (const k of STEERING.slice().sort()) {
-      if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
-      const v = o[k];
-      out[k] = typeof v === "bigint" ? String(v) : v;
-    }
-    return Object.keys(out).length > 0 ? out : null;
-  })();
+  //
+  // Only the options that can actually STEER the verdict go in. My first
+  // version hashed the raw object, which had it backwards in both directions:
+  // two byte-identical verdicts got different digests because one carried a
+  // nowSeconds the verifier had already discarded, and a key the verifier
+  // ignores could fork the digest of an otherwise identical request. The
+  // digest answers "is it this exact request?", so it must cover exactly what
+  // the answer depends on — no more, no less. See pinRequest.
+  return digestOf(pinRequest(req));
+}
 
+/** The options that steer a verdict, in sorted order: the ones the digest hashes. */
+const STEERING = ["expectedPayer", "maxPriorityFeeLamports", "spendPolicy"] as const;
+
+/**
+ * A request read once. The reading holds its fields, every own option, and
+ * the spending policy read through the request's own chain. verify() gives
+ * the lane this reading and hashes the same reading into its receipt, so the
+ * two cannot disagree.
+ *
+ * They once read the request separately. The lane took
+ * `Object.entries(options)` and the digest `hasOwnProperty`, so the lane
+ * skipped a non-enumerable spendPolicy that the digest hashed. That gave an
+ * allow receipt which replay-matched a request that abstains (AWG-010-15).
+ * And the digest read the policy a second time, so a getter could make a
+ * receipt hash a policy other than the one its verdict applied
+ * (AWG-010-10).
+ *
+ * Options are the own string keys, enumerable or not, each read once. A
+ * readable policy is replaced by plain data from its one reading, and the
+ * digest hashes it as that lane reads it (./policy, pinSpendPolicy), so two
+ * spellings of one policy share a digest and a policy the lane cannot read
+ * never shares one with a policy it can. Reading never throws. Options that
+ * cannot be read hash as such, and verify() abstains on them (AWG-010-14).
+ */
+interface PinnedRequest {
+  /** The request as read: plain options, with a readable policy as plain data. */
+  readonly req: VerifyRequest;
+  /** What the digest hashes for the options. */
+  readonly optionsForm: unknown;
+  /** Why the options or the policy cannot be read; null when they can. */
+  readonly unreadable: string | null;
+}
+
+function pinRequest(request: VerifyRequest): PinnedRequest {
+  const network = request.network;
+  const quote = request.quote;
+  const payload = request.payload;
+  const bare: VerifyRequest = { network, quote, payload };
+  let entries: [string, unknown][] | null = null;
+  try {
+    const raw: unknown = request.options;
+    if (raw !== null && typeof raw === "object") {
+      entries = [];
+      for (const key of Reflect.ownKeys(raw)) {
+        if (typeof key === "string") entries.push([key, (raw as Record<string, unknown>)[key]]);
+      }
+    }
+  } catch {
+    const reason = "the request's options could not be read: reading them threw";
+    return { req: bare, optionsForm: { unreadable: reason }, unreadable: reason };
+  }
+  if (entries === null) return { req: bare, optionsForm: null, unreadable: null };
+
+  let unreadable: string | null = null;
+  let policyForm: unknown = undefined;
+  const lane = typeof network === "string" ? laneFor(network).lane : null;
+  const norm = lane === "svm" ? svmPolicyAddress : lane === "evm" ? evmPolicyAddress : null;
+  for (const entry of entries) {
+    // An undefined policy is no policy to both lanes, so it hashes as absent.
+    if (entry[0] !== "spendPolicy" || entry[1] === undefined) continue;
+    const policy = pinSpendPolicy(entry[1], norm);
+    policyForm = policy.form;
+    if (typeof policy.read === "string") {
+      unreadable = `${policy.read} — refusing to report the payment as checked against it`;
+    } else {
+      entry[1] = plainSpendPolicy(policy.read);
+    }
+  }
+  // fromEntries defines own properties, so a "__proto__" key stays a key.
+  const options = Object.fromEntries(entries) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of STEERING) {
+    if (!Object.prototype.hasOwnProperty.call(options, key)) continue;
+    if (key === "spendPolicy") {
+      if (policyForm !== undefined) out[key] = policyForm;
+      continue;
+    }
+    const v = options[key];
+    out[key] = typeof v === "bigint" ? String(v) : v;
+  }
+  return {
+    req: { ...bare, options: options as VerifyRequest["options"] },
+    optionsForm: Object.keys(out).length > 0 ? out : null,
+    unreadable,
+  };
+}
+
+function digestOf(p: PinnedRequest): string {
   const canonical = JSON.stringify({
-    network: req.network,
-    quote: canonicalizeQuote(req.quote),
-    payload: canonicalizePayload(req.payload),
-    options: canonicalOptions,
+    network: p.req.network,
+    quote: canonicalizeQuote(p.req.quote),
+    payload: canonicalizePayload(p.req.payload),
+    options: p.optionsForm,
   });
   return createHash("sha256").update(canonical).digest("hex");
 }

@@ -40,6 +40,31 @@ import {
   toBytes,
   type Hex,
 } from "viem";
+// Both have no imports of their own, so the viem-only footprint above holds.
+import {
+  checkSpendPolicy,
+  createSpendTracker,
+  pinPolicyOption,
+  readPolicyOption,
+  type ReadPolicy,
+  type SpendPolicy,
+} from "./policy.js";
+import { checkSignerMessage, type OriginSource } from "./signin.js";
+
+export {
+  type SpendPolicy,
+  type PolicyFinding,
+  readSpendPolicy,
+  checkSpendPolicy,
+} from "./policy.js";
+export {
+  inspectSignIn,
+  inspectSignInInput,
+  isSignInText,
+  resolveOrigin,
+  type SignInVerdict,
+  type OriginSource,
+} from "./signin.js";
 
 // --- verdict shapes (structurally identical to ./index) --------------------
 
@@ -88,6 +113,12 @@ export interface EvmPaymentQuote {
    * boundary.
    */
   extra?: Record<string, unknown>;
+  /**
+   * The URL the 402 answered for, when the entry carried one. Read by
+   * `guardEvmSigner`'s sign-in check as the site the agent contacted when no
+   * `origin` option is given (0.10.0); never by the payment checks.
+   */
+  resource?: string;
 }
 
 // --- EIP-3009 constants ----------------------------------------------------
@@ -388,7 +419,22 @@ export interface InspectAuthorizationOptions {
    * allow — conformance without payer binding cannot answer "did MY agent pay?"
    */
   expectedPayer?: string;
+  /**
+   * An opt-in spending policy (0.10.0; ./policy). A payment over its
+   * per-payment cap (X402-501), in an asset it does not allow (X402-502) or to
+   * a payee it does not allow (X402-503) is refused even when it matches the
+   * quote — the case where the quote itself is the attack. Absent, nothing
+   * changes. Present and unreadable, the verdict is abstain.
+   */
+  spendPolicy?: SpendPolicy;
 }
+
+/**
+ * The EVM lane's spelling of an address in a spending policy: lowercase, or
+ * null when it is not one. Exported so a request digest reads a policy exactly
+ * as this lane does (verify.ts).
+ */
+export const evmPolicyAddress = (a: string): string | null => normAddress(a)?.toLowerCase() ?? null;
 
 // --- small parse helpers ---------------------------------------------------
 
@@ -820,6 +866,14 @@ export async function inspectAuthorization(
       );
     }
   }
+  // The same rule for a spending policy (0.10.0): a caller who set a cap and
+  // got an allow believes the cap was applied, so one that cannot be read is
+  // an abstain, never a policy silently skipped.
+  // Read once, and never thrown out of (./policy, readPolicyOption).
+  const policy = readPolicyOption(opts, evmPolicyAddress);
+  if (typeof policy === "string") {
+    return abstain(`${policy} — refusing to report the payment as checked against it`);
+  }
   if (to === null) {
     return abstain("authorization.to is not a valid address");
   }
@@ -1016,6 +1070,20 @@ export async function inspectAuthorization(
     }
   }
 
+  // --- 11. the payer's own spending policy (X402-501..503) -----------------
+  // Last, so a payment that does not even match its quote keeps its own
+  // findings; the policy adds the one case conformance cannot see, a quote
+  // that is itself the attack.
+  if (policy !== null) {
+    findings.push(
+      ...checkSpendPolicy(policy, {
+        asset: quoteAsset.toLowerCase(),
+        payTo: to.toLowerCase(),
+        amount: value,
+      }),
+    );
+  }
+
   const blocking = findings.some(
     (f) => f.severity === "critical" || f.severity === "high",
   );
@@ -1110,6 +1178,11 @@ export function evmQuoteFromRequirements(
   if (req.extra) {
     q.extra = req.extra;
   }
+  // The URL the entry answers for (x402 v1 carries it on the entry), for the
+  // sign-in check's site; the payment checks never read it.
+  if (typeof req.resource === "string") {
+    q.resource = req.resource;
+  }
   return q;
 }
 
@@ -1143,6 +1216,13 @@ const EVM_SIGNING_METHODS = new Set([
   "signTransaction",
   "sendTransaction",
 ]);
+
+/**
+ * Message signers. Refused like every other signing method by default; when a
+ * caller names one in `allow`, it gets the sign-in check rather than a bare
+ * pass-through (0.10.0).
+ */
+const EVM_MESSAGE_METHODS = new Set(["signMessage"]);
 
 /**
  * Check an EIP-712 typed-data request BEFORE a signature exists.
@@ -1189,6 +1269,12 @@ export function inspectTypedDataRequest(
   const quotedValue = toBig(quote.amount);
   if (quotedValue === null) {
     return abstain(`quote amount is not an integer (${String(quote.amount)})`);
+  }
+  // A spending policy that cannot be read abstains here as on the signed path.
+  // Read once, and never thrown out of (./policy, readPolicyOption).
+  const policy = readPolicyOption(opts, evmPolicyAddress);
+  if (typeof policy === "string") {
+    return abstain(`${policy} — refusing to report the payment as checked against it`);
   }
 
   if (typeof request !== "object" || request === null) {
@@ -1372,6 +1458,17 @@ export function inspectTypedDataRequest(
     }
   }
 
+  // The payer's own spending policy, as on the signed path (X402-501..503).
+  if (policy !== null) {
+    findings.push(
+      ...checkSpendPolicy(policy, {
+        asset: quoteAsset.toLowerCase(),
+        payTo: to.toLowerCase(),
+        amount: value,
+      }),
+    );
+  }
+
   const blocking = findings.some((f) => f.severity === "critical");
   return { decision: blocking ? "refuse" : "allow", findings };
 }
@@ -1478,9 +1575,19 @@ export function guardEvmSigner<T extends object>(
      * caller sees immediately.
      */
     allow?: readonly string[];
+    /**
+     * The site the agent contacted, read at signing time (0.10.0; ./signin).
+     * When `allow` names `signMessage`, a sign-in request (EIP-4361) is signed
+     * only if it names this site by its domain and URI; with no origin here
+     * and no `resource` on the quote, every sign-in request is refused.
+     * Messages that are not sign-in requests are unaffected.
+     */
+    origin?: OriginSource;
   } = {},
 ): T {
   const allowed = new Set(opts.allow ?? []);
+  // The spending policy's lifetime totals (X402-504), one ledger per guard.
+  const tracker = createSpendTracker();
 
   /**
    * Pull an ALREADY-SIGNED x402 payload out of a signing call's arguments.
@@ -1538,6 +1645,68 @@ export function guardEvmSigner<T extends object>(
     );
   };
 
+  /**
+   * Read the spending policy ONCE for this signing (./policy, pinPolicyOption).
+   * The check gets a plain copy of the reading, which reads back identically,
+   * and the lifetime total gets the reading itself: a policy read twice could
+   * check one cap and count against another.
+   */
+  const pinPolicy = (method: string): { opts: InspectAuthorizationOptions; policy: ReadPolicy | null } => {
+    const pinned = pinPolicyOption(opts, evmPolicyAddress);
+    if (typeof pinned === "string") {
+      refuse(abstain(`${pinned} — refusing to report the payment as checked against it`), method);
+    }
+    return pinned as { opts: InspectAuthorizationOptions; policy: ReadPolicy | null };
+  };
+
+  /**
+   * Hold an allowed payment against the policy's lifetime totals before the
+   * wallet signs (X402-504), and hand back the release for a wallet that does
+   * not sign. Reserving first is what keeps two concurrent payments from both
+   * passing the check; releasing on failure is what keeps a refused signature
+   * from counting.
+   */
+  const reserveTotal = (quote: EvmPaymentQuote, method: string, policy: ReadPolicy | null): (() => void) => {
+    if (policy === null) return () => {};
+    const asset = evmPolicyAddress(quote.asset);
+    const amount = toBig(quote.amount);
+    if (asset === null || amount === null) {
+      refuse(abstain("the quote's asset or amount cannot be read for the spending policy's totals"), method);
+    }
+    const held = tracker.reserve(policy, asset as string, amount as bigint);
+    if (typeof held !== "function") refuse({ decision: "refuse", findings: [held] }, method);
+    return held as () => void;
+  };
+
+  /** Sign, and give a reservation back if the wallet does not. */
+  const signHeld = async (fn: Function, self: unknown, args: unknown[], release: () => void) => {
+    try {
+      return await fn.apply(self, args);
+    } catch (e) {
+      release();
+      throw e;
+    }
+  };
+
+  /**
+   * A message signer the caller allowed, with the sign-in check in front of it
+   * (0.10.0). Not a sign-in request: signed as before. A sign-in request: signed
+   * only when it names the site the agent contacted (./signin). The signer is
+   * handed the copy of the message the check read, never the caller's object.
+   */
+  const signInGuard = (fn: Function, method: string, self: unknown) =>
+    async (...args: unknown[]) => {
+      let resource: unknown;
+      try {
+        resource = getQuote()?.resource;
+      } catch {
+        resource = undefined;
+      }
+      const { verdict, arg } = checkSignerMessage(args[0], opts.origin, resource);
+      if (verdict.decision !== "allow") refuse({ decision: "refuse", findings: verdict.findings }, method);
+      return fn.apply(self, [arg, ...args.slice(1)]);
+    };
+
   /** Wrap one function so it cannot be called without passing the check. */
   const guardFn = (fn: Function, method: string, self: unknown) =>
     async (...args: unknown[]) => {
@@ -1548,19 +1717,20 @@ export function guardEvmSigner<T extends object>(
             "supplied, so there is nothing to check this against.",
         );
       }
+      const pinned = pinPolicy(method);
       // A signed payload takes the signed path; a pre-signing typed-data
       // request takes the pre-signing one. Both are real caller shapes.
       const signed = signedPayloadFrom(args);
       if (signed !== undefined) {
-        const v = await inspectAuthorization(quote, signed, opts);
+        const v = await inspectAuthorization(quote, signed, pinned.opts);
         if (v.decision !== "allow") refuse(v, method);
-        return fn.apply(self, args);
+        return signHeld(fn, self, args, reserveTotal(quote, method, pinned.policy));
       }
       const typed = typedDataFrom(args);
       if (typed !== undefined) {
-        const v = inspectTypedDataRequest(quote, typed, opts);
+        const v = inspectTypedDataRequest(quote, typed, pinned.opts);
         if (v.decision !== "allow") refuse(v, method);
-        return fn.apply(self, args);
+        return signHeld(fn, self, args, reserveTotal(quote, method, pinned.policy));
       }
       throw new Error(
         `x402-guard: refusing to authorise — could not read an x402 payment ` +
@@ -1579,7 +1749,16 @@ export function guardEvmSigner<T extends object>(
         const qualified = path ? `${path}.${prop}` : prop;
 
         // Named by the caller as not a payment path. A decision with a name on it.
-        if (allowed.has(prop) || allowed.has(qualified)) return value;
+        if (allowed.has(prop) || allowed.has(qualified)) {
+          // 0.10.0: an allowed message signer still gets the sign-in check. A
+          // caller allows signMessage to use Sign-In-With-X, and a login
+          // message relayed for another site is the session takeover V12
+          // reported; a plain message is signed exactly as before.
+          if (EVM_MESSAGE_METHODS.has(prop) && typeof value === "function") {
+            return signInGuard(value as Function, qualified, target);
+          }
+          return value;
+        }
 
         if (typeof value === "function") {
           // DEFAULT DENY. Every function is guarded. The ones this wrapper

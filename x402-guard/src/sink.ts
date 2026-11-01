@@ -206,6 +206,9 @@ export const KNOWN_CODES: ReadonlySet<string> = new Set([
   "X402-501", "X402-502", "X402-503", "X402-504",
   // Sign-in requests bound to the site contacted (signin.ts, 0.10.0)
   "X402-601", "X402-602",
+  // Transactions held to the agent's intent (tx.ts, 0.11.0)
+  "X402-701", "X402-702", "X402-703", "X402-704", "X402-705", "X402-706",
+  "X402-707", "X402-709",
   // Address provenance (provenance.ts)
   "X402-301",
   // Delivery conformance (delivery.ts) — deliberate HTTP mnemonics

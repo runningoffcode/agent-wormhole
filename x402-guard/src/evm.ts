@@ -50,6 +50,7 @@ import {
   type SpendPolicy,
 } from "./policy.js";
 import { checkSignerMessage, type OriginSource } from "./signin.js";
+import { checkTransaction, readTransaction, type TxIntent } from "./tx.js";
 
 export {
   type SpendPolicy,
@@ -57,6 +58,18 @@ export {
   readSpendPolicy,
   checkSpendPolicy,
 } from "./policy.js";
+export {
+  inspectTransaction,
+  readTransaction,
+  presets,
+  NATIVE_ASSET,
+  PERMIT2,
+  type TxIntent,
+  type Constraint,
+  type Bound,
+  type Amount,
+  type InspectTransactionOptions,
+} from "./tx.js";
 export {
   inspectSignIn,
   inspectSignInInput,
@@ -1277,6 +1290,9 @@ const EVM_SIGNING_METHODS = new Set([
   "sendTransaction",
 ]);
 
+/** Transaction signers, which an intent can open (0.11.0; ./tx). */
+const TX_METHODS = new Set(["signTransaction", "sendTransaction"]);
+
 /**
  * Message signers. Refused like every other signing method by default; when a
  * caller names one in `allow`, it gets the sign-in check rather than a bare
@@ -1663,6 +1679,13 @@ export function guardEvmSigner<T extends object>(
      * Messages that are not sign-in requests are unaffected.
      */
     origin?: OriginSource;
+    /**
+     * The intent a transaction must match before `signTransaction` or
+     * `sendTransaction` signs it (0.11.0; ./tx). Called with the transaction
+     * as read, frozen; returns the intent from the agent's own code, or null
+     * to refuse. Absent, those methods are refused, as before.
+     */
+    intentFor?: (tx: Readonly<Record<string, unknown>>) => TxIntent | null | undefined | Promise<TxIntent | null | undefined>;
   } = {},
 ): T {
   const allowed = new Set(opts.allow ?? []);
@@ -1871,6 +1894,137 @@ export function guardEvmSigner<T extends object>(
       );
     };
 
+  /**
+   * The chain the signer itself is on, when it says: viem's wallet client and
+   * ethers v5 answer getChainId, ethers v6 through its provider's network. A
+   * viem wallet client signs for its own chain whatever the transaction says,
+   * so the transaction's chainId alone cannot bind it. Null when the signer
+   * does not say; the chainId pinned on the transaction then binds a local
+   * signer, and ethers refuses a transaction for another chain than its own.
+   */
+  const signerChain = async (target: object): Promise<bigint | null> => {
+    const asChain = (v: unknown): bigint | null => {
+      try {
+        const n = typeof v === "bigint" ? v : typeof v === "number" || typeof v === "string" ? BigInt(v) : null;
+        return n !== null && n > 0n ? n : null;
+      } catch {
+        return null;
+      }
+    };
+    try {
+      const getChainId = Reflect.get(target, "getChainId", target);
+      if (typeof getChainId === "function") {
+        const id = asChain(await getChainId.call(target));
+        if (id !== null) return id;
+      }
+    } catch {
+      // Not answered here; the provider may.
+    }
+    try {
+      const provider = Reflect.get(target, "provider", target);
+      if (typeof provider === "object" && provider !== null) {
+        const getNetwork = Reflect.get(provider, "getNetwork", provider);
+        if (typeof getNetwork === "function") {
+          const network = await getNetwork.call(provider);
+          if (typeof network === "object" && network !== null) return asChain(Reflect.get(network, "chainId", network));
+        }
+      }
+    } catch {
+      // Not answered.
+    }
+    return null;
+  };
+
+  /**
+   * signTransaction and sendTransaction with an intent (0.11.0; ./tx). The
+   * transaction is read once, the caller's intentFor names what it should be,
+   * and the signer gets the transaction as checked: the fields read, with the
+   * intent's chain pinned, never the caller's object read again. Without
+   * intentFor these methods take the payment path, which refuses them.
+   */
+  const txGuardFn = (fn: Function, method: string, self: object) =>
+    async (...args: unknown[]) => {
+      let intentFor: unknown;
+      try {
+        intentFor = Reflect.get(opts, "intentFor", opts);
+      } catch {
+        refuse(abstain("the intentFor option cannot be read"), method);
+      }
+      if (intentFor === undefined) return guardFn(fn, method, self)(...args);
+      if (typeof intentFor !== "function") refuse(abstain("the intentFor option is not a function"), method);
+      const pinned = pinPolicy(method);
+
+      const tx = readTransaction(args[0]);
+      if (Array.isArray(tx)) {
+        refuse(
+          tx.some((f) => f.severity === "critical")
+            ? { decision: "refuse", findings: tx }
+            : abstain(tx[0]?.message ?? "the transaction cannot be read", tx),
+          method,
+        );
+      }
+      const read = tx as Exclude<typeof tx, unknown[]>;
+      const view = Object.freeze({
+        ...Object.fromEntries(read.fields),
+        ...(read.chainId === null ? {} : { chainId: read.chainId }),
+      });
+      let intent: unknown;
+      try {
+        intent = await (intentFor as Function)(view);
+      } catch (e) {
+        refuse(abstain(`intentFor threw (${e instanceof Error ? e.message : String(e)})`), method);
+      }
+      if (intent === null || intent === undefined) {
+        refuse(abstain("intentFor named no intent for this transaction"), method);
+      }
+
+      const check = checkTransaction(intent, read, pinned.opts);
+      if (check.verdict.decision !== "allow") refuse(check.verdict, method);
+      const chainId = check.chainId as bigint;
+      const on = await signerChain(self);
+      if (on !== null && on !== chainId) {
+        refuse(
+          {
+            decision: "refuse",
+            findings: [
+              {
+                code: "X402-701",
+                severity: "critical",
+                message: "the signer is on another chain than the intent's",
+                expected: chainId.toString(),
+                actual: on.toString(),
+              },
+            ],
+          },
+          method,
+        );
+      }
+
+      // The lifetime totals (X402-504) count what this guard signs, payments
+      // and transactions alike. Every movement is held before signing, and
+      // all of them are released if one does not fit or the wallet fails.
+      const releases: (() => void)[] = [];
+      const releaseAll = () => releases.splice(0).forEach((r) => r());
+      if (pinned.policy !== null) {
+        for (const move of check.movements) {
+          const held = tracker.reserve(pinned.policy, move.asset, move.amount);
+          if (typeof held !== "function") {
+            releaseAll();
+            refuse(
+              {
+                decision: "refuse",
+                findings: [{ ...held, code: "X402-706", message: `the spending policy refuses a movement in this transaction (${held.code}): ${held.message}` }],
+              },
+              method,
+            );
+          }
+          releases.push(held as () => void);
+        }
+      }
+      const signed = Object.fromEntries(read.fields);
+      signed.chainId = Number(chainId);
+      return signHeld(fn, self, [signed, ...args.slice(1)], releaseAll);
+    };
 
   const wrap = <O extends object>(obj: O, path: string, depth = 0): O =>
     new Proxy(obj, {
@@ -1896,6 +2050,7 @@ export function guardEvmSigner<T extends object>(
           // knows how to check get checked; the rest are refused, because a
           // method we cannot model is a method we cannot vouch for.
           if (EVM_SIGNING_METHODS.has(prop)) {
+            if (TX_METHODS.has(prop)) return txGuardFn(value as Function, qualified, target);
             return guardFn(value as Function, qualified, target);
           }
           if (SAFE_READ_METHODS.has(prop)) return value.bind(target);

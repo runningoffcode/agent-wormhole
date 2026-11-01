@@ -42,7 +42,11 @@ const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const MERCHANT = "0x1111111111111111111111111111111111111111";
 const ATTACKER = "0x2222222222222222222222222222222222222222";
 const OTHER_TOKEN = "0x3333333333333333333333333333333333333333";
-const NOW = 2_000_000_000n;
+// The real clock: the same fixtures go through checks pinned to NOW and through
+// verify(), which reads the clock itself, and an authorization is valid for an
+// hour from it, as a real one is (a window over a day is X402-105).
+const NOW = BigInt(Math.floor(Date.now() / 1000));
+const VALID_BEFORE = NOW + 3600n;
 const ONE_USDC = 1_000_000n;
 const BALANCE = 25_000_000_000n; // the wallet's whole 25,000 USDC
 
@@ -51,7 +55,7 @@ const nextNonce = (): Hex => `0x${(nonceCounter++).toString(16).padStart(64, "0"
 
 async function signAuth(to: string, value: bigint): Promise<EvmPayload> {
   const nonce = nextNonce();
-  const message = { from: account.address, to: to as Hex, value, validAfter: 0n, validBefore: 99999999999n, nonce };
+  const message = { from: account.address, to: to as Hex, value, validAfter: 0n, validBefore: VALID_BEFORE, nonce };
   const signature = await account.signTypedData({
     domain: { name: "USD Coin", version: "2", chainId: 8453, verifyingContract: BASE_USDC as Hex },
     types: EIP3009.TYPES,
@@ -60,7 +64,7 @@ async function signAuth(to: string, value: bigint): Promise<EvmPayload> {
   });
   return {
     signature,
-    authorization: { from: account.address, to, value: value.toString(), validAfter: "0", validBefore: "99999999999", nonce },
+    authorization: { from: account.address, to, value: value.toString(), validAfter: "0", validBefore: VALID_BEFORE.toString(), nonce },
   };
 }
 
@@ -69,7 +73,7 @@ function typedRequest(to: string, value: bigint) {
     domain: { name: "USD Coin", version: "2", chainId: 8453, verifyingContract: BASE_USDC },
     types: EIP3009.TYPES,
     primaryType: EIP3009.PRIMARY_TYPE,
-    message: { from: account.address, to, value: value.toString(), validAfter: "0", validBefore: "99999999999", nonce: nextNonce() },
+    message: { from: account.address, to, value: value.toString(), validAfter: "0", validBefore: VALID_BEFORE.toString(), nonce: nextNonce() },
   };
 }
 

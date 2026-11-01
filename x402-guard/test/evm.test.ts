@@ -68,7 +68,7 @@ async function signAuth(f: AuthFields = {}): Promise<EvmPayload & { authorizatio
   // Not 0. The contract's check is `require(block.timestamp < validBefore)`
   // with no zero case, so 0 is the one value that can never pass it — an
   // honest fixture has to carry a real window.
-  const validBefore = f.validBefore ?? 99999999999n;
+  const validBefore = f.validBefore ?? FIXED_NOW + 300n;
   const nonce = f.nonce ?? NONCE_A;
 
   const domain = {
@@ -870,7 +870,7 @@ describe("guardEvmSigner — the firewall", () => {
           to: MERCHANT,
           value: 1_000_000n,
           validAfter: 0n,
-          validBefore: 99999999999n,
+          validBefore: BigInt(Math.floor(Date.now() / 1000) + 300),
           nonce: NONCE_A,
         },
       } as any),
@@ -896,7 +896,7 @@ describe("guardEvmSigner — the firewall", () => {
           to: ATTACKER,
           value: 1_000_000n,
           validAfter: 0n,
-          validBefore: 99999999999n,
+          validBefore: BigInt(Math.floor(Date.now() / 1000) + 300),
           nonce: NONCE_A,
         },
       } as any),
@@ -1026,7 +1026,7 @@ describe("guardEvmSigner — default-deny against a real viem client (AW-10)", (
         to: MERCHANT,
         value: 1_000_000n,
         validAfter: 0n,
-        validBefore: 99999999999n,
+        validBefore: BigInt(Math.floor(Date.now() / 1000) + 300),
         nonce: NONCE_A,
       },
     });
@@ -1388,7 +1388,7 @@ describe("AW-66 / AW-32: the pre-signing path checks what the signed path checks
     to: MERCHANT,
     value: "1000000",
     validAfter: "0",
-    validBefore: "99999999999",
+    validBefore: String(Math.floor(Date.now() / 1000) + 300),
     nonce: `0x${"11".repeat(32)}`,
   });
   const req = (m: Record<string, unknown>, types: unknown = EIP3009.TYPES) => ({

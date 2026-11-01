@@ -119,6 +119,35 @@ export interface EvmPaymentQuote {
    * `origin` option is given (0.10.0); never by the payment checks.
    */
   resource?: string;
+  /**
+   * The 402 entry's `maxTimeoutSeconds`, when it carried one: how long the
+   * merchant asked an authorization to stay valid. Read before signing only
+   * (`inspectTypedDataRequest`), to refuse a window wider than it (X402-105).
+   */
+  maxTimeoutSeconds?: unknown;
+}
+
+/**
+ * The longest an authorization may stay valid, in seconds: a day. A payment
+ * for one request has no use for a signature that can still be collected next
+ * week. Before signing, the quote's own `maxTimeoutSeconds` narrows it.
+ */
+export const MAX_VALIDITY_SECONDS = 86_400n;
+
+/**
+ * Forward allowance on a quote's `maxTimeoutSeconds`, in seconds. x402's own
+ * client backdates `validAfter` ten minutes for clock skew; the same allowance
+ * forward keeps an honest client with a slow clock from being refused.
+ */
+export const TIMEOUT_SLACK_SECONDS = 600n;
+
+/** A quote's `maxTimeoutSeconds`: undefined when absent, null when present and not a non-negative integer. */
+function readTimeout(v: unknown): bigint | null | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v === "bigint") return v >= 0n ? v : null;
+  if (typeof v === "number") return Number.isSafeInteger(v) && v >= 0 ? BigInt(v) : null;
+  if (typeof v === "string" && /^[0-9]+$/.test(v.trim())) return BigInt(v.trim());
+  return null;
 }
 
 // --- EIP-3009 constants ----------------------------------------------------
@@ -1033,6 +1062,24 @@ export async function inspectAuthorization(
       actual: `validBefore = ${validBefore.toString()}`,
     });
   }
+  // Too wide. The README promised this and the check was missing: a year-long
+  // validBefore passed. Before signing, inspectTypedDataRequest refuses it.
+  // Here the signature already exists, so the finding is a warning: the
+  // window's risk falls on the payer, who refuses it before signing, and a
+  // merchant or verifier refusing a payment it is owed protects nobody. The
+  // quote's maxTimeoutSeconds is not read here: verify() hashes a request
+  // without it, and a finding must not turn on a field the receipt's digest
+  // leaves out.
+  if (validBefore > now + MAX_VALIDITY_SECONDS + skew) {
+    findings.push({
+      code: "X402-105",
+      severity: "medium",
+      message:
+        "authorization stays valid for more than a day — a standing authorization that can be collected long after the request; the payer's guard refuses this before signing",
+      expected: `validBefore <= ${(now + MAX_VALIDITY_SECONDS + skew).toString()}`,
+      actual: `validBefore = ${validBefore.toString()}`,
+    });
+  }
 
   // --- 10. structural / session replay (X402-107) -------------------------
   // NOT on-chain replay protection — that needs authorizationState via RPC.
@@ -1182,6 +1229,11 @@ export function evmQuoteFromRequirements(
   // sign-in check's site; the payment checks never read it.
   if (typeof req.resource === "string") {
     q.resource = req.resource;
+  }
+  // The window the merchant asked for, which the pre-signing check holds the
+  // authorization to (X402-105). Carried as given and read where it is used.
+  if (req.maxTimeoutSeconds !== undefined) {
+    q.maxTimeoutSeconds = req.maxTimeoutSeconds;
   }
   return q;
 }
@@ -1409,6 +1461,31 @@ export function inspectTypedDataRequest(
           ? "validBefore is 0 — the contract requires block.timestamp < validBefore, so this authorization can never be valid"
           : "authorization has expired (validBefore is in the past) — the payment window has closed",
       expected: `now (${now.toString()}) <= validBefore`,
+      actual: `validBefore = ${validBefore.toString()}`,
+    });
+  }
+  // Too wide, before the signature exists. The window may run no longer than
+  // the quote asked for, its maxTimeoutSeconds plus the ten minutes of clock
+  // allowance, and never longer than a day. A quote that names no timeout gets
+  // the day; one whose timeout cannot be read gets no verdict, since the window
+  // it allows cannot be known.
+  const timeout = readTimeout(quote.maxTimeoutSeconds);
+  if (timeout === null) {
+    return abstain("quote maxTimeoutSeconds is not a non-negative integer — the window it allows cannot be read");
+  }
+  const quoted = timeout === undefined ? undefined : timeout + TIMEOUT_SLACK_SECONDS;
+  const allowed = quoted === undefined || quoted > MAX_VALIDITY_SECONDS ? MAX_VALIDITY_SECONDS : quoted;
+  // Critical, so it refuses here: this path refuses on critical findings only,
+  // and the window is the one thing to stop before the signature exists.
+  if (validBefore > now + allowed + skew) {
+    findings.push({
+      code: "X402-105",
+      severity: "critical",
+      message:
+        allowed === quoted
+          ? "authorization would stay valid longer than the quote's maxTimeoutSeconds allows — a standing authorization the merchant did not ask for"
+          : "authorization would stay valid for more than a day — a standing authorization that can be collected long after the request",
+      expected: `validBefore <= ${(now + allowed + skew).toString()}`,
       actual: `validBefore = ${validBefore.toString()}`,
     });
   }

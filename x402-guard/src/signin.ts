@@ -224,9 +224,40 @@ export function checkSignerMessage(
   return { verdict: inspectSignInText(read.text, origin, fallback), arg: read.arg };
 }
 
+/**
+ * Messages whose signature is a credential by itself (0.11.0): a fixed line
+ * that names no site, so the signature works wherever it is presented. An
+ * Orbio wallet key is the signature of `Orbio API key · chain 4663 · epoch 0`,
+ * valid until the wallet signs a higher epoch, and whatever gets an agent to
+ * sign that line can spend its Orbio balance. Such a line is signed only while
+ * the agent is talking to the site that issues it, over https, that site or a
+ * subdomain of it. Recognised after folding, like a sign-in header, and wider
+ * than the exact line on purpose.
+ */
+const CREDENTIAL_LINES: readonly { readonly name: string; readonly phrase: string; readonly site: string }[] = [
+  { name: "an Orbio wallet key", phrase: "orbio api key", site: "orbio.so" },
+];
+
 /** The check on a message's text. */
 export function inspectSignInText(text: string, origin: OriginSource, fallback?: unknown): SignInVerdict {
-  if (!isSignInText(text)) return { decision: "allow", signIn: false, findings: [] };
+  const folded = fold(text);
+  const credential = CREDENTIAL_LINES.find((c) => folded.includes(c.phrase));
+  if (credential !== undefined) {
+    const site = resolveOrigin(origin, fallback);
+    const what = `the message is ${credential.name}, a signature that works as a credential wherever it is shown`;
+    if (site === null) {
+      return refuse("X402-602", `${what}, and no site is known to bind it to`, "pass `origin`, the site the agent contacted, to sign it through this guard");
+    }
+    const host = site.hostname.toLowerCase();
+    if (site.protocol !== "https:" || (host !== credential.site && !host.endsWith(`.${credential.site}`))) {
+      return refuse("X402-601", `${what}, and the agent is talking to another site`, `${credential.name} belongs to ${credential.site}, not ${site.host}`, {
+        expected: credential.site,
+        actual: `${site.protocol}//${site.host}`,
+      });
+    }
+    // Bound to its site; a sign-in request carrying it is still held to its own.
+  }
+  if (!isSignInText(text)) return { decision: "allow", signIn: credential !== undefined, findings: [] };
 
   const site = resolveOrigin(origin, fallback);
   if (site === null) return NO_ORIGIN();

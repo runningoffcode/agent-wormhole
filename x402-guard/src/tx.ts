@@ -77,7 +77,9 @@ export type Bound = Amount | { readonly eq: Amount } | { readonly lte?: Amount; 
  * - `{ tuple }` a struct's components, in order;
  * - `{ items }` an array's items, in order, its length included;
  * - `{ abi, args }` bytes that hold ABI-encoded values (`abi` lists their
- *   types, as in `"address, uint256"`), decoded and checked in turn.
+ *   types, as in `"address, uint256"`), decoded and checked in turn;
+ * - `{ signature: true }` bytes that hold a 64- or 65-byte signature, which
+ *   the called contract verifies: unconstrained, and never read as a call.
  */
 export type Constraint =
   | { readonly eq: unknown }
@@ -86,7 +88,8 @@ export type Constraint =
   | { readonly any: true }
   | { readonly tuple: readonly Constraint[] }
   | { readonly items: readonly Constraint[] }
-  | { readonly abi: string; readonly args: readonly Constraint[] };
+  | { readonly abi: string; readonly args: readonly Constraint[] }
+  | { readonly signature: true };
 
 /** What the agent means to do, from the agent's own code. */
 export type TxIntent =
@@ -126,6 +129,28 @@ export type TxIntent =
       readonly unlimited?: true;
     };
 
+/**
+ * A Permit2 allowance the agent means to sign (0.11.0): EIP-712 typed data,
+ * not a transaction. `spender` may pull up to `amount` of `token` through
+ * Permit2 until `expiration`, and the signature is usable until
+ * `sigDeadline`. Standing authority, so the token, spender and amount are
+ * exact; an unlimited allowance is named "unlimited".
+ */
+export type PermitIntent = {
+  readonly kind: "permit2.permit";
+  readonly chainId: number | bigint;
+  readonly token: string;
+  readonly spender: string;
+  readonly amount: Amount | "unlimited";
+  readonly expiration: Bound;
+  readonly sigDeadline: Bound;
+  /** Permit2's address, when not the canonical one. */
+  readonly permit2?: string;
+};
+
+/** Anything an intent can name: a transaction, or a Permit2 signature. */
+export type Intent = TxIntent | PermitIntent;
+
 export interface InspectTransactionOptions {
   /**
    * The opt-in spending policy (0.10.0), applied to the movements this check
@@ -147,6 +172,7 @@ export const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_UINT256 = (1n << 256n) - 1n;
+const MAX_UINT160 = (1n << 160n) - 1n;
 /** Deeper than any intent needs; past it an intent is unreadable, not followed. */
 const MAX_DEPTH = 16;
 
@@ -236,10 +262,11 @@ type Rule =
   | { readonly k: "any" }
   | { readonly k: "tuple"; readonly parts: readonly Rule[] }
   | { readonly k: "items"; readonly parts: readonly Rule[] }
-  | { readonly k: "abi"; readonly params: readonly AbiParameter[]; readonly parts: readonly Rule[] };
+  | { readonly k: "abi"; readonly params: readonly AbiParameter[]; readonly parts: readonly Rule[] }
+  | { readonly k: "signature" };
 
 interface ReadIntent {
-  readonly kind: TxIntent["kind"];
+  readonly kind: Intent["kind"];
   readonly chainId: bigint;
   /** The contract (or, for a native transfer, the recipient) the transaction must go to. */
   readonly target: string;
@@ -252,13 +279,18 @@ interface ReadIntent {
   readonly rules: readonly Rule[] | null;
   readonly value: Range;
   readonly unlimited: boolean;
+  /** A permit's token, and the bounds on its expiration and signature deadline. */
+  readonly token: string | null;
+  readonly expiration: Range | null;
+  readonly sigDeadline: Range | null;
 }
 
-const INTENT_KEYS: Readonly<Record<TxIntent["kind"], readonly string[]>> = {
+const INTENT_KEYS: Readonly<Record<Intent["kind"], readonly string[]>> = {
   "native.transfer": ["kind", "chainId", "to", "amount"],
   "erc20.transfer": ["kind", "chainId", "token", "to", "amount"],
   "erc20.approve": ["kind", "chainId", "token", "spender", "amount"],
   call: ["kind", "chainId", "target", "signature", "args", "value", "unlimited"],
+  "permit2.permit": ["kind", "chainId", "token", "spender", "amount", "expiration", "sigDeadline", "permit2"],
 };
 
 function readBound(v: unknown, what: string): Range | string {
@@ -476,8 +508,11 @@ function readRule(p: AbiParameter, c: unknown, where: string, depth: number): Ru
       }
       return { k: "abi", params, parts: rules };
     }
+    case "signature":
+      if (p.type !== "bytes") return `${where} marks a ${p.type} as a signature; only bytes can hold one`;
+      return get("signature") === true ? { k: "signature" } : `${where}.signature must be exactly true`;
     default:
-      return `${where} must be exactly one of { eq }, { oneOf }, { lte, gte }, { any: true }, { tuple }, { items } or { abi, args }`;
+      return `${where} must be exactly one of { eq }, { oneOf }, { lte, gte }, { any: true }, { tuple }, { items }, { abi, args } or { signature: true }`;
   }
 }
 
@@ -501,15 +536,15 @@ function readIntent(intent: unknown): ReadIntent | string {
   if (typeof s === "string") return `the intent: ${s}`;
   if (s.symbols > 0) return "the intent has a symbol key, which no rule reads";
   const kind = s.props.get("kind");
-  if (typeof kind !== "string" || !(kind in INTENT_KEYS)) {
-    return "the intent's kind is not native.transfer, erc20.transfer, erc20.approve or call";
+  if (typeof kind !== "string" || !Object.prototype.hasOwnProperty.call(INTENT_KEYS, kind)) {
+    return "the intent's kind is not native.transfer, erc20.transfer, erc20.approve, call or permit2.permit";
   }
-  const k = kind as TxIntent["kind"];
+  const k = kind as Intent["kind"];
   const unknown = [...s.props.keys()].filter((key) => !INTENT_KEYS[k].includes(key) || FORBIDDEN_KEYS.has(key));
   if (unknown.length > 0) return `the intent has keys no rule reads: ${unknown.join(", ").slice(0, 120)}`;
   const chainId = chainOf(s.props.get("chainId"));
   if (chainId === null) return "the intent's chainId is not a positive integer";
-  const base = { kind: k, chainId, recipients: null, amount: null, spender: null, allowance: null, fn: null, selector: null, rules: null, unlimited: false };
+  const base = { kind: k, chainId, recipients: null, amount: null, spender: null, allowance: null, fn: null, selector: null, rules: null, unlimited: false, token: null, expiration: null, sigDeadline: null };
 
   if (k === "native.transfer") {
     const to = intentAddressOf(s.props.get("to"));
@@ -520,6 +555,23 @@ function readIntent(intent: unknown): ReadIntent | string {
   }
 
   const token = intentAddressOf(s.props.get("token"));
+  if (k === "permit2.permit") {
+    if (token === null) return "the intent's token is not an address";
+    const spender = intentAddressOf(s.props.get("spender"));
+    if (spender === null) return "the intent's spender is not an address";
+    const permit2 = s.props.has("permit2") ? intentAddressOf(s.props.get("permit2")) : intentAddressOf(PERMIT2);
+    if (permit2 === null) return "the intent's permit2 is not an address";
+    const raw = s.props.get("amount");
+    const allowance = raw === "unlimited" ? "unlimited" : amountOf(raw);
+    if (allowance === null || (typeof allowance === "bigint" && allowance > MAX_UINT160)) {
+      return 'the intent\'s amount is not a uint160 or "unlimited"';
+    }
+    const expiration = readBound(s.props.get("expiration"), "the intent's expiration");
+    if (typeof expiration === "string") return expiration;
+    const sigDeadline = readBound(s.props.get("sigDeadline"), "the intent's sigDeadline");
+    if (typeof sigDeadline === "string") return sigDeadline;
+    return { ...base, target: permit2, token, spender, allowance, expiration, sigDeadline, value: { lte: 0n, gte: 0n } };
+  }
   if (k === "erc20.transfer") {
     if (token === null) return "the intent's token is not an address";
     const raw = s.props.get("to");
@@ -910,6 +962,12 @@ function match(p: AbiParameter, r: Rule, v: unknown, where: string, out: Match, 
       r.parts.forEach((x, i) => match(element, x, v[i], `${where}, item ${i + 1}`, out, depth + 1));
       return;
     }
+    case "signature": {
+      if (!isHex(v) || (v.length !== 2 + 128 && v.length !== 2 + 130)) {
+        out.broken.push(`${where} is not a 64- or 65-byte signature`);
+      }
+      return;
+    }
     case "abi": {
       const decoded = decodeCanonical(r.params, v, where);
       if (typeof decoded === "string") {
@@ -1004,11 +1062,12 @@ export function checkTransaction(intent: unknown, tx: unknown, opts: InspectTran
 function checkOnce(intent: unknown, tx: unknown, opts: InspectTransactionOptions): TransactionCheck {
   const none = (verdict: Verdict, chainId: bigint | null = null): TransactionCheck => ({ verdict, chainId, movements: [], tx: null });
   const read = readIntent(intent);
-  if (typeof read === "string") {
+  if (typeof read === "string" || read.kind === "permit2.permit") {
+    const why = typeof read === "string" ? read : "a permit2.permit intent names a signature, not a transaction";
     return none({
       decision: "abstain",
-      reason: read,
-      findings: [{ code: "X402-707", severity: "high", message: `the intent cannot be read: ${read}` }],
+      reason: why,
+      findings: [{ code: "X402-707", severity: "high", message: `the intent cannot be read: ${why}` }],
     });
   }
   let policy: ReadPolicy | null = null;
@@ -1206,6 +1265,242 @@ export function inspectTransaction(intent: TxIntent, tx: unknown, opts: InspectT
   return checkTransaction(intent, tx, opts).verdict;
 }
 
+// --- Permit2 signatures -----------------------------------------------------------
+
+/** A typed-data request as read once: plain data, deeply frozen. */
+export interface ReadTypedRequest {
+  readonly domain: Readonly<Record<string, unknown>>;
+  readonly types: Readonly<Record<string, unknown>>;
+  readonly primaryType: string;
+  readonly message: Readonly<Record<string, unknown>>;
+  /** viem's signing account, passed on as given: the signer's, not part of what is checked. */
+  readonly account?: unknown;
+}
+
+/** What a guard needs from a permit check: the verdict, the allowance it grants, the request as read. */
+export interface PermitCheck {
+  readonly verdict: Verdict;
+  readonly movements: readonly Movement[];
+  readonly request: ReadTypedRequest | null;
+}
+
+/** More values than any typed request holds; past it a request is unreadable. */
+const TYPED_SIZE = 10_000;
+
+/**
+ * A value read once into plain data: strings, numbers, bigints, booleans,
+ * null, plain arrays and plain objects, each property read once. Anything
+ * else, or anything deeper or larger than a typed request can be, is null.
+ */
+function plainCopy(v: unknown, depth: number, left: { n: number }): unknown {
+  if (--left.n < 0 || depth > MAX_DEPTH) throw new Error("deeper or larger than a typed request");
+  if (v === null || typeof v === "string" || typeof v === "boolean" || typeof v === "bigint") return v;
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) throw new Error("a number that is not finite");
+    return v;
+  }
+  const list = listOf(v);
+  if (list !== null) return Object.freeze(list.map((x) => plainCopy(x, depth + 1, left)));
+  if (isPlain(v)) {
+    const s = snapshot(v);
+    if (typeof s === "string") throw new Error(s);
+    if (s.symbols > 0) throw new Error("a symbol key");
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of s.props) {
+      if (FORBIDDEN_KEYS.has(k)) throw new Error(`a key named ${k}`);
+      out[k] = plainCopy(x, depth + 1, left);
+    }
+    return Object.freeze(out);
+  }
+  throw new Error(`a ${typeof v} that is not plain data`);
+}
+
+const readTypedOnce = new WeakSet<object>();
+
+/**
+ * Read a typed-data request once, the viem shape `{ domain, types,
+ * primaryType, message }`, into plain frozen data: what a guard checks and
+ * hands the signer. viem's `account` beside it is the signer's and is left
+ * out; any other key is unreadable.
+ */
+export function readTypedRequest(request: unknown): ReadTypedRequest | Finding[] {
+  const unreadable = (message: string): Finding[] => [{ code: "X402-709", severity: "high", message }];
+  try {
+    if (typeof request === "object" && request !== null && readTypedOnce.has(request)) return request as ReadTypedRequest;
+    if (!isPlain(request)) return unreadable("the typed-data request is not a plain object");
+    const s = snapshot(request);
+    if (typeof s === "string") return unreadable(`the typed-data request cannot be read: ${s}`);
+    const extra = [...s.props.keys()].filter((k) => !["domain", "types", "primaryType", "message", "account"].includes(k));
+    if (s.symbols > 0 || extra.length > 0) {
+      return unreadable(`the typed-data request carries keys this check does not model: ${extra.join(", ").slice(0, 120) || "a symbol"}`);
+    }
+    const left = { n: TYPED_SIZE };
+    const domain = plainCopy(s.props.get("domain"), 0, left);
+    const types = plainCopy(s.props.get("types"), 0, left);
+    const message = plainCopy(s.props.get("message"), 0, left);
+    const primaryType = s.props.get("primaryType");
+    if (!isPlain(domain) || !isPlain(types) || !isPlain(message) || typeof primaryType !== "string") {
+      return unreadable("the typed-data request lacks a domain, types, a primaryType or a message");
+    }
+    const out: ReadTypedRequest = Object.freeze({
+      domain: domain as Readonly<Record<string, unknown>>,
+      types: types as Readonly<Record<string, unknown>>,
+      primaryType,
+      message: message as Readonly<Record<string, unknown>>,
+      ...(s.props.has("account") ? { account: s.props.get("account") } : {}),
+    });
+    readTypedOnce.add(out);
+    return out;
+  } catch (e) {
+    return unreadable(`the typed-data request cannot be read (${e instanceof Error ? e.message : String(e)})`);
+  }
+}
+
+/** Permit2's allowance struct, as its contract hashes it. */
+const PERMIT_SINGLE_TYPES: Readonly<Record<string, readonly (readonly [string, string])[]>> = {
+  PermitSingle: [["details", "PermitDetails"], ["spender", "address"], ["sigDeadline", "uint256"]],
+  PermitDetails: [["token", "address"], ["amount", "uint160"], ["expiration", "uint48"], ["nonce", "uint48"]],
+  EIP712Domain: [["name", "string"], ["chainId", "uint256"], ["verifyingContract", "address"]],
+};
+
+/** Are these exactly Permit2's types (the domain's own entry optional)? */
+function isPermitSingleTypes(types: Readonly<Record<string, unknown>>): boolean {
+  const names = Object.keys(types);
+  if (!names.includes("PermitSingle") || !names.includes("PermitDetails")) return false;
+  return names.every((name) => {
+    const want = PERMIT_SINGLE_TYPES[name];
+    const got = types[name];
+    if (want === undefined || !Array.isArray(got) || got.length !== want.length) return false;
+    return want.every(([n, t], i) => {
+      const f = got[i];
+      return isPlain(f) && Object.keys(f).length === 2 && (f as { name?: unknown }).name === n && (f as { type?: unknown }).type === t;
+    });
+  });
+}
+
+const sameKeys = (o: object, keys: readonly string[]) => {
+  const own = Object.keys(o);
+  return own.length === keys.length && keys.every((k) => own.includes(k));
+};
+
+/**
+ * Check a Permit2 allowance signature against the intent, and say what it
+ * grants. The guard's entry point; `inspectPermit` returns the verdict alone.
+ * `request` is the caller's typed-data request or a `readTypedRequest`
+ * reading of it.
+ */
+export function checkPermit(intent: unknown, request: unknown, opts: InspectTransactionOptions = {}): PermitCheck {
+  try {
+    return checkPermitOnce(intent, request, opts);
+  } catch (e) {
+    const reason = `the intent or the request cannot be read (${e instanceof Error ? e.message : String(e)})`;
+    return { verdict: { decision: "abstain", reason, findings: [{ code: "X402-709", severity: "high", message: reason }] }, movements: [], request: null };
+  }
+}
+
+function checkPermitOnce(intent: unknown, request: unknown, opts: InspectTransactionOptions): PermitCheck {
+  const none = (verdict: Verdict): PermitCheck => ({ verdict, movements: [], request: null });
+  const read = readIntent(intent);
+  if (typeof read === "string" || read.kind !== "permit2.permit") {
+    const why = typeof read === "string" ? read : "only a permit2.permit intent names a Permit2 signature";
+    return none({ decision: "abstain", reason: why, findings: [{ code: "X402-707", severity: "high", message: `the intent cannot be read: ${why}` }] });
+  }
+  const p = readPolicyOption(opts, (a) => intentAddressOf(a));
+  if (typeof p === "string") {
+    return none({ decision: "abstain", reason: `${p} — refusing to report the permit as checked against it`, findings: [] });
+  }
+  const r = readTypedRequest(request);
+  if (Array.isArray(r)) return { verdict: { decision: "abstain", findings: r, reason: r[0]!.message }, movements: [], request: null };
+
+  const findings: Finding[] = [];
+  const unreadable = (message: string) => findings.push({ code: "X402-709", severity: "high", message });
+  const d = r.domain;
+  const domainChain = chainOf(d["chainId"]);
+  const domainContract = addressOf(d["verifyingContract"]);
+  if (!sameKeys(d, ["name", "chainId", "verifyingContract"]) || d["name"] !== "Permit2") {
+    findings.push({
+      code: "X402-701",
+      severity: "critical",
+      message: "the signature's domain is not Permit2's (name, chainId and verifyingContract, nothing else)",
+      actual: show(d),
+    });
+  } else if (domainChain !== read.chainId || domainContract !== read.target) {
+    findings.push({
+      code: "X402-701",
+      severity: "critical",
+      message: "the signature is for another chain or contract than the intent's Permit2",
+      expected: `${read.chainId} ${read.target}`,
+      actual: `${show(d["chainId"])} ${show(d["verifyingContract"])}`,
+    });
+  }
+  if (r.primaryType !== "PermitSingle" || !isPermitSingleTypes(r.types)) {
+    findings.push({
+      code: "X402-702",
+      severity: "critical",
+      message: "the signature is not Permit2's PermitSingle with its exact types",
+      actual: r.primaryType,
+    });
+  }
+
+  const movements: Movement[] = [];
+  const m = r.message;
+  const details = m["details"];
+  if (!sameKeys(m, ["details", "spender", "sigDeadline"]) || !isPlain(details) || !sameKeys(details, ["token", "amount", "expiration", "nonce"])) {
+    unreadable("the permit's message is not a PermitSingle: details { token, amount, expiration, nonce }, spender, sigDeadline");
+  } else {
+    const dt = details as Record<string, unknown>;
+    const token = normalize({ type: "address" }, dt["token"]);
+    const amount = normalize({ type: "uint160" }, dt["amount"]);
+    const expiration = normalize({ type: "uint48" }, dt["expiration"]);
+    const nonce = normalize({ type: "uint48" }, dt["nonce"]);
+    const spender = normalize({ type: "address" }, m["spender"]);
+    const sigDeadline = normalize({ type: "uint256" }, m["sigDeadline"]);
+    if ([token, amount, expiration, nonce, spender, sigDeadline].some((x) => x === null)) {
+      unreadable("a permit field is not a value of its Permit2 type");
+    } else {
+      if (token !== read.token) {
+        findings.push({ code: "X402-705", severity: "critical", message: "the permit grants an allowance over another token than the intent's", expected: read.token!, actual: String(token) });
+      }
+      if (spender !== read.spender) {
+        findings.push({ code: "X402-705", severity: "critical", message: "the permit names another spender than the intent's, standing authority the intent does not grant", expected: read.spender!, actual: String(spender) });
+      }
+      if (read.allowance !== "unlimited" && amount !== read.allowance) {
+        findings.push({ code: "X402-705", severity: "critical", message: "the permit grants another allowance than the intent's exact amount", expected: String(read.allowance), actual: String(amount) });
+      }
+      if (!inRange(expiration as bigint, read.expiration!)) {
+        findings.push({ code: "X402-703", severity: "critical", message: `the permit's expiration is ${expiration}, expected ${showRange(read.expiration!)}` });
+      }
+      if (!inRange(sigDeadline as bigint, read.sigDeadline!)) {
+        findings.push({ code: "X402-703", severity: "critical", message: `the permit's sigDeadline is ${sigDeadline}, expected ${showRange(read.sigDeadline!)}` });
+      }
+      movements.push({ asset: token as string, payTo: spender as string, amount: amount as bigint });
+    }
+  }
+  if (p !== null) {
+    for (const move of movements) {
+      for (const f of checkSpendPolicy(p, move)) {
+        findings.push({
+          code: "X402-706",
+          severity: "critical",
+          message: `the spending policy refuses the allowance this permit grants (${f.code}): ${f.message}`,
+          expected: f.expected,
+          actual: f.actual ?? `${move.amount} of ${move.asset} to ${move.payTo}`,
+        });
+      }
+    }
+  }
+  const verdict = verdictOf(findings, read.chainId, movements, null).verdict;
+  return { verdict, movements, request: r };
+}
+
+/**
+ * Check a Permit2 allowance signature against what the agent meant to grant,
+ * before it is signed. Offline and synchronous.
+ */
+export function inspectPermit(intent: PermitIntent, request: unknown, opts: InspectTransactionOptions = {}): Verdict {
+  return checkPermit(intent, request, opts).verdict;
+}
+
 // --- presets --------------------------------------------------------------------
 
 const boundRule = (b: Bound): Constraint => {
@@ -1221,6 +1516,30 @@ function upper(b: Bound): Amount | null {
 }
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+/** An address left-padded to 32 bytes, or a 32-byte value as given; a preset's caller error otherwise. */
+function bytes32Of(v: string, what: string): string {
+  const a = intentAddressOf(v);
+  if (a !== null) return `0x${a.slice(2).padStart(64, "0")}`;
+  if (typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v)) return v.toLowerCase();
+  throw new TypeError(`${what} must be an address or 32 bytes of hex`);
+}
+
+/**
+ * Orbio's contracts on Robinhood Chain, from its documentation, and checked on
+ * chain on 2026-11-01: each holds code, and each bridge is a LayerZero OFT
+ * adapter over CREDIT whose peer is on the chain named.
+ */
+export const ORBIO = {
+  chainId: 4663,
+  exchange: "0x6951ffd32630b05e06f50062aea801625a58ebc0",
+  credit: "0xe33322da1380e61e5ae5dfb21e7f62924c73004c",
+  usdg: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  bridges: {
+    ethereum: { oft: "0x08c5b6daf7363ee75789d68d7ee522de7d94b396", dstEid: 30101 },
+    solana: { oft: "0x8ff55f695ea3ca21a819c5411ffe907c4cd6c3c3", dstEid: 30168 },
+  },
+} as const;
 
 /**
  * Intents for calls agents make often, so an agent writes what it means
@@ -1272,6 +1591,12 @@ export const presets = {
      * native coin as input it must be exact, and the value sent equals it, so
      * nothing is left in the router for anyone to sweep. `deadline` bounds the
      * router's deadline, the time a signed swap stays valid.
+     *
+     * `permit` adds Permit2's PERMIT2_PERMIT command before the swap, carrying
+     * a signed allowance for the input token to this router: its amount exact
+     * (by default the exact `amountIn`), its expiration and signature deadline
+     * bounded, its nonce Permit2's to check. Sign that allowance itself under a
+     * `permit2.permit` intent.
      */
     swapExactInSingle(p: {
       chainId: number | bigint;
@@ -1284,6 +1609,7 @@ export const presets = {
       deadline: Bound;
       hookData?: string;
       minHopPriceX36?: Bound;
+      permit?: { amount?: Amount; expiration: Bound; sigDeadline: Bound };
     }): TxIntent {
       if (p.fields !== 5 && p.fields !== 6) throw new TypeError("presets.uniswapV4.swapExactInSingle: fields must be 5 or 6");
       const most = upper(p.amountIn);
@@ -1295,20 +1621,46 @@ export const presets = {
       if (nativeIn && !exactIn) {
         throw new TypeError("presets.uniswapV4.swapExactInSingle: with the native coin as input, amountIn must be exact");
       }
+      if (nativeIn && p.permit !== undefined) {
+        throw new TypeError("presets.uniswapV4.swapExactInSingle: the native coin needs no Permit2 allowance");
+      }
+      const permitAmount = p.permit === undefined ? null : p.permit.amount ?? (exactIn ? most : null);
+      if (p.permit !== undefined && permitAmount === null) {
+        throw new TypeError("presets.uniswapV4.swapExactInSingle: with a range for amountIn, permit.amount must be given exactly");
+      }
       const key = { tuple: [{ eq: p.poolKey.currency0 }, { eq: p.poolKey.currency1 }, { eq: p.poolKey.fee }, { eq: p.poolKey.tickSpacing }, { eq: p.poolKey.hooks }] };
       const swap =
         p.fields === 6
           ? { abi: "((address,address,uint24,int24,address),bool,uint128,uint128,uint256,bytes)", args: [{ tuple: [key, { eq: p.zeroForOne }, boundRule(p.amountIn), { gte: p.minAmountOut }, p.minHopPriceX36 === undefined ? { any: true } : boundRule(p.minHopPriceX36), { eq: p.hookData ?? "0x" }] }] }
           : { abi: "((address,address,uint24,int24,address),bool,uint128,uint128,bytes)", args: [{ tuple: [key, { eq: p.zeroForOne }, boundRule(p.amountIn), { gte: p.minAmountOut }, { eq: p.hookData ?? "0x" }] }] };
+      const permitInput: Constraint[] =
+        p.permit === undefined
+          ? []
+          : [
+              {
+                abi: "((address,uint160,uint48,uint48),address,uint256), bytes",
+                args: [
+                  {
+                    tuple: [
+                      { tuple: [{ eq: currencyIn }, { eq: permitAmount }, boundRule(p.permit.expiration), { any: true }] },
+                      { eq: p.router },
+                      boundRule(p.permit.sigDeadline),
+                    ],
+                  },
+                  { signature: true },
+                ],
+              },
+            ];
       return {
         kind: "call",
         chainId: p.chainId,
         target: p.router,
         signature: "execute(bytes,bytes[],uint256)",
         args: [
-          { eq: "0x10" },
+          { eq: p.permit === undefined ? "0x10" : "0x0a10" },
           {
             items: [
+              ...permitInput,
               {
                 abi: "bytes, bytes[]",
                 args: [
@@ -1351,5 +1703,167 @@ export const presets = {
         args: [{ eq: p.token }, { eq: p.spender }, { eq: p.amount }, boundRule(p.expiration)],
       };
     },
+    /**
+     * A signed Permit2 allowance (typed data, `PermitSingle`): for
+     * `guardEvmSigner`'s `intentFor` when the wallet is asked to sign one, or
+     * for `inspectPermit`.
+     */
+    permit(p: {
+      chainId: number | bigint;
+      token: string;
+      spender: string;
+      amount: Amount | "unlimited";
+      expiration: Bound;
+      sigDeadline: Bound;
+      permit2?: string;
+    }): PermitIntent {
+      return {
+        kind: "permit2.permit",
+        chainId: p.chainId,
+        token: p.token,
+        spender: p.spender,
+        amount: p.amount,
+        expiration: p.expiration,
+        sigDeadline: p.sigDeadline,
+        ...(p.permit2 === undefined ? {} : { permit2: p.permit2 }),
+      };
+    },
+  },
+  layerZero: {
+    /**
+     * A LayerZero v2 OFT `send`: `amount` of the OFT's token to `to` (an
+     * address, or 32 bytes for a non-EVM chain) on the chain whose endpoint id
+     * is `dstEid`, with at least `minAmount` received. No compose message and
+     * no OFT command; the native fee bounded and paid as the value, excess
+     * refunded to `refundAddress`. `extraOptions` is exact, "0x" unless given:
+     * an executor option can deliver native gas to any address on the
+     * destination, paid out of this fee.
+     */
+    oftSend(p: {
+      chainId: number | bigint;
+      oft: string;
+      dstEid: number;
+      to: string;
+      amount: Bound;
+      minAmount: Amount;
+      nativeFee: Bound;
+      refundAddress: string;
+      extraOptions?: string;
+    }): TxIntent {
+      if (upper(p.nativeFee) === null) throw new TypeError("presets.layerZero.oftSend: nativeFee needs an upper bound");
+      return {
+        kind: "call",
+        chainId: p.chainId,
+        target: p.oft,
+        signature: "send((uint32,bytes32,uint256,uint256,bytes,bytes,bytes),(uint256,uint256),address)",
+        args: [
+          {
+            tuple: [
+              { eq: p.dstEid },
+              { eq: bytes32Of(p.to, "presets.layerZero.oftSend: to") },
+              boundRule(p.amount),
+              { gte: p.minAmount },
+              { eq: p.extraOptions ?? "0x" },
+              { eq: "0x" },
+              { eq: "0x" },
+            ],
+          },
+          { tuple: [boundRule(p.nativeFee), { eq: 0 }] },
+          { eq: p.refundAddress },
+        ],
+        value: p.nativeFee,
+      };
+    },
+  },
+  orbio: {
+    /** USDG approved to Orbio's exchange, exactly, before a buy. */
+    approveUsdg(p: { amount: Amount }): TxIntent {
+      return { kind: "erc20.approve", chainId: ORBIO.chainId, token: ORBIO.usdg, spender: ORBIO.exchange, amount: p.amount };
+    },
+    /**
+     * CREDIT bought on Orbio's exchange: at most the USDG bound, at least
+     * `minCreditOut` (positive, as Orbio asks), paid to `recipient`.
+     */
+    buy(p: { usdgIn: Bound; minCreditOut: Amount; recipient: string; maxFills?: Bound }): TxIntent {
+      orbioSpend(p.usdgIn, p.minCreditOut, "buy");
+      return {
+        kind: "call",
+        chainId: ORBIO.chainId,
+        target: ORBIO.exchange,
+        signature: "buy(uint256,uint256,address,uint256)",
+        args: [boundRule(p.usdgIn), { gte: p.minCreditOut }, { eq: p.recipient }, p.maxFills === undefined ? { any: true } : boundRule(p.maxFills)],
+      };
+    },
+    /**
+     * CREDIT bought and activated in one call. Activation burns CREDIT into a
+     * service balance for good, so the beneficiary is exact: an address (or 32
+     * bytes for a Solana wallet) whose balance the burn funds.
+     */
+    buyAndActivate(p: { usdgIn: Bound; minCreditOut: Amount; beneficiary: string; maxFills?: Bound }): TxIntent {
+      orbioSpend(p.usdgIn, p.minCreditOut, "buyAndActivate");
+      return {
+        kind: "call",
+        chainId: ORBIO.chainId,
+        target: ORBIO.exchange,
+        signature: "buyAndActivate(uint256,uint256,bytes32,uint256)",
+        args: [
+          boundRule(p.usdgIn),
+          { gte: p.minCreditOut },
+          { eq: bytes32Of(p.beneficiary, "presets.orbio.buyAndActivate: beneficiary") },
+          p.maxFills === undefined ? { any: true } : boundRule(p.maxFills),
+        ],
+      };
+    },
+    /**
+     * CREDIT activated: burned, for good, into the sender's service balance, or
+     * the exact beneficiary's when one is named.
+     */
+    activate(p: { amount: Bound; beneficiary?: string }): TxIntent {
+      if (upper(p.amount) === null) throw new TypeError("presets.orbio.activate: amount needs an upper bound");
+      return p.beneficiary === undefined
+        ? { kind: "call", chainId: ORBIO.chainId, target: ORBIO.credit, signature: "activate(uint256)", args: [boundRule(p.amount)] }
+        : {
+            kind: "call",
+            chainId: ORBIO.chainId,
+            target: ORBIO.credit,
+            signature: "activate(uint256,bytes32)",
+            args: [boundRule(p.amount), { eq: bytes32Of(p.beneficiary, "presets.orbio.activate: beneficiary") }],
+          };
+    },
+    /** CREDIT approved, exactly, to the bridge adapter for `to`, which pulls it on send. */
+    approveBridge(p: { to: "ethereum" | "solana"; amount: Amount }): TxIntent {
+      return { kind: "erc20.approve", chainId: ORBIO.chainId, token: ORBIO.credit, spender: ORBIO.bridges[p.to].oft, amount: p.amount };
+    },
+    /** CREDIT bridged to Ethereum or Solana through Orbio's LayerZero adapters (see layerZero.oftSend). */
+    bridge(p: {
+      to: "ethereum" | "solana";
+      recipient: string;
+      amount: Bound;
+      minAmount: Amount;
+      nativeFee: Bound;
+      refundAddress: string;
+      extraOptions?: string;
+    }): TxIntent {
+      const bridge = ORBIO.bridges[p.to];
+      if (bridge === undefined) throw new TypeError('presets.orbio.bridge: to must be "ethereum" or "solana"');
+      return presets.layerZero.oftSend({
+        chainId: ORBIO.chainId,
+        oft: bridge.oft,
+        dstEid: bridge.dstEid,
+        to: p.recipient,
+        amount: p.amount,
+        minAmount: p.minAmount,
+        nativeFee: p.nativeFee,
+        refundAddress: p.refundAddress,
+        ...(p.extraOptions === undefined ? {} : { extraOptions: p.extraOptions }),
+      });
+    },
   },
 } as const;
+
+/** A buy's USDG needs an upper bound, and its CREDIT floor must be positive. */
+function orbioSpend(usdgIn: Bound, minCreditOut: Amount, name: string): void {
+  if (upper(usdgIn) === null) throw new TypeError(`presets.orbio.${name}: usdgIn needs an upper bound`);
+  const floor = amountOf(minCreditOut);
+  if (floor === null || floor === 0n) throw new TypeError(`presets.orbio.${name}: minCreditOut must be a positive amount`);
+}

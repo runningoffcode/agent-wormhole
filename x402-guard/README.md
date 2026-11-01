@@ -315,6 +315,16 @@ implements EIP-2612, so a malicious unbounded `Permit` validates against the
 EIP-712 type. `viem` is an **optional** peer dependency (`npm install
 wormhole-x402 viem`).
 
+The validity window gets the same treatment as a standing authority, because a
+long one is one: an authorization still valid next week can be collected next
+week. Before signing (`inspectTypedDataRequest`, and so `guardEvmSigner`), the
+window may run no longer than the quote's `maxTimeoutSeconds` plus ten minutes
+of clock allowance, and never longer than a day; a quote that names no timeout
+gets the day, and one whose timeout cannot be read gets no verdict. Past that,
+`X402-105` refuses. On a signed payment (`inspectAuthorization`, `verify()`), a
+window over a day is reported as a medium `X402-105` instead: the signature
+already exists, and the payer's guard is the place to refuse it.
+
 ## The one design constraint
 
 **Intent must never be something the agent states.**

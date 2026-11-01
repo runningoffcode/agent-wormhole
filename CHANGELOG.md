@@ -34,9 +34,34 @@ whatever the counterparty built.
     chain for chain 0.
   - Without `intentFor`, nothing changes: these methods are refused as
     before.
-- Presets: `presets.morpho.borrow`, `presets.uniswapV4.swapExactInSingle`
-  (five- or six-field swap parameters) and `presets.permit2.approve`.
+- Presets:
+  - `presets.morpho.borrow`;
+  - `presets.uniswapV4.swapExactInSingle`, for five- or six-field swap
+    parameters, optionally with the router's PERMIT2_PERMIT command;
+  - `presets.permit2.approve` and `presets.permit2.permit`;
+  - `presets.layerZero.oftSend`;
+  - `presets.orbio`: buy, buyAndActivate, activate, the exact approvals, and
+    bridging to Ethereum or Solana, with Orbio's contracts as `ORBIO`.
+- **Permit2 allowances under an intent.** With `intentFor`, a Permit2
+  `PermitSingle` is checked against a `permit2.permit` intent before the
+  wallet signs it:
+  - Permit2's own domain on the intent's chain, and its exact struct;
+  - the exact token, spender and amount, and "unlimited" only by name;
+  - the expiration and signature deadline within bounds;
+  - the spending policy and lifetime totals, on the allowance it grants.
+  The wallet signs the request as read. `inspectPermit` runs the same check
+  on its own. Without `intentFor`, permits are refused as before.
+- A `{ signature: true }` constraint reads 64- or 65-byte signature bytes
+  without treating them as an inner call.
 - Gas, fees and nonce stay the signer's and are not checked.
+
+**A credential signed as a fixed line is bound to its site.** An Orbio wallet
+key is the signature of `Orbio API key · chain 4663 · epoch 0`, a line that
+names no site, so whatever got an agent to sign it held the agent's key. With
+message signing allowed, the guard used to sign it like any other message. It
+now signs it only while the agent is talking to orbio.so over https
+(X402-601 elsewhere, X402-602 with no site known). A sign-in request carrying
+the line is still held to its own site.
 
 ## wormhole-x402 0.10.1 — 2026-11-01
 

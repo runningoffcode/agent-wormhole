@@ -8,11 +8,21 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # 3.8 is the oldest version the package supports (requires-python), and
+    # ubuntu-latest no longer carries a build of it: since the runners moved
+    # to Ubuntu 26.04, setup-python fails there before a single test runs. So
+    # that one version runs on the newest image that still has it.
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.8', '3.10', '3.12']
+        include:
+          - python-version: '3.8'
+            os: ubuntu-22.04
+          - python-version: '3.10'
+            os: ubuntu-latest
+          - python-version: '3.12'
+            os: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 

@@ -50,7 +50,7 @@ import {
   type SpendPolicy,
 } from "./policy.js";
 import { checkSignerMessage, type OriginSource } from "./signin.js";
-import { checkTransaction, readTransaction, type TxIntent } from "./tx.js";
+import { checkPermit, checkTransaction, readTransaction, readTypedRequest, type Intent } from "./tx.js";
 
 export {
   type SpendPolicy,
@@ -60,10 +60,15 @@ export {
 } from "./policy.js";
 export {
   inspectTransaction,
+  inspectPermit,
   readTransaction,
+  readTypedRequest,
   presets,
   NATIVE_ASSET,
   PERMIT2,
+  ORBIO,
+  type Intent,
+  type PermitIntent,
   type TxIntent,
   type Constraint,
   type Bound,
@@ -1680,12 +1685,14 @@ export function guardEvmSigner<T extends object>(
      */
     origin?: OriginSource;
     /**
-     * The intent a transaction must match before `signTransaction` or
-     * `sendTransaction` signs it (0.11.0; ./tx). Called with the transaction
-     * as read, frozen; returns the intent from the agent's own code, or null
-     * to refuse. Absent, those methods are refused, as before.
+     * The intent a transaction or a Permit2 allowance must match before it is
+     * signed (0.11.0; ./tx). Called with the request as read, frozen: a
+     * transaction for `signTransaction` and `sendTransaction`, a typed-data
+     * request `{ domain, types, primaryType, message }` for a Permit2
+     * `PermitSingle`. Returns the intent from the agent's own code, or null to
+     * refuse. Absent, those requests are refused, as before.
      */
-    intentFor?: (tx: Readonly<Record<string, unknown>>) => TxIntent | null | undefined | Promise<TxIntent | null | undefined>;
+    intentFor?: (request: Readonly<Record<string, unknown>>) => Intent | null | undefined | Promise<Intent | null | undefined>;
   } = {},
 ): T {
   const allowed = new Set(opts.allow ?? []);
@@ -1814,9 +1821,86 @@ export function guardEvmSigner<T extends object>(
       return fn.apply(self, [arg, ...args.slice(1)]);
     };
 
+  /** The caller's intentFor, read at signing time: the function, undefined when not given, or null when unreadable. */
+  const intentForOption = (): Function | undefined | null => {
+    try {
+      const v = Reflect.get(opts, "intentFor", opts);
+      return v === undefined ? undefined : typeof v === "function" ? v : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /** Hold every movement against the lifetime totals; release all of them if one does not fit. */
+  const holdAll = (policy: ReadPolicy | null, movements: readonly { asset: string; amount: bigint }[], method: string, what: string): (() => void) => {
+    const releases: (() => void)[] = [];
+    const releaseAll = () => releases.splice(0).forEach((r) => r());
+    if (policy === null) return releaseAll;
+    for (const move of movements) {
+      const held = tracker.reserve(policy, move.asset, move.amount);
+      if (typeof held !== "function") {
+        releaseAll();
+        refuse(
+          {
+            decision: "refuse",
+            findings: [{ ...held, code: "X402-706", message: `the spending policy refuses ${what} (${held.code}): ${held.message}` }],
+          },
+          method,
+        );
+      }
+      releases.push(held as () => void);
+    }
+    return releaseAll;
+  };
+
+  /**
+   * A Permit2 allowance with an intent (0.11.0; ./tx). No x402 quote is
+   * involved: the request is read once, the caller's intentFor names the
+   * allowance it should be, and the wallet signs the request as read. Without
+   * intentFor, a permit takes the payment path, which refuses it (X402-106).
+   */
+  const permitGuard = async (fn: Function, method: string, self: unknown, args: unknown[], typed: unknown, intentFor: Function) => {
+    if (signedPayloadFrom(args) !== undefined) {
+      refuse(
+        abstain("the call carries both a typed-data request and an already-signed payment, so which one the wallet would sign cannot be told"),
+        method,
+      );
+    }
+    const pinned = pinPolicy(method);
+    const read = readTypedRequest(typed);
+    if (Array.isArray(read)) refuse(abstain(read[0]?.message ?? "the typed-data request cannot be read", read), method);
+    const request = read as Exclude<typeof read, unknown[]>;
+    let intent: unknown;
+    try {
+      intent = await intentFor(request);
+    } catch (e) {
+      refuse(abstain(`intentFor threw (${e instanceof Error ? e.message : String(e)})`), method);
+    }
+    if (intent === null || intent === undefined) refuse(abstain("intentFor named no intent for this signature"), method);
+    const check = checkPermit(intent, request, pinned.opts);
+    if (check.verdict.decision !== "allow") refuse(check.verdict, method);
+    const release = holdAll(pinned.policy, check.movements, method, "the allowance this permit grants");
+    // viem signs its one request object; ethers its domain, types and value.
+    const signerArgs = typed === args[0] ? [request, ...args.slice(1)] : [request.domain, request.types, request.message, ...args.slice(3)];
+    return signHeld(fn, self, signerArgs, release);
+  };
+
   /** Wrap one function so it cannot be called without passing the check. */
   const guardFn = (fn: Function, method: string, self: unknown) =>
     async (...args: unknown[]) => {
+      // A Permit2 allowance under an intent never reaches the payment path.
+      const intentFor = intentForOption();
+      if (intentFor === null) refuse(abstain("the intentFor option cannot be read, or is not a function"), method);
+      if (intentFor !== undefined) {
+        const typed = typedDataFrom(args);
+        let primary: unknown;
+        try {
+          primary = typed === null || typed === undefined ? undefined : Reflect.get(typed as object, "primaryType", typed);
+        } catch {
+          primary = undefined;
+        }
+        if (primary === "PermitSingle") return permitGuard(fn, method, self, args, typed, intentFor as Function);
+      }
       const quote = getQuote();
       if (!quote) {
         throw new Error(
@@ -1944,14 +2028,9 @@ export function guardEvmSigner<T extends object>(
    */
   const txGuardFn = (fn: Function, method: string, self: object) =>
     async (...args: unknown[]) => {
-      let intentFor: unknown;
-      try {
-        intentFor = Reflect.get(opts, "intentFor", opts);
-      } catch {
-        refuse(abstain("the intentFor option cannot be read"), method);
-      }
+      const intentFor = intentForOption();
       if (intentFor === undefined) return guardFn(fn, method, self)(...args);
-      if (typeof intentFor !== "function") refuse(abstain("the intentFor option is not a function"), method);
+      if (intentFor === null) refuse(abstain("the intentFor option cannot be read, or is not a function"), method);
       const pinned = pinPolicy(method);
 
       const tx = readTransaction(args[0]);
@@ -2003,24 +2082,7 @@ export function guardEvmSigner<T extends object>(
       // The lifetime totals (X402-504) count what this guard signs, payments
       // and transactions alike. Every movement is held before signing, and
       // all of them are released if one does not fit or the wallet fails.
-      const releases: (() => void)[] = [];
-      const releaseAll = () => releases.splice(0).forEach((r) => r());
-      if (pinned.policy !== null) {
-        for (const move of check.movements) {
-          const held = tracker.reserve(pinned.policy, move.asset, move.amount);
-          if (typeof held !== "function") {
-            releaseAll();
-            refuse(
-              {
-                decision: "refuse",
-                findings: [{ ...held, code: "X402-706", message: `the spending policy refuses a movement in this transaction (${held.code}): ${held.message}` }],
-              },
-              method,
-            );
-          }
-          releases.push(held as () => void);
-        }
-      }
+      const releaseAll = holdAll(pinned.policy, check.movements, method, "a movement in this transaction");
       const signed = Object.fromEntries(read.fields);
       signed.chainId = Number(chainId);
       return signHeld(fn, self, [signed, ...args.slice(1)], releaseAll);

@@ -1,5 +1,27 @@
 # Changelog
 
+## wormhole-x402 0.10.1 — 2026-11-01
+
+**The validity window too wide (X402-105).** The README listed "too wide" under
+X402-105 and nothing checked it: an EIP-3009 authorization valid until the year
+5138 passed, and `evmQuoteFromRequirements` dropped the 402 entry's
+`maxTimeoutSeconds`. A window that long is a standing authorization,
+collectable long after the one request it paid for.
+- Before signing (`inspectTypedDataRequest`, `guardEvmSigner`), the window may
+  run no longer than the quote's `maxTimeoutSeconds` plus ten minutes of clock
+  allowance, and never longer than a day. A quote with no timeout gets the day;
+  one whose timeout cannot be read gets no verdict. Past that, X402-105 refuses
+  (critical).
+- On a signed payment (`inspectAuthorization`, `verify()`), a window over a day
+  is reported as a medium X402-105 and does not refuse. The quote's timeout is
+  not read there, because the request digest does not cover it.
+- `evmQuoteFromRequirements` carries `maxTimeoutSeconds`. Receipt digests are
+  unchanged.
+
+**Behaviour that changed:** an agent whose code signs EIP-3009 authorizations
+valid for longer than the quote's timeout (or a day) is now refused before
+signing. x402's own clients sign `now + maxTimeoutSeconds`, which passes.
+
 ## wormhole-x402 0.10.0 — 2026-11-01
 
 Two gaps that V12's review of the x402 SDKs (2026-10-22) exposed, measured

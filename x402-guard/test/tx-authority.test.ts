@@ -80,6 +80,35 @@ describe("an unlimited grant needs the word for it", () => {
   });
 });
 
+describe("Permit2 permits inside a UniversalRouter call", () => {
+  const PERMIT = parseAbiParameters("((address,uint160,uint48,uint48),address,uint256), bytes");
+  const permitInput = (amount: bigint) => encodeAbiParameters(PERMIT, [[[USDC, amount, 9, 0], ROUTER, 9n], `0x${"22".repeat(65)}`] as never);
+  const subPlan = (commands: Hex, inputs: Hex[]) => encodeAbiParameters(parseAbiParameters("bytes, bytes[]"), [commands, inputs]);
+  const routerCall = (commands: Hex, inputs: Hex[]) => call("execute(bytes,bytes[],uint256)", [commands, inputs, 9n]);
+
+  it("finds an unlimited permit in a sub-plan, and allows it only with unlimited: true", () => {
+    const commands = "0x21" as Hex;
+    const inputs = [subPlan("0x0a", [permitInput(MAX160)])];
+    const data = routerCall(commands, inputs);
+    const intent: TxIntent = { kind: "call", chainId: CHAIN, target: ROUTER, signature: "execute(bytes,bytes[],uint256)", args: [{ eq: commands }, { eq: inputs }, { lte: 9 }] };
+    expect(codes(inspectTransaction(intent, { to: ROUTER, data }))).toEqual(["X402-705"]);
+    expect(inspectTransaction({ ...intent, unlimited: true }, { to: ROUTER, data }).decision).toBe("allow");
+    const finite = [subPlan("0x0a", [permitInput(5n)])];
+    expect(inspectTransaction({ ...intent, args: [{ eq: commands }, { eq: finite }, { lte: 9 }] } as TxIntent, { to: ROUTER, data: routerCall(commands, finite) }).decision).toBe("allow");
+  });
+
+  it("abstains on a permit the router would read but this decoder cannot", () => {
+    // The signature's offset with a bit above 32 set: the router reads the low 32 bits.
+    const canonical = permitInput(MAX160);
+    const shifted = `${canonical.slice(0, 2 + 64 * 6)}${(BigInt(`0x${canonical.slice(2 + 64 * 6, 2 + 64 * 7)}`) + (1n << 32n)).toString(16).padStart(64, "0")}${canonical.slice(2 + 64 * 7)}` as Hex;
+    const data = routerCall("0x0a", [shifted]);
+    const intent: TxIntent = { kind: "call", chainId: CHAIN, target: ROUTER, signature: "execute(bytes,bytes[],uint256)", args: [{ eq: "0x0a" }, { eq: [shifted] }, { lte: 9 }] };
+    const v = inspectTransaction(intent, { to: ROUTER, data });
+    expect(v.decision).toBe("abstain");
+    expect(codes(v)).toEqual(["X402-709"]);
+  });
+});
+
 describe("a delegatecall packed inside a wrapper", () => {
   const inner = encodePacked(["address", "uint256", "bytes"], [USDC, 0n, call("transfer(address,uint256)", [OTHER, 1n])]);
   const mode = (callType: string) => `0x${callType}${"00".repeat(31)}` as Hex;
@@ -148,6 +177,12 @@ describe("strict reading", () => {
     const started = Date.now();
     expect(codes(inspectTransaction({ ...base, args: sparse } as TxIntent, { to: USDC, data }))).toEqual(["X402-707"]);
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("reports an intent that throws an unprintable value as the intent's, X402-707", () => {
+    const throwing = [{ eq: OTHER }];
+    Object.defineProperty(throwing, 1, { get: () => { throw Object.create(null); }, enumerable: true });
+    expect(codes(inspectTransaction({ ...base, args: throwing } as TxIntent, { to: USDC, data }))).toEqual(["X402-707"]);
   });
 
   it("abstains on a transaction field keyed by a symbol", () => {

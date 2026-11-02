@@ -60,7 +60,9 @@ whatever the counterparty built.
   - Their terms must be exact.
   - An unlimited grant needs the intent to say so: a maximum amount, an
     approval for all, an operator, a module, a fallback handler, an upgrade,
-    or an unlimited Permit2 permit inside a UniversalRouter call.
+    or an unlimited Permit2 permit inside a UniversalRouter call, its
+    sub-plans included. A permit or sub-plan there that does not decode
+    canonically abstains: the router reads offsets and lengths in 32 bits.
 - A delegatecall abstains however a wrapper chooses it: an operation
   argument, an ERC-7579 execution mode, or a Safe MultiSend record.
   ERC-4337's aggregated bundles and `executeUserOp` count as wrappers.

@@ -944,29 +944,32 @@ const PERMIT_BATCH_INPUT = parseAbiParameters("((address,uint160,uint48,uint48)[
  * Does a UniversalRouter call grant an unlimited Permit2 allowance in one of
  * its commands? PERMIT2_PERMIT (0x0a) carries a PermitSingle, and
  * PERMIT2_PERMIT_BATCH (0x03) a PermitBatch; the router reads a command's
- * type from its low six bits. An input that does not decode is left to the
- * intent's own constraints.
+ * type from its low bits, and EXECUTE_SUB_PLAN (0x21) carries commands of its
+ * own, read in turn. null when a permit or a sub-plan does not decode
+ * canonically: the router reads its offsets and lengths in 32 bits, so bytes
+ * this decoder refuses can still grant the router's reading of them.
  */
-function routerPermitsUnlimited(args: readonly unknown[]): boolean {
+function routerPermitsUnlimited(args: readonly unknown[], depth = 0): boolean | null {
   const commands = args[0];
   const inputs = args[1];
-  if (!isHex(commands) || !Array.isArray(inputs)) return false;
-  for (let i = 0; i < (commands.length - 2) / 2 && i < inputs.length; i++) {
+  if (depth > MAX_DEPTH || !isHex(commands) || !Array.isArray(inputs) || (commands.length - 2) / 2 !== inputs.length) return null;
+  let unlimited = false;
+  for (let i = 0; i < inputs.length; i++) {
     const command = parseInt(commands.slice(2 + 2 * i, 4 + 2 * i), 16) & 0x3f;
-    try {
-      if (command === 0x0a) {
-        const [permit] = decodeAbiParameters(PERMIT_SINGLE_INPUT, inputs[i] as `0x${string}`) as readonly unknown[];
-        if (permitDetailsMax(fieldOf(permit, 0, "details"))) return true;
-      } else if (command === 0x03) {
-        const [permit] = decodeAbiParameters(PERMIT_BATCH_INPUT, inputs[i] as `0x${string}`) as readonly unknown[];
-        const list = fieldOf(permit, 0, "details");
-        if (Array.isArray(list) && list.some(permitDetailsMax)) return true;
-      }
-    } catch {
-      // Not decodable here: the intent's constraints on the input decide.
+    if (command === 0x0a || command === 0x03) {
+      const decoded = decodeCanonical(command === 0x0a ? PERMIT_SINGLE_INPUT : PERMIT_BATCH_INPUT, inputs[i], "router permit");
+      if (typeof decoded === "string") return null;
+      const details = fieldOf(decoded[0], 0, "details");
+      unlimited ||= command === 0x0a ? permitDetailsMax(details) : Array.isArray(details) && details.some(permitDetailsMax);
+    } else if (command === 0x21) {
+      const decoded = decodeCanonical(parseAbiParameters("bytes, bytes[]"), inputs[i], "router subplan");
+      if (typeof decoded === "string") return null;
+      const inner = routerPermitsUnlimited(decoded, depth + 1);
+      if (inner === null) return null;
+      unlimited ||= inner;
     }
   }
-  return false;
+  return unlimited;
 }
 
 /** Does any record in Safe MultiSend's packed list choose a delegatecall? null when the list does not parse. */
@@ -1175,8 +1178,8 @@ export function checkTransaction(intent: unknown, tx: unknown, opts: InspectTran
 function readIntentSafely(intent: unknown): ReadIntent | string {
   try {
     return readIntent(intent);
-  } catch (e) {
-    return `reading it threw (${e instanceof Error ? e.message : String(e)})`;
+  } catch {
+    return "reading the intent threw";
   }
 }
 
@@ -1333,7 +1336,9 @@ function checkOnce(intent: unknown, tx: unknown, opts: InspectTransactionOptions
         }
         // A UniversalRouter call can carry Permit2 permits in its commands:
         // standing authority, so an unlimited one needs unlimited: true.
-        if (ROUTER_EXECUTE.has(selector) && routerPermitsUnlimited(args) && !read.unlimited) {
+        const routerGrant = ROUTER_EXECUTE.has(selector) ? routerPermitsUnlimited(args) : false;
+        if (routerGrant === null) unreadable("the router permit or subplan cannot be read canonically");
+        if (routerGrant && !read.unlimited) {
           findings.push({
             code: "X402-705",
             severity: "critical",

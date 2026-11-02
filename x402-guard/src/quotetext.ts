@@ -2122,6 +2122,11 @@ function collectTextFields(
     } catch {
       continue; // a throwing getter is not a reason to abandon the whole walk
     }
+    // A converted timeout is pre-signing metadata. Its fixed key and safe
+    // numeric value add no text and must not change signed verification's cap.
+    // Other spellings, nested keys, strings and objects still receive the scan.
+    if (path === "" && key === "maxTimeoutSeconds" &&
+        typeof value === "number" && Number.isSafeInteger(value) && value >= 0) continue;
     const child = path ? `${path}.${key}` : key;
     const lower = key.toLowerCase();
 

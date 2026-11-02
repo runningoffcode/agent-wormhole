@@ -1812,9 +1812,17 @@ export function guardEvmSigner<T extends object>(
       // wallet's choice, and the guard cannot check one for the other.
       const typed = typedDataFrom(args);
       if (typed === null) {
+        // Refused either way; the first request's own findings come first,
+        // even ones that would not refuse it alone, so a caller sees what is
+        // wrong with it.
+        const v = inspectTypedDataRequest(quote, args[0], pinned.opts);
+        if (v.decision !== "allow") refuse(v, method);
+        if (v.findings.length) refuse({ decision: "refuse", findings: v.findings }, method);
         refuse(
           abstain(
-            "the call could be read as more than one typed-data request — a viem request first, with more objects an ethers signer would read as its types and value — so what the wallet would sign cannot be told",
+            signedPayloadFrom(args) !== undefined
+              ? "the call carries both a typed-data request and an already-signed payment, so which one the wallet would sign cannot be told"
+              : "the call could be read as more than one typed-data request — a viem request first, with more objects an ethers signer would read as its types and value — so what the wallet would sign cannot be told",
           ),
           method,
         );
@@ -1825,6 +1833,7 @@ export function guardEvmSigner<T extends object>(
         // wrong with it; refused either way.
         const v = inspectTypedDataRequest(quote, typed, pinned.opts);
         if (v.decision !== "allow") refuse(v, method);
+        if (v.findings.length) refuse({ decision: "refuse", findings: v.findings }, method);
         refuse(
           abstain(
             "the call carries both a typed-data request and an already-signed payment, so which one the wallet would sign cannot be told",
@@ -1838,6 +1847,18 @@ export function guardEvmSigner<T extends object>(
         return signHeld(fn, self, args, reserveTotal(quote, method, pinned.policy));
       }
       if (signed !== undefined) {
+        // A signed payment checks only when it is the call's one object. A
+        // typed-data request before it, or an object where ethers reads its
+        // types, used to fall through to here, and the wallet was handed the
+        // whole call to refuse or sign as it saw fit.
+        if (args.some(a => typeof a === "object" && a !== null && a !== signed)) {
+          refuse(
+            abstain(
+              "the call carries an already-signed payment beside other objects, as when a typed-data request and an already-signed payment are passed together, so which one the wallet would sign cannot be told",
+            ),
+            method,
+          );
+        }
         const v = await inspectAuthorization(quote, signed, pinned.opts);
         if (v.decision !== "allow") refuse(v, method);
         return signHeld(fn, self, args, reserveTotal(quote, method, pinned.policy));

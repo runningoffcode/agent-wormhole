@@ -79,13 +79,12 @@ by name with X402-106: an EIP-2612 `Permit`, or Permit2's `PermitSingle`,
 `PermitBatch` or witness-less transfers. It used to abstain as "not
 TransferWithAuthorization". Both stop the signature.
 
-**A credential signed as a fixed line is bound to its site.** An Orbio wallet
-key is the signature of `Orbio API key · chain 4663 · epoch 0`, a line that
-names no site, so whatever got an agent to sign it held the agent's key. With
-message signing allowed, the guard used to sign it like any other message. It
-now signs it only while the agent is talking to orbio.so over https
-(X402-601 elsewhere, X402-602 with no site known). A sign-in request carrying
-the line is still held to its own site.
+**A credential line is signed only for its own site.** Some services take the
+signature of a fixed line as an API key, as Orbio's wallet keys do
+(`Orbio API key · chain 4663 · epoch 0`). With message signing allowed, a
+guarded wallet now signs that line only while the agent is talking to orbio.so
+over https (X402-601 elsewhere, X402-602 with no site known). A sign-in request
+carrying the line is still held to its own site.
 
 ## wormhole-x402 0.10.1 — 2026-11-01
 

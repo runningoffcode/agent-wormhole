@@ -858,31 +858,61 @@ matches a `permit2.permit` intent:
 - the expiration and the signature deadline are within the intent's bounds.
 
 The wallet signs the request as read. Without `intentFor`, a permit is refused
-as before (`X402-106`). `inspectPermit(intent, request)` runs the same check on
+by name as a standing allowance (`X402-106`). `inspectPermit(intent, request)` runs the same check on
 its own.
 
 - **The calldata must be what it decodes to.** It must re-encode to the same
   bytes, nested bytes included. Trailing bytes, non-zero padding and
   overlapping offsets decode in a lenient decoder, and a contract can read
   them differently. That abstains.
-- **Standing authority needs exact terms.** An approval, an EIP-2612 or
-  Permit2 permit, an operator grant, Morpho's authorization or an ownership
-  transfer is allowed only when the intent fixes who, what and how much with
-  `{ eq }`. An unlimited one also needs `unlimited: true`. An EIP-7702
-  delegation is refused.
+- **Standing authority needs exact terms.** The grants it recognises are
+  allowed only when the intent fixes who, what and how much with `{ eq }`:
+  - **Allowances:** ERC-20 and ERC-721 `approve`, `increaseAllowance`,
+    `setApprovalForAll`, ERC-6909's `approve` and `setOperator`, EIP-2612 and
+    DAI permits, and Permit2's `approve` and on-chain `permit` (single and
+    batch).
+  - **Authorizations:** Morpho's `setAuthorization` and
+    `setAuthorizationWithSig`, ERC-777's `authorizeOperator`.
+  - **Control of an account or contract:** `transferOwnership`, AccessControl's
+    `grantRole`, Safe's `enableModule`, `setFallbackHandler`,
+    `addOwnerWithThreshold`, `swapOwner`, `changeThreshold` and `setGuard`,
+    ERC-7579's `installModule`, and a proxy's `upgradeTo` and
+    `upgradeToAndCall`.
+
+  An unlimited grant also needs the intent to say so: `amount: "unlimited"` on
+  an `erc20.approve` or `permit2.permit` intent, or `unlimited: true` on a
+  `call`. That covers a maximum amount (a numeric maximum is not enough), an
+  approval for all, an operator, a module, a fallback handler and an upgrade.
+  An EIP-7702 delegation is refused. Any other function is held to its
+  constraints and nothing more: the check knows these grants by their
+  signatures, not by what an arbitrary contract does.
 - **A call that carries other calls is readable only when they are fixed.**
-  That covers a multicall, a router's or an account's `execute`, a Safe
-  transaction and a bundler's `handleOps`. Inner calls in bytes the intent
-  leaves open abstain, and so does a delegatecall.
+  It recognises the multicalls (`multicall`, Multicall3's aggregates), the
+  UniversalRouter's `execute`, account `execute` and `executeBatch` forms,
+  ERC-7579's `execute` and `executeFromExecutor`, Safe's `execTransaction`,
+  module calls and MultiSend, and ERC-4337's `handleOps`,
+  `handleAggregatedOps` and `executeUserOp`. Inner calls in bytes the intent
+  leaves open abstain, and so does a delegatecall, however the call chooses
+  it: an operation argument, an ERC-7579 execution mode, or a MultiSend
+  record. A UniversalRouter call that carries an unlimited Permit2 permit
+  needs `unlimited: true`.
 - **Fields it does not model abstain.** That covers blobs, viem's
   `dataSuffix` (bytes appended after the checked calldata), zkSync's
   `customData` (a paymaster can pull tokens for fees), a recipient given as a
   name to resolve, and a transaction that is not a plain object.
 - **The signer signs what was checked.** It gets the fields as read, never
-  the caller's object again. The intent's chain is pinned on it: an ethers
-  wallet otherwise signs a transaction that names no chain for chain 0. When
-  the signer says which chain it is on (viem's wallet client, ethers through
-  its provider), that must be the intent's.
+  the caller's object again, with the intent's chain pinned:
+  - an ethers wallet or a viem local account signs the pinned `chainId`. An
+    ethers wallet would otherwise sign a transaction that names no chain for
+    chain 0, and ethers refuses to send one for another chain than its
+    provider's.
+  - a viem wallet client asks its node for the chain again as it signs, so it
+    is also handed the intent's chain, and viem refuses to sign for another.
+  - when the signer says which chain it is on (viem's `getChainId`, ethers
+    through its provider), that must be the intent's before anything is
+    signed.
+
+  A signer of another kind gets the pinned `chainId` and nothing more.
 - **Lifetime totals count transactions too.** With a `spendPolicy`, the token
   amounts the check can read are held against `maxTotal` like payments. That
   covers transfer, transferFrom, approve and Permit2's approve and

@@ -19,7 +19,9 @@ collectable long after the one request it paid for.
   caps.
 - `evmQuoteFromRequirements` carries `maxTimeoutSeconds` as a whole number of
   seconds and leaves out any other value, so a converted quote's request digest
-  is unchanged.
+  is unchanged. That number is not counted against the quote-text scan's field
+  limit either, so a converted quote just under the limit reads as it did
+  without it.
 
 **Also fixed, in 0.10.0 and earlier: `guardEvmSigner` checked an attached
 signed payment instead of the typed message the wallet signs.** A signing call
@@ -32,7 +34,11 @@ at the positions the signer reads it, viem's first argument or ethers' first
 three: the guard used to take the first argument anywhere that looked like a
 whole request, so one carried inside an ethers value, or passed after the
 three, was checked while ethers signed the three. A call that could be read
-either way is refused.
+either way is refused. A signed payment passed beside any other object is
+refused by the guard itself, before the wallet is asked; one placed before the
+typed request used to reach the wallet, which refused it only because the call
+was malformed. A mixed call's refusal leads with the typed request's own
+findings, including ones that would not refuse it alone.
 
 **Behaviour that changed:** an agent whose code signs EIP-3009 authorizations
 valid for longer than the quote's timeout (or a day) is now refused before

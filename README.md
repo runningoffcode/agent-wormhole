@@ -175,10 +175,12 @@ transaction against the merchant's own 402 quote, a channel the model never
 touches. A token launch is attacker-controlled text that reaches a trading
 agent before any moderation exists — the launch layer's first live scan
 caught a token impersonating "STOCK" with an invisible zero-width character.
-Every launch on Robinhood Chain is now observed within minutes, attested
-with an ed25519 signature over its exact bytes, and re-checked daily; a
-metadata edit — on-chain or in the IPFS JSON — voids the attestation by
-arithmetic, publicly, with a counter.
+A Pons launch on Robinhood Chain is now observed within about a minute, and a
+token from any other launchpad as soon as someone asks for a scan. Each is
+attested with an ed25519 signature over its exact bytes that expires after a
+day and is refreshed when the token is looked up or active; a metadata edit —
+on-chain or in the IPFS JSON — voids the attestation by arithmetic, publicly,
+with a counter.
 
 What the words never say is "safe". Verdicts are `clean_by_rules` or
 `findings`; badges say checked, changed, or findings. Rules are the evadable

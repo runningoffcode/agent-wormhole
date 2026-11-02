@@ -77,6 +77,7 @@ describe("token transfers and approvals", () => {
     expect(inspectTransaction(exact, { to: USDC, data: call("approve(address,uint256)", [PERMIT2, 1_000_000n]) }).decision).toBe("allow");
     expect(codes(inspectTransaction(exact, { to: USDC, data: call("approve(address,uint256)", [OTHER, 1_000_000n]) }))).toEqual(["X402-705"]);
     expect(codes(inspectTransaction(exact, { to: USDC, data: call("approve(address,uint256)", [PERMIT2, MAX]) }))).toEqual(["X402-705"]);
+    expect(codes(inspectTransaction(exact, { to: USDC, data: call("approve(address,uint256)", [PERMIT2, 1_000_001n]) }))).toEqual(["X402-705"]);
     const unlimited: TxIntent = { ...exact, amount: "unlimited" };
     expect(inspectTransaction(unlimited, { to: USDC, data: call("approve(address,uint256)", [PERMIT2, MAX]) }).decision).toBe("allow");
   });

@@ -225,14 +225,12 @@ export function checkSignerMessage(
 }
 
 /**
- * Messages whose signature is a credential by itself (0.11.0): a fixed line
- * that names no site, so the signature works wherever it is presented. An
- * Orbio wallet key is the signature of `Orbio API key · chain 4663 · epoch 0`,
- * valid until the wallet signs a higher epoch, and whatever gets an agent to
- * sign that line can spend its Orbio balance. Such a line is signed only while
- * the agent is talking to the site that issues it, over https, that site or a
- * subdomain of it. Recognised after folding, like a sign-in header, and wider
- * than the exact line on purpose.
+ * Messages whose signature serves as a credential (0.11.0): a fixed line that
+ * names no site, such as an Orbio wallet key, the signature of `Orbio API key
+ * · chain 4663 · epoch 0`. Such a line is signed only while the agent is
+ * talking to the site that issues it, over https, that site or a subdomain of
+ * it. Recognised after folding, like a sign-in header, and wider than the exact
+ * line on purpose.
  */
 const CREDENTIAL_LINES: readonly { readonly name: string; readonly phrase: string; readonly site: string }[] = [
   { name: "an Orbio wallet key", phrase: "orbio api key", site: "orbio.so" },

@@ -781,15 +781,11 @@ URI with credentials in it, or a `signIn` field with a line break in it is
 refused. CRLF counts as such a line break: the siwe library and the Wallet
 Standard's parser refuse it too.
 
-Some services make the signature of a fixed line into an API key. An Orbio
-wallet key is the signature of `Orbio API key · chain 4663 · epoch 0`, which
-names no site, so whatever gets an agent to sign that line holds its key until
-the wallet rotates it. A guarded wallet signs that line only while the agent is
-talking to orbio.so, or a subdomain of it, over https. Elsewhere it is refused
-with `X402-601`, or with `X402-602` when no site is known. Every `signIn` field a wallet writes into its
-message must be text, and `resources` a list of text. A wallet converts
-anything else itself, so an array or an object with its own `toString` could
-come out as lines the check never read.
+Some services take the signature of a fixed line as an API key, as Orbio's
+wallet keys do (`Orbio API key · chain 4663 · epoch 0`). A guarded wallet signs
+that line only while the agent is talking to orbio.so, or a subdomain of it,
+over https. Elsewhere it is refused with `X402-601`, or with `X402-602` when no
+site is known.
 
 ### Transactions that are not payments
 

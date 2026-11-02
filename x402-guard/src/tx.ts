@@ -182,9 +182,23 @@ const isPlain = (v: unknown): v is object => {
   return proto === Object.prototype || proto === null;
 };
 
-/** An array's items, each read once (its length too); null when it is not an array. */
+/**
+ * An array's items, each read once (its length too); null when it is not an
+ * array. An array with anything but its items, a hole, a named key or a
+ * symbol, is not read as a list: a key no rule reads must not be skipped.
+ */
 function listOf(v: unknown): unknown[] | null {
-  return Array.isArray(v) ? (Array.prototype.slice.call(v) as unknown[]) : null;
+  if (!Array.isArray(v)) return null;
+  const length = v.length;
+  const keys = Reflect.ownKeys(v);
+  if (keys.length !== length + 1) throw new Error("an array with holes or keys other than its items");
+  for (const k of keys) {
+    if (k === "length") continue;
+    if (typeof k !== "string" || !/^(0|[1-9][0-9]*)$/.test(k) || Number(k) >= length) {
+      throw new Error("an array with keys other than its items");
+    }
+  }
+  return Array.from({ length }, (_, i) => Reflect.get(v, i, v));
 }
 
 /**
@@ -702,6 +716,7 @@ function readTransactionOnce(tx: unknown): ReadTransaction | Finding[] {
   const s = snapshot(tx);
   if (typeof s === "string") return unreadable(`the transaction cannot be read: ${s}`);
   const p = s.props;
+  if (s.symbols > 0) return unreadable("the transaction carries a symbol-keyed field, which this check does not model");
   const unknown = [...p.keys()].filter((k) => !CHECKED_FIELDS.has(k) && !SIGNER_FIELDS.has(k));
   if (unknown.length > 0) {
     return unreadable(`the transaction carries fields this check does not model: ${unknown.join(", ").slice(0, 160)}`);
@@ -822,6 +837,13 @@ const isMax = (bits: bigint) => (v: unknown) => {
   }
 };
 
+/** A decoded struct's field: by position when viem decodes it as an array, by name when the intent named it. */
+const fieldOf = (v: unknown, index: number, name: string): unknown =>
+  Array.isArray(v) ? v[index] : typeof v === "object" && v !== null ? (v as Record<string, unknown>)[name] : undefined;
+
+/** Does a Permit2 PermitDetails grant the maximum amount? */
+const permitDetailsMax = (details: unknown) => isMax(160n)(fieldOf(details, 1, "amount"));
+
 const STANDING_CALLS: readonly (readonly [string, Standing])[] = [
   ["approve(address,uint256)", { exact: [0, 1], free: [], unlimited: (a) => isMax(256n)(a[1]) }],
   ["increaseAllowance(address,uint256)", { exact: [0, 1], free: [], unlimited: (a) => isMax(256n)(a[1]) }],
@@ -836,9 +858,34 @@ const STANDING_CALLS: readonly (readonly [string, Standing])[] = [
   ["permit(address,address,uint256,uint256,bool,uint8,bytes32,bytes32)", { exact: [0, 1, 4], free: [5, 6, 7], unlimited: (a) => a[4] === true }],
   // Permit2: token, spender, amount; the expiration bounded.
   ["approve(address,address,uint160,uint48)", { exact: [0, 1, 2], free: [], unlimited: (a) => isMax(160n)(a[2]) }],
-  ["permit(address,((address,uint160,uint48,uint48),address,uint256),bytes)", { exact: [0, 1], free: [2], unlimited: () => false }],
-  ["permit(address,((address,uint160,uint48,uint48)[],address,uint256),bytes)", { exact: [0, 1], free: [2], unlimited: () => false }],
+  ["permit(address,((address,uint160,uint48,uint48),address,uint256),bytes)", { exact: [0, 1], free: [2], unlimited: (a) => permitDetailsMax(fieldOf(a[1], 0, "details")) }],
+  [
+    "permit(address,((address,uint160,uint48,uint48)[],address,uint256),bytes)",
+    {
+      exact: [0, 1],
+      free: [2],
+      unlimited: (a) => {
+        const list = fieldOf(a[1], 0, "details");
+        return Array.isArray(list) && list.some(permitDetailsMax);
+      },
+    },
+  ],
   ["setAuthorizationWithSig((address,address,bool,uint256,uint256),(uint8,bytes32,bytes32))", { exact: [0], free: [1], unlimited: (a) => Array.isArray(a[0]) ? a[0][2] === true : (a[0] as { isAuthorized?: unknown } | undefined)?.isAuthorized === true }],
+  // Control of an account or a contract, which no amount bounds: an ERC-777
+  // operator, a Safe or ERC-7579 module, a Safe fallback handler, a proxy's
+  // new code. Each needs its terms exact and unlimited: true.
+  ["authorizeOperator(address)", { exact: [0], free: [], unlimited: () => true }],
+  ["enableModule(address)", { exact: [0], free: [], unlimited: () => true }],
+  ["setFallbackHandler(address)", { exact: [0], free: [], unlimited: () => true }],
+  ["installModule(uint256,address,bytes)", { exact: [0, 1, 2], free: [], unlimited: () => true }],
+  ["upgradeTo(address)", { exact: [0], free: [], unlimited: () => true }],
+  ["upgradeToAndCall(address,bytes)", { exact: [0, 1], free: [], unlimited: () => true }],
+  // Who may act for an account or contract, bounded by its own rules: terms exact.
+  ["addOwnerWithThreshold(address,uint256)", { exact: [0, 1], free: [], unlimited: () => false }],
+  ["swapOwner(address,address,address)", { exact: [0, 1, 2], free: [], unlimited: () => false }],
+  ["changeThreshold(uint256)", { exact: [0], free: [], unlimited: () => false }],
+  ["setGuard(address)", { exact: [0], free: [], unlimited: () => false }],
+  ["grantRole(bytes32,address)", { exact: [0, 1], free: [], unlimited: () => false }],
 ];
 const STANDING = new Map(STANDING_CALLS.map(([sig, s]) => [toFunctionSelector(`function ${sig}`).toLowerCase(), s]));
 
@@ -846,10 +893,17 @@ const STANDING = new Map(STANDING_CALLS.map(([sig, s]) => [toFunctionSelector(`f
  * Calls that carry other calls: a multicall, a router's or an account's
  * execute, a Safe transaction, a bundler's handleOps. Their inner calls are
  * readable only when the intent fixes the bytes they travel in; an inner call
- * left `any` abstains. `operation` is the argument that chooses call or
- * delegatecall, which must be fixed to a call.
+ * left `any` abstains. A delegatecall, which runs another contract's code as
+ * the account, abstains however it is chosen:
+ * - a number, the argument that picks call or delegatecall, which must be
+ *   fixed to a call;
+ * - "erc7579", an ERC-7579 execution mode in argument 0, which must be fixed
+ *   and whose call type must not be 0xff;
+ * - "multisend", Safe MultiSend records packed in argument 0, each of which
+ *   must be a call.
  */
-const WRAPPER_CALLS: readonly (readonly [string, number | null])[] = [
+type WrapperMode = number | "erc7579" | "multisend" | null;
+const WRAPPER_CALLS: readonly (readonly [string, WrapperMode])[] = [
   ["multicall(bytes[])", null],
   ["multicall(uint256,bytes[])", null],
   ["multicall(bytes32,bytes[])", null],
@@ -866,16 +920,74 @@ const WRAPPER_CALLS: readonly (readonly [string, number | null])[] = [
   ["executeBatch((address,uint256,bytes)[])", null],
   ["executeBatch(address[],uint256[],bytes[])", null],
   ["executeBatch(address[],bytes[])", null],
-  ["execute(bytes32,bytes)", null],
-  ["executeFromExecutor(bytes32,bytes)", null],
+  ["execute(bytes32,bytes)", "erc7579"],
+  ["executeFromExecutor(bytes32,bytes)", "erc7579"],
   ["execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)", 3],
   ["execTransactionFromModule(address,uint256,bytes,uint8)", 3],
   ["execTransactionFromModuleReturnData(address,uint256,bytes,uint8)", 3],
-  ["multiSend(bytes)", null],
+  ["multiSend(bytes)", "multisend"],
+  ["multiSendCallOnly(bytes)", "multisend"],
   ["handleOps((address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes)[],address)", null],
   ["handleOps((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes)[],address)", null],
+  ["handleAggregatedOps(((address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes)[],address,bytes)[],address)", null],
+  ["handleAggregatedOps(((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes)[],address,bytes)[],address)", null],
+  ["executeUserOp((address,uint256,bytes,bytes,bytes32,uint256,bytes32,bytes,bytes),bytes32)", null],
 ];
-const WRAPPERS = new Map(WRAPPER_CALLS.map(([sig, operation]) => [toFunctionSelector(`function ${sig}`).toLowerCase(), { operation }]));
+const WRAPPERS = new Map(WRAPPER_CALLS.map(([sig, mode]) => [toFunctionSelector(`function ${sig}`).toLowerCase(), { mode }]));
+
+/** The UniversalRouter's execute, with and without a deadline. */
+const ROUTER_EXECUTE = new Set(["execute(bytes,bytes[],uint256)", "execute(bytes,bytes[])"].map((sig) => toFunctionSelector(`function ${sig}`).toLowerCase()));
+const PERMIT_SINGLE_INPUT = parseAbiParameters("((address,uint160,uint48,uint48),address,uint256), bytes") as readonly AbiParameter[];
+const PERMIT_BATCH_INPUT = parseAbiParameters("((address,uint160,uint48,uint48)[],address,uint256), bytes") as readonly AbiParameter[];
+
+/**
+ * Does a UniversalRouter call grant an unlimited Permit2 allowance in one of
+ * its commands? PERMIT2_PERMIT (0x0a) carries a PermitSingle, and
+ * PERMIT2_PERMIT_BATCH (0x03) a PermitBatch; the router reads a command's
+ * type from its low six bits. An input that does not decode is left to the
+ * intent's own constraints.
+ */
+function routerPermitsUnlimited(args: readonly unknown[]): boolean {
+  const commands = args[0];
+  const inputs = args[1];
+  if (!isHex(commands) || !Array.isArray(inputs)) return false;
+  for (let i = 0; i < (commands.length - 2) / 2 && i < inputs.length; i++) {
+    const command = parseInt(commands.slice(2 + 2 * i, 4 + 2 * i), 16) & 0x3f;
+    try {
+      if (command === 0x0a) {
+        const [permit] = decodeAbiParameters(PERMIT_SINGLE_INPUT, inputs[i] as `0x${string}`) as readonly unknown[];
+        if (permitDetailsMax(fieldOf(permit, 0, "details"))) return true;
+      } else if (command === 0x03) {
+        const [permit] = decodeAbiParameters(PERMIT_BATCH_INPUT, inputs[i] as `0x${string}`) as readonly unknown[];
+        const list = fieldOf(permit, 0, "details");
+        if (Array.isArray(list) && list.some(permitDetailsMax)) return true;
+      }
+    } catch {
+      // Not decodable here: the intent's constraints on the input decide.
+    }
+  }
+  return false;
+}
+
+/** Does any record in Safe MultiSend's packed list choose a delegatecall? null when the list does not parse. */
+function multiSendDelegates(bytes: unknown): boolean | null {
+  if (!isHex(bytes)) return null;
+  const b = bytes.slice(2);
+  let i = 0;
+  let delegates = false;
+  // Each record: operation (1 byte), to (20), value (32), data length (32), data.
+  while (i < b.length) {
+    if (b.length - i < 2 * 85) return null;
+    const op = parseInt(b.slice(i, i + 2), 16);
+    if (op !== 0 && op !== 1) return null;
+    if (op === 1) delegates = true;
+    const len = BigInt(`0x${b.slice(i + 2 * 53, i + 2 * 85)}`);
+    const end = BigInt(i + 2 * 85) + 2n * len;
+    if (end > BigInt(b.length)) return null;
+    i = Number(end);
+  }
+  return delegates;
+}
 
 /** Is this rule exact all the way down: eq, or structure made only of eq? */
 function exact(r: Rule): boolean {
@@ -1059,9 +1171,18 @@ export function checkTransaction(intent: unknown, tx: unknown, opts: InspectTran
   }
 }
 
+/** Read the intent, reporting a read that throws as the intent's (X402-707), not the transaction's. */
+function readIntentSafely(intent: unknown): ReadIntent | string {
+  try {
+    return readIntent(intent);
+  } catch (e) {
+    return `reading it threw (${e instanceof Error ? e.message : String(e)})`;
+  }
+}
+
 function checkOnce(intent: unknown, tx: unknown, opts: InspectTransactionOptions): TransactionCheck {
   const none = (verdict: Verdict, chainId: bigint | null = null): TransactionCheck => ({ verdict, chainId, movements: [], tx: null });
-  const read = readIntent(intent);
+  const read = readIntentSafely(intent);
   if (typeof read === "string" || read.kind === "permit2.permit") {
     const why = typeof read === "string" ? read : "a permit2.permit intent names a signature, not a transaction";
     return none({
@@ -1181,6 +1302,12 @@ function checkOnce(intent: unknown, tx: unknown, opts: InspectTransactionOptions
             expected: read.allowance!.toString(),
             actual: show(args[1]),
           });
+        } else if (read.allowance !== "unlimited" && args[1] === MAX_UINT256) {
+          findings.push({
+            code: "X402-705",
+            severity: "critical",
+            message: 'the approval is unlimited, which an intent allows only with amount "unlimited"',
+          });
         }
       } else {
         fn.inputs.forEach((p, i) => match(p, read.rules![i]!, args![i], `argument ${i + 1} (${p.type})`, m));
@@ -1204,16 +1331,34 @@ function checkOnce(intent: unknown, tx: unknown, opts: InspectTransactionOptions
             });
           }
         }
+        // A UniversalRouter call can carry Permit2 permits in its commands:
+        // standing authority, so an unlimited one needs unlimited: true.
+        if (ROUTER_EXECUTE.has(selector) && routerPermitsUnlimited(args) && !read.unlimited) {
+          findings.push({
+            code: "X402-705",
+            severity: "critical",
+            message: "the router call carries an unlimited Permit2 permit, which an intent allows only with unlimited: true",
+          });
+        }
         // A wrapper's inner calls: readable only when the intent fixes the bytes they travel in.
         const wrapper = WRAPPERS.get(selector);
         if (wrapper !== undefined) {
           if (fn.inputs.some((p, i) => leavesBytesOpen(p, read.rules![i]!))) {
             unreadable("the call carries other calls in bytes the intent leaves open, so what it does cannot be read");
           }
-          if (wrapper.operation !== null && !exact(read.rules![wrapper.operation]!)) {
-            unreadable("the call can choose a delegatecall, and the intent does not fix its operation");
-          } else if (wrapper.operation !== null && args[wrapper.operation] !== 0 && args[wrapper.operation] !== 0n) {
-            unreadable("the call is a delegatecall, which runs another contract's code as the caller");
+          const delegatecall = "the call is a delegatecall, which runs another contract's code as the caller";
+          if (typeof wrapper.mode === "number") {
+            if (!exact(read.rules![wrapper.mode]!)) {
+              unreadable("the call can choose a delegatecall, and the intent does not fix its operation");
+            } else if (args[wrapper.mode] !== 0 && args[wrapper.mode] !== 0n) unreadable(delegatecall);
+          } else if (wrapper.mode === "erc7579") {
+            if (!exact(read.rules![0]!)) {
+              unreadable("the call can choose a delegatecall, and the intent does not fix its execution mode");
+            } else if (typeof args[0] === "string" && args[0].slice(2, 4).toLowerCase() === "ff") unreadable(delegatecall);
+          } else if (wrapper.mode === "multisend") {
+            const delegates = multiSendDelegates(args[0]);
+            if (delegates === null) unreadable("the call's packed transactions do not parse as MultiSend records");
+            else if (delegates) unreadable(delegatecall);
           }
         }
       }
@@ -1400,7 +1545,7 @@ export function checkPermit(intent: unknown, request: unknown, opts: InspectTran
 
 function checkPermitOnce(intent: unknown, request: unknown, opts: InspectTransactionOptions): PermitCheck {
   const none = (verdict: Verdict): PermitCheck => ({ verdict, movements: [], request: null });
-  const read = readIntent(intent);
+  const read = readIntentSafely(intent);
   if (typeof read === "string" || read.kind !== "permit2.permit") {
     const why = typeof read === "string" ? read : "only a permit2.permit intent names a Permit2 signature";
     return none({ decision: "abstain", reason: why, findings: [{ code: "X402-707", severity: "high", message: `the intent cannot be read: ${why}` }] });
@@ -1466,6 +1611,8 @@ function checkPermitOnce(intent: unknown, request: unknown, opts: InspectTransac
       }
       if (read.allowance !== "unlimited" && amount !== read.allowance) {
         findings.push({ code: "X402-705", severity: "critical", message: "the permit grants another allowance than the intent's exact amount", expected: String(read.allowance), actual: String(amount) });
+      } else if (read.allowance !== "unlimited" && amount === MAX_UINT160) {
+        findings.push({ code: "X402-705", severity: "critical", message: 'the permit is unlimited, which an intent allows only with amount "unlimited"' });
       }
       if (!inRange(expiration as bigint, read.expiration!)) {
         findings.push({ code: "X402-703", severity: "critical", message: `the permit's expiration is ${expiration}, expected ${showRange(read.expiration!)}` });
@@ -1609,7 +1756,7 @@ export const presets = {
       deadline: Bound;
       hookData?: string;
       minHopPriceX36?: Bound;
-      permit?: { amount?: Amount; expiration: Bound; sigDeadline: Bound };
+      permit?: { amount?: Amount | "unlimited"; expiration: Bound; sigDeadline: Bound };
     }): TxIntent {
       if (p.fields !== 5 && p.fields !== 6) throw new TypeError("presets.uniswapV4.swapExactInSingle: fields must be 5 or 6");
       const most = upper(p.amountIn);
@@ -1624,10 +1771,12 @@ export const presets = {
       if (nativeIn && p.permit !== undefined) {
         throw new TypeError("presets.uniswapV4.swapExactInSingle: the native coin needs no Permit2 allowance");
       }
-      const permitAmount = p.permit === undefined ? null : p.permit.amount ?? (exactIn ? most : null);
+      const permitAmount =
+        p.permit === undefined ? null : p.permit.amount === "unlimited" ? MAX_UINT160 : p.permit.amount ?? (exactIn ? most : null);
       if (p.permit !== undefined && permitAmount === null) {
         throw new TypeError("presets.uniswapV4.swapExactInSingle: with a range for amountIn, permit.amount must be given exactly");
       }
+
       const key = { tuple: [{ eq: p.poolKey.currency0 }, { eq: p.poolKey.currency1 }, { eq: p.poolKey.fee }, { eq: p.poolKey.tickSpacing }, { eq: p.poolKey.hooks }] };
       const swap =
         p.fields === 6
@@ -1679,6 +1828,8 @@ export const presets = {
           boundRule(p.deadline),
         ],
         value: nativeIn ? { eq: most } : 0,
+        // An unlimited permit is granted only when written amount: "unlimited".
+        ...(p.permit?.amount === "unlimited" ? { unlimited: true as const } : {}),
       };
     },
   },

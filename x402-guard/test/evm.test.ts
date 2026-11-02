@@ -928,7 +928,9 @@ describe("guardEvmSigner — the firewall", () => {
           deadline: 2n ** 256n - 1n,
         },
       } as any),
-    ).rejects.toThrow(/not TransferWithAuthorization/);
+      // 0.11.0 (this line changed): refused by name as a standing allowance,
+      // X402-106, where it used to abstain as "not TransferWithAuthorization".
+    ).rejects.toThrow(/X402-106/);
     expect(s.calls).toEqual([]);
   });
 });

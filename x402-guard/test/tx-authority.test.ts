@@ -142,6 +142,14 @@ describe("strict reading", () => {
     expect(codes(inspectTransaction({ ...base, args: throwing } as TxIntent, { to: USDC, data }))).toEqual(["X402-707"]);
   });
 
+  it("abstains at once on a sparse intent array instead of walking its length", () => {
+    const sparse: unknown[] = [];
+    sparse.length = 1_000_000_000;
+    const started = Date.now();
+    expect(codes(inspectTransaction({ ...base, args: sparse } as TxIntent, { to: USDC, data }))).toEqual(["X402-707"]);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it("abstains on a transaction field keyed by a symbol", () => {
     expect(codes(inspectTransaction(base, { to: USDC, data, [Symbol("extra")]: 1 }))).toEqual(["X402-709"]);
   });

@@ -85,6 +85,13 @@ describe("a mixed call's refusal leads with the typed request's own findings", (
     expect(w.calls).toBe(0);
   });
 
+  it("names why a request gets no verdict before its ambiguity", async () => {
+    const w = wallet();
+    const g = guardEvmSigner(w, () => ({ ...quote, network: "eip155:999999" }), { nowSeconds: NOW });
+    await expect(g.signTypedData(request(message(MERCHANT)), await signedPayment())).rejects.toThrow(/no trusted EIP-712 domain/);
+    expect(w.calls).toBe(0);
+  });
+
   it("names a finding that would not refuse the request alone", async () => {
     const w = wallet();
     const g = guardEvmSigner(w, () => quote, { nowSeconds: NOW });

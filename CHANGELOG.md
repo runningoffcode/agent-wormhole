@@ -53,7 +53,29 @@ whatever the counterparty built.
   on its own. Without `intentFor`, permits are refused as before.
 - A `{ signature: true }` constraint reads 64- or 65-byte signature bytes
   without treating them as an inner call.
+- Standing authority covers allowances, authorizations and account control:
+  approvals and permits, operators, Morpho authorizations, ownership, roles,
+  Safe modules, owners, thresholds, guards and fallback handlers, ERC-7579
+  modules and proxy upgrades.
+  - Their terms must be exact.
+  - An unlimited grant needs the intent to say so: a maximum amount, an
+    approval for all, an operator, a module, a fallback handler, an upgrade,
+    or an unlimited Permit2 permit inside a UniversalRouter call.
+- A delegatecall abstains however a wrapper chooses it: an operation
+  argument, an ERC-7579 execution mode, or a Safe MultiSend record.
+  ERC-4337's aggregated bundles and `executeUserOp` count as wrappers.
+- A viem wallet client is handed the intent's chain with the transaction, so
+  viem itself refuses to sign for another, even with no chain configured and
+  a node that answers differently as it signs.
+- Intent arrays with holes, named keys or symbols are unreadable (X402-707).
+  A transaction field keyed by a symbol abstains.
 - Gas, fees and nonce stay the signer's and are not checked.
+
+**Behaviour that changed:** a standing allowance on the payment path
+(`inspectTypedDataRequest`, and `guardEvmSigner` without an intent) is refused
+by name with X402-106: an EIP-2612 `Permit`, or Permit2's `PermitSingle`,
+`PermitBatch` or witness-less transfers. It used to abstain as "not
+TransferWithAuthorization". Both stop the signature.
 
 **A credential signed as a fixed line is bound to its site.** An Orbio wallet
 key is the signature of `Orbio API key · chain 4663 · epoch 0`, a line that

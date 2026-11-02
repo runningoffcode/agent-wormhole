@@ -1367,6 +1367,22 @@ export function inspectTypedDataRequest(
   // standing allowance; TransferWithAuthorization is a single transfer. This
   // wrapper only knows how to vouch for the latter.
   const primaryType = r["primaryType"];
+  // A standing allowance is refused by name (0.11.0), not abstained on: the
+  // wallet is being asked for ongoing spend authority, which an intent can
+  // grant (guardEvmSigner's intentFor), and a quote never can.
+  if (typeof primaryType === "string" && STANDING_AUTHORITY_TYPES.has(primaryType.trim().toLowerCase())) {
+    return {
+      decision: "refuse",
+      findings: [
+        {
+          code: "X402-106",
+          severity: "critical",
+          message: `the wallet is asked to sign "${primaryType.trim().slice(0, 60)}", a standing-authority grant — ongoing spend authority, not the quoted payment; sign it under an intent instead`,
+          actual: primaryType.trim().slice(0, 60),
+        },
+      ],
+    };
+  }
   if (typeof primaryType !== "string" || primaryType.trim() !== EIP3009.PRIMARY_TYPE) {
     return abstain(
       `primaryType is ${JSON.stringify(primaryType)?.slice(0, 60)}, not ` +
@@ -2019,6 +2035,26 @@ export function guardEvmSigner<T extends object>(
     return null;
   };
 
+  /** Is this a viem wallet client? createWalletClient stamps its type. */
+  const viemWalletClient = (target: object): boolean => {
+    try {
+      return Reflect.get(target, "type", target) === "walletClient";
+    } catch {
+      return false;
+    }
+  };
+
+  /** The client's own chain when it is the intent's, so its formatters apply; otherwise the intent's chain by id. */
+  const viemChainFor = (target: object, id: number): object => {
+    try {
+      const own = Reflect.get(target, "chain", target) as { id?: unknown } | null | undefined;
+      if (typeof own === "object" && own !== null && own.id === id) return own;
+    } catch {
+      // Fall through to the intent's chain by id.
+    }
+    return { id, name: `chain ${id}`, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [] } } };
+  };
+
   /**
    * signTransaction and sendTransaction with an intent (0.11.0; ./tx). The
    * transaction is read once, the caller's intentFor names what it should be,
@@ -2085,6 +2121,12 @@ export function guardEvmSigner<T extends object>(
       const releaseAll = holdAll(pinned.policy, check.movements, method, "a movement in this transaction");
       const signed = Object.fromEntries(read.fields);
       signed.chainId = Number(chainId);
+      // A viem wallet client asks its node for the chain again as it signs,
+      // signs for that one whatever chainId says, and with no chain
+      // configured asserts nothing: a node that answers differently the
+      // second time gets a signature for another chain. Handing viem the
+      // intent's chain has viem itself refuse any other at signing time.
+      if (signed.chain === undefined && viemWalletClient(self)) signed.chain = viemChainFor(self, Number(chainId));
       return signHeld(fn, self, [signed, ...args.slice(1)], releaseAll);
     };
 

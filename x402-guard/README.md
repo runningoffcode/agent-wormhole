@@ -894,8 +894,9 @@ its own.
   `handleAggregatedOps` and `executeUserOp`. Inner calls in bytes the intent
   leaves open abstain, and so does a delegatecall, however the call chooses
   it: an operation argument, an ERC-7579 execution mode, or a MultiSend
-  record. A UniversalRouter call that carries an unlimited Permit2 permit
-  needs `unlimited: true`.
+  record. A UniversalRouter call that carries an unlimited Permit2 permit,
+  directly or in a sub-plan, needs `unlimited: true`, and a permit or
+  sub-plan it carries that does not decode canonically abstains.
 - **Fields it does not model abstain.** That covers blobs, viem's
   `dataSuffix` (bytes appended after the checked calldata), zkSync's
   `customData` (a paymaster can pull tokens for fees), a recipient given as a

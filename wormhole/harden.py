@@ -55,7 +55,7 @@ PRECREATE = (
 
 def _writable(path: Path) -> bool:
     try:
-        return bool(path.stat().st_mode & stat.S_IWUSR)
+        return bool(path.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
     except OSError:
         return False
 

@@ -230,11 +230,16 @@ def load_transactions(path) -> list:
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
+                out.extend(_unwrap_transactions(json.loads(line)))
             except ValueError:
                 continue
         return out
 
+    return _unwrap_transactions(data)
+
+
+def _unwrap_transactions(data) -> list:
+    """Use the same envelope handling for a JSON document and each JSONL line."""
     # Unwrap the common envelopes: {"result": ...} from JSON-RPC,
     # {"transactions": [...]} from enhanced APIs.
     if isinstance(data, dict):

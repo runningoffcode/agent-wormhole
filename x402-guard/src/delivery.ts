@@ -203,6 +203,17 @@ export function inspectDelivery(
 
   const delivered = response.status >= 200 && response.status < 300;
 
+  // An interim response or redirect is not the final resource. A 304 also
+  // needs cached bytes that this response alone does not establish.
+  if (!delivered && response.status < 400) {
+    return abstain("response is not a final successful delivery", quote, response, opts);
+  }
+  // Missing evidence differs from an observed empty body. HTTP errors above
+  // remain decisive refusals even when their body was not supplied.
+  if (delivered && bytes === null) {
+    return abstain("response body was not supplied", quote, response, opts);
+  }
+
   // --- 3. wrong content type (X402-403) ------------------------------------
   const quoted = mediaType(quote.mimeType ?? null);
   // AW-39. These three findings were `high`, and the decision below refuses

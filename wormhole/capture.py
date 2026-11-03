@@ -48,13 +48,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class CaptureIndexError(ValueError):
+    """Existing capture history cannot be read safely."""
+
+
 def _load_index() -> list:
-    if not WORMHOLE_INDEX.exists():
-        return []
     try:
-        return json.loads(WORMHOLE_INDEX.read_text()).get("entries", [])
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(WORMHOLE_INDEX.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return []
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CaptureIndexError(
+            f"cannot read capture index {WORMHOLE_INDEX}: {exc}") from exc
+    if (not isinstance(data, dict)
+            or not isinstance(data.get("entries"), list)
+            or not all(isinstance(entry, dict) for entry in data["entries"])):
+        raise CaptureIndexError(
+            f"invalid capture index {WORMHOLE_INDEX}: expected an entries list of objects")
+    return data["entries"]
 
 
 def _save_index(entries: list):
@@ -204,6 +215,8 @@ def swallow(path: Path, findings: list, dry_run: bool = False) -> dict:
     if dry_run:
         return result
 
+    # Never replace unreadable history or modify the source before checking it.
+    entries = _load_index()
     WORMHOLE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     WORMHOLE_DIR.chmod(0o700)
 
@@ -236,7 +249,6 @@ def swallow(path: Path, findings: list, dry_run: bool = False) -> dict:
         cleaned_sha256=hashlib.sha256(cleaned.encode()).hexdigest(),
         payload_file=str(payload_file),
     )
-    entries = _load_index()
     entries.append(asdict(entry))
     _save_index(entries)
 
@@ -335,9 +347,9 @@ def export_corpus(dest: Path) -> dict:
     are written inert -- filenames carry a .sample suffix so nothing loads them
     as agent config -- and the index records provenance for each.
     """
+    entries = _load_index()
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    entries = _load_index()
     exported = []
     for e in entries:
         src = Path(e["payload_file"])

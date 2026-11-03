@@ -286,6 +286,15 @@ def as_sarif(findings, root="."):
 
 
 def main(argv=None):
+    from .capture import CaptureIndexError
+    try:
+        return _main(argv)
+    except CaptureIndexError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+def _main(argv=None):
     ap = argparse.ArgumentParser(
         prog="wormhole",
         description="Detect and contain self-replicating prompt attacks "

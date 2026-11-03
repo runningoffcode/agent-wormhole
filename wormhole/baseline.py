@@ -122,8 +122,16 @@ def record(paths) -> dict:
     return existing
 
 
-def verify(paths=None) -> list:
-    """Compare current state against the recorded baseline."""
+def _within_root(path, root: Path) -> bool:
+    try:
+        Path(path).relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def verify(paths=None, *, root=None) -> list:
+    """Compare current files and, when scoped, missing records under root."""
     try:
         stored = load_baseline().get("files", {})
     except CorruptBaseline as exc:
@@ -144,6 +152,11 @@ def verify(paths=None) -> list:
                          "only evidence of what changed. Once reviewed, "
                          "re-record with: wormhole baseline"))]
 
+    scope = Path(root).resolve() if root is not None else None
+    if scope is not None:
+        stored = {path: entry for path, entry in stored.items()
+                  if _within_root(path, scope)}
+
     findings = []
 
     if not stored:
@@ -155,6 +168,10 @@ def verify(paths=None) -> list:
             remediation="Run: wormhole baseline")]
 
     targets = {str(Path(p).resolve()) for p in paths} if paths else set(stored)
+    if scope is not None:
+        # Discovery cannot return deleted files. Keep their recorded paths,
+        # without falling back to records from unrelated projects.
+        targets = {path for path in targets if _within_root(path, scope)} | set(stored)
 
     for path_str in sorted(targets):
         entry = stored.get(path_str)

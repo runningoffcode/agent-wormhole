@@ -985,7 +985,7 @@ def main(argv=None):
 
     if args.cmd == "verify":
         configs = find_agent_configs(root)
-        findings = verify([str(p) for p in configs] if configs else None)
+        findings = verify([str(p) for p in configs], root=root)
         findings.extend(mcp_tools.verify(root))
 
         # Explain the changes rather than only reporting them. "The hash

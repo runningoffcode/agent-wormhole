@@ -77,7 +77,7 @@ Policy reads, budget/velocity counters, approval consumption and spend reservati
 
 1. Submit the exact `name`, `symbol`, `description`, `logo` strings to `/api/v1/scan` with `links:false` if you only need metadata scanning. Preserve the signed pre-mint attestation.
 2. Require HTTP success, `verdict: "clean_by_rules"`, a valid signature, v2 scope and an unexpired attestation before your mint gate proceeds. Failures return `unchecked` without a clean attestation. Findings require your explicit review workflow.
-3. After minting, request an on-demand scan with `{chainId:4663,address}` or `{network:"solana",address}`. Compare its signed `metadata_hash` with the pre-mint value. Validate its real chain and token identity separately.
+3. After minting, request an on-demand scan with `{chainId:4663,address}` or `{network:"solana",address}`. Compare its signed `metadata_hash` with the pre-mint value. Validate its real chain and token identity separately. A coin whose metadata lives at its tokenURI is attested v3 (below), and its `metadata_hash` never matches a pre-mint one: compare its content yourself.
 4. Before consuming metadata, fetch the free `/api/v1/token/{chainId}/{address}` result and validate fresh evidence against the exact content you intend to use. A badge is a display, not an authorization primitive. A registry scan is a snapshot, not continuous protection against changes between reads.
 
 v2 has two hashes. They use SHA-256 over UTF-8 `JSON.stringify` output, with the keys in precisely this order:
@@ -97,16 +97,48 @@ The pre-mint `token` is `"premint"`. Its `metadata_hash` can match an observed t
 
 The signed scope is exactly `name,symbol,description,logo`. On Solana, name/symbol come from Metaplex and description/image from its fetched JSON, with image mapped to logo. The URI itself, extra JSON keys, image contents, linked pages, contract behavior and economics are outside that attestation. Links have separate reports and are not included in the metadata signature. Only changes to the four selected fields count as metadata mutations.
 
+### v3: metadata at a tokenURI
+
+A coin that keeps its metadata in the JSON at its tokenURI is attested v3. Doppler launches on chain 4663 do, Long's among them. The scope is exactly `name,symbol,token_uri`. v3 hashes the same way as v2, with these inputs:
+
+- `name` and `symbol`: the token's own `name()` and `symbol()` on chain.
+- `token_uri`: the string the token's `tokenURI()` returns on chain, exactly as read.
+- `token_json_sha256`: the SHA-256 of the JSON's bytes as fetched from that URI. An `ipfs://` URI is read through a gateway. A raw CIDv1 (`bafkrei…`) names those bytes' own SHA-256, and a `data:application/json` URI carries them.
+- `description`: the JSON's `description`.
+- `logo`: the JSON's `image`, else its `image_hash`.
+- `description` and `logo` are each `""` when absent or not a string.
+
+```js
+const metadataHash = sha256(JSON.stringify({
+  v: 3, name, symbol, description, logo, token_uri, token_json_sha256,
+}));
+const bundleHash = sha256(JSON.stringify({
+  v: 3, chainId, address: address.toLowerCase(), metadataHash,
+}));
+```
+
+The attestation also carries `token_uri_sha256`, the SHA-256 of the tokenURI string, beside `token_json_sha256`. In the signed canonical JSON the two come right after `token`: `v, metadata_hash, scope, chain_id, token, token_uri_sha256, token_json_sha256, bundle_hash, verdict, codes, ruleset, issued_at, expires_at`.
+
+The whole JSON was scanned, and its bytes are bound by their digest, so any change to them is a new `token_json_sha256` and a new `metadata_hash`. Image contents and linked pages stay outside the attestation. The JSON is read up to 64 KiB, with v2's UTF-8 limits on name, symbol, description and logo; a coin past them is unchecked. There is no pre-mint v3, since a pre-mint scan is a v2 bundle.
+
 ## Verify a launch attestation in Node
 
 Pin the deployment's Ed25519 public key through your trusted configuration. `/api/v1/key` publishes SPKI DER in base64 for initial setup; fetching the key and attestation from the same compromised origin on every call does not establish independent trust.
 
+Accept both versions. A verifier that takes v2 alone rejects every v3 coin. For v3, read `name`, `symbol` and `tokenURI` from the chain and fetch the JSON's bytes yourself; the verifier checks both digests and both hashes before the signature.
+
 ```js
 import { createHash, createPublicKey, verify } from "node:crypto";
 const sha256 = value => createHash("sha256").update(value, "utf8").digest("hex");
+const SCOPE = { 2: "name,symbol,description,logo", 3: "name,symbol,token_uri" };
 
+// expected: the chain and token you mean, and the metadata you read yourself.
+//   v2: { chainId, address, name, symbol, description, logo }
+//   v3: { chainId, address, name, symbol, tokenUri, tokenJson }: name, symbol and
+//       tokenUri as the token's own getters return them on chain, tokenJson the
+//       bytes you fetched from tokenUri, as a Buffer.
 export function acceptLaunch({ attestation: a, signature }, expected, publicKeyB64) {
-  if (!a || a.v !== 2 || a.scope !== "name,symbol,description,logo" ||
+  if (!a || SCOPE[a.v] === undefined || a.scope !== SCOPE[a.v] ||
       a.verdict !== "clean_by_rules" || !Array.isArray(a.codes) || a.codes.length ||
       typeof signature !== "string") return false;
   const issued = Date.parse(a.issued_at), expires = Date.parse(a.expires_at);
@@ -114,13 +146,31 @@ export function acceptLaunch({ attestation: a, signature }, expected, publicKeyB
       issued > Date.now() || expires <= Date.now() || expires-issued !== 86_400_000) return false;
   const address = expected.chainId === 0 ? expected.address : expected.address.toLowerCase();
   if (a.chain_id !== expected.chainId || a.token !== address) return false;
-  const { name, symbol, description, logo } = expected;
-  const metadataHash = sha256(JSON.stringify({ v: 2, name, symbol, description, logo }));
-  const bundleHash = sha256(JSON.stringify({ v: 2, chainId: expected.chainId, address, metadataHash }));
+  const { name, symbol } = expected;
+  let metadataHash, digests = {};
+  if (a.v === 2) {
+    const { description, logo } = expected;
+    metadataHash = sha256(JSON.stringify({ v: 2, name, symbol, description, logo }));
+  } else {
+    const { tokenUri, tokenJson } = expected;
+    const tokenJsonSha256 = sha256(tokenJson);
+    if (a.token_uri_sha256 !== sha256(tokenUri) || a.token_json_sha256 !== tokenJsonSha256) return false;
+    let json;
+    try { json = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(tokenJson)); } catch { return false; }
+    if (json === null || typeof json !== "object" || Array.isArray(json)) return false;
+    const text = key => typeof json[key] === "string" ? json[key] : null;
+    const description = text("description") ?? "";
+    const logo = text("image") ?? text("image_hash") ?? "";
+    metadataHash = sha256(JSON.stringify({
+      v: 3, name, symbol, description, logo, token_uri: tokenUri, token_json_sha256: tokenJsonSha256,
+    }));
+    digests = { token_uri_sha256: a.token_uri_sha256, token_json_sha256: a.token_json_sha256 };
+  }
+  const bundleHash = sha256(JSON.stringify({ v: a.v, chainId: expected.chainId, address, metadataHash }));
   if (a.metadata_hash !== metadataHash || a.bundle_hash !== bundleHash) return false;
   const canonical = JSON.stringify({
     v: a.v, metadata_hash: a.metadata_hash, scope: a.scope,
-    chain_id: a.chain_id, token: a.token, bundle_hash: a.bundle_hash,
+    chain_id: a.chain_id, token: a.token, ...digests, bundle_hash: a.bundle_hash,
     verdict: a.verdict, codes: a.codes, ruleset: a.ruleset,
     issued_at: a.issued_at, expires_at: a.expires_at,
   });
